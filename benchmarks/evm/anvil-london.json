@@ -1,0 +1,47 @@
+{
+  "block_timestamp": 1787912839,
+  "call": {
+    "block_number": 2,
+    "calldata": {
+      "bytes": 6084,
+      "nonzero_bytes": 5737,
+      "zero_bytes": 347
+    },
+    "execution_plus_memory_gas": 8258633,
+    "intrinsic_london_gas": 114180,
+    "receipt_gas_used": 8372813,
+    "selector": "0xb0fac614",
+    "status": 1,
+    "transaction_hash": "0xa07467b8903a1d30e418da726d569b1b0498361e2096c8af21e57b131de74ea5"
+  },
+  "canonical_vector_sha256": "fb321155cfb731e2506df13c8c741d97647875998cd825212c6494a7292e00e7",
+  "chain_id": 31337,
+  "classification": "proof_math_only",
+  "environment": {
+    "anvil": {
+      "commit": "4072e48705af9d93e3c0f6e29e93b5e9a40caed8",
+      "version": "1.7.1"
+    },
+    "cast": {
+      "commit": "4072e48705af9d93e3c0f6e29e93b5e9a40caed8",
+      "version": "1.7.1"
+    },
+    "forge": {
+      "commit": "4072e48705af9d93e3c0f6e29e93b5e9a40caed8",
+      "version": "1.7.1"
+    },
+    "hardfork": "london",
+    "optimizer": {
+      "enabled": true,
+      "runs": 200
+    },
+    "solc": "0.8.33+commit.64118f21",
+    "via_ir": true
+  },
+  "schema": "aigg.porw.anvil-benchmark.v1",
+  "verifier": {
+    "address": "0x5fbdb2315678afecb367f032d93f642f64180aa3",
+    "creation_transaction_hash": "0xbad213faf4438ab811d1dfdb2098fd4e51068540dac7f5eb7c42ac2e36460775",
+    "runtime_code_bytes": 8932
+  }
+}

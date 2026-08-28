@@ -9,6 +9,8 @@ feasibility gate of the AI3 Verifiable Compute Market Pilot proposal §8.4).
 - `src/PorwVerifier.sol` — exact port of the scheme's dispute math: sketch
   recomputation, blake3 Merkle commitments (+ keccak variant for
   comparison), fraud-proof / opening / non-inclusion verification.
+- `src/bench/PoRWBenchFixture.sol` — deterministic 4 KiB fraud-proof input
+  builder shared by the gas tests and broadcast script.
 - `test/Conformance.t.sol` — differential tests against the Rust
   reference via `../../spec-cache/conformance/porw/`
   (bit-identical or it is not the same scheme).
@@ -17,10 +19,14 @@ feasibility gate of the AI3 Verifiable Compute Market Pilot proposal §8.4).
 - `test/NegativeCases.t.sol` — malformed proof, counted-tree, and context
   binding rejection cases.
 - `test/Gas.t.sol` — the gas measurements at realistic tree depths.
+- `script/AnvilBench.s.sol` and `scripts/run-anvil-benchmark.sh` — a real,
+  receipt-backed London transaction benchmark with two-run reproducibility
+  checking; see `../../benchmarks/evm/README.md` for its strict scope.
 
 ```
 forge test --match-contract ConformanceTest
 forge test --match-contract GasBench -vv
+scripts/run-anvil-benchmark.sh
 ```
 
 The build is pinned to Solidity 0.8.33, the London EVM, optimizer runs 200,

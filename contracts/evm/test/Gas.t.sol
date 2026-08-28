@@ -3,23 +3,16 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {console2} from "forge-std/console2.sol";
-import {Blake3} from "../src/Blake3.sol";
 import {PorwVerifier} from "../src/PorwVerifier.sol";
+import {PoRWBenchFixture} from "../src/bench/PoRWBenchFixture.sol";
 
 /// Gas measurements for the EVM feasibility gate, at realistic tree depths:
 /// a 70 GB model = ~17M 4 KiB tiles => weights-tree depth 25; a large
 /// per-slot coverage set => partials depth up to 25 (21 used here for a 2M
 /// tile coverage). Numbers are logged per case; run with `forge test -vv
 /// --match-contract GasBench`.
-contract GasBench is Test {
+contract GasBench is Test, PoRWBenchFixture {
     PorwVerifier v;
-
-    uint64 constant TILE_IDX = 3;
-    uint64 constant MODEL_N_LEAVES = 17_000_000;
-    uint64 constant COVERAGE_N_LEAVES = 2_000_000;
-    uint32 constant SLOT_SEED = 1970174283;
-    bytes32 constant CHALLENGE = 0x0909090909090909090909090909090909090909090909090909090909090909;
-    bytes32 constant DEVICE = 0x0303030303030303030303030303030303030303030303030303030303030303;
 
     bytes tile;
     uint32 trueS;
@@ -28,41 +21,15 @@ contract GasBench is Test {
     bytes32 modelRoot;
     bytes32 partialsRoot;
 
-    function tileBytes(uint256 tileIdx) internal pure returns (bytes memory out) {
-        out = new bytes(4096);
-        unchecked {
-            for (uint256 j = 0; j < 4096; j++) {
-                uint64 x = uint64((tileIdx * 4096 + j) * 2654435761);
-                out[j] = bytes1(uint8((x >> 7) & 0xFF));
-            }
-        }
-    }
-
-    function foldRoot(bytes32 leaf, bytes32[] memory proof, uint256 index) internal pure returns (bytes32 acc) {
-        acc = leaf;
-        for (uint256 i = 0; i < proof.length; i++) {
-            acc = index % 2 == 0 ? Blake3.hash(bytes.concat(acc, proof[i])) : Blake3.hash(bytes.concat(proof[i], acc));
-            index /= 2;
-        }
-    }
-
     function setUp() public {
         v = new PorwVerifier();
-        tile = tileBytes(TILE_IDX);
-        trueS = v.sketchTile(SLOT_SEED, TILE_IDX, tile);
-
-        wProof = new bytes32[](25);
-        for (uint256 i = 0; i < 25; i++) {
-            wProof[i] = keccak256(abi.encode("w", i));
-        }
-        pProof = new bytes32[](21);
-        for (uint256 i = 0; i < 21; i++) {
-            pProof[i] = keccak256(abi.encode("p", i));
-        }
-        // Roots chosen so every check passes and the full path executes:
-        // the committed value is trueS+1, so the verdict is Fraud.
-        partialsRoot = foldRoot(v.partialsLeaf(TILE_IDX, trueS + 1), pProof, 1);
-        modelRoot = foldRoot(v.weightsLeaf(TILE_IDX, tile), wProof, TILE_IDX);
+        FraudFixture memory fixture = buildCanonicalFraudFixture(v);
+        tile = fixture.tile;
+        trueS = fixture.trueS;
+        wProof = fixture.weightsProof;
+        pProof = fixture.partialsProof;
+        modelRoot = fixture.modelRoot;
+        partialsRoot = fixture.partialsRoot;
     }
 
     function test_gas_sketch_tile() public view {
@@ -104,24 +71,15 @@ contract GasBench is Test {
     }
 
     function fraudProofCalldata() internal view returns (bytes memory) {
-        return abi.encodeCall(
-            PorwVerifier.verifyTileFraudProof,
-            (
-                partialsRoot,
-                COVERAGE_N_LEAVES,
-                modelRoot,
-                modelRoot,
-                MODEL_N_LEAVES,
-                CHALLENGE,
-                DEVICE,
-                TILE_IDX,
-                trueS + 1,
-                uint64(1),
-                pProof,
-                tile,
-                wProof
-            )
-        );
+        FraudFixture memory fixture = FraudFixture({
+            tile: tile,
+            trueS: trueS,
+            weightsProof: wProof,
+            partialsProof: pProof,
+            modelRoot: modelRoot,
+            partialsRoot: partialsRoot
+        });
+        return fraudProofCalldata(v, fixture);
     }
 
     function wordAt(bytes memory data, uint256 offset) internal pure returns (bytes32 word) {
