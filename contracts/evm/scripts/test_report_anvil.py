@@ -23,6 +23,8 @@ class ReportAnvilTest(unittest.TestCase):
         self.block = self.root / "block.json"
         self.vector = self.root / "vector.json"
         self.runtime_code = self.root / "runtime-code.hex"
+        self.expectations = self.root / "canonical-expectations.json"
+        self.source_manifest = self.root / "source-manifest.json"
         self.output = self.evidence / "report.json"
 
         create_hash = "0x" + "11" * 32
@@ -84,6 +86,32 @@ class ReportAnvilTest(unittest.TestCase):
         self.block.write_text(json.dumps({"number": "0x2", "timestamp": "0x1234"}))
         self.vector.write_bytes(b'{"canonical":true}\n')
         self.runtime_code.write_text("0x6000\n")
+        calldata = bytes.fromhex(SELECTOR + "00ff")
+        self.expectations.write_text(
+            json.dumps(
+                {
+                    "schema": "aigg.porw.anvil-canonical.v1",
+                    "selector": "0x" + SELECTOR,
+                    "expected_verdict": "Fraud",
+                    "calldata_bytes": len(calldata),
+                    "calldata_sha256": hashlib.sha256(calldata).hexdigest(),
+                    "runtime_code_bytes": 2,
+                    "runtime_bytecode_sha256": hashlib.sha256(bytes.fromhex("6000")).hexdigest(),
+                    "canonical_vector_sha256": hashlib.sha256(self.vector.read_bytes()).hexdigest(),
+                }
+            )
+        )
+        self.source_manifest.write_text(
+            json.dumps(
+                {
+                    "schema": "aigg.porw.source-manifest.v1",
+                    "git_base_commit": "aa" * 20,
+                    "relevant_input_worktree_dirty": False,
+                    "entries": [{"path": "src/PorwVerifier.sol", "sha256": "bb" * 32}],
+                },
+                sort_keys=True,
+            )
+        )
         self.write_broadcast()
 
     def tearDown(self) -> None:
@@ -109,6 +137,10 @@ class ReportAnvilTest(unittest.TestCase):
                 hashlib.sha256(self.vector.read_bytes()).hexdigest(),
                 "--runtime-code",
                 str(self.runtime_code),
+                "--expectations",
+                str(self.expectations),
+                "--source-manifest",
+                str(self.source_manifest),
                 "--output-root",
                 str(self.evidence),
                 "--output",
@@ -135,11 +167,16 @@ class ReportAnvilTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads(self.output.read_text())
         self.assertEqual(report["classification"], "proof_math_only")
-        self.assertEqual(report["call"]["calldata"], {"bytes": 6, "nonzero_bytes": 5, "zero_bytes": 1})
+        self.assertEqual(report["call"]["calldata"]["bytes"], 6)
+        self.assertEqual(report["call"]["calldata"]["nonzero_bytes"], 5)
+        self.assertEqual(report["call"]["calldata"]["zero_bytes"], 1)
         self.assertEqual(report["call"]["intrinsic_london_gas"], 21_084)
         self.assertEqual(report["call"]["execution_plus_memory_gas"], 916)
         self.assertEqual(report["call"]["receipt_gas_used"], 22_000)
         self.assertEqual(report["verifier"]["runtime_code_bytes"], 2)
+        self.assertEqual(report["verifier"]["runtime_bytecode_sha256"], hashlib.sha256(bytes.fromhex("6000")).hexdigest())
+        self.assertEqual(report["call"]["calldata"]["sha256"], hashlib.sha256(bytes.fromhex(SELECTOR + "00ff")).hexdigest())
+        self.assertEqual(report["call"]["expected_verdict"], "Fraud")
         self.assertEqual(report["block_timestamp"], 0x1234)
 
     def test_rejects_ambiguous_selector_match_without_overwriting(self) -> None:
@@ -164,6 +201,13 @@ class ReportAnvilTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.output.exists())
 
+    def test_rejects_successful_status_with_mutated_canonical_calldata(self) -> None:
+        self.document["transactions"][1]["transaction"]["input"] = "0x" + SELECTOR + "00fe"
+        self.write_broadcast()
+        result = self.run_report()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.output.exists())
+
     def test_rejects_receipt_below_intrinsic_gas(self) -> None:
         self.document["receipts"][1]["gasUsed"] = hex(21_083)
         self.write_broadcast()
@@ -173,6 +217,14 @@ class ReportAnvilTest(unittest.TestCase):
 
     def test_rejects_runtime_code_that_differs_from_compiler_artifact(self) -> None:
         self.runtime_code.write_text("0x6001\n")
+        result = self.run_report()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.output.exists())
+
+    def test_rejects_dirty_source_manifest(self) -> None:
+        manifest = json.loads(self.source_manifest.read_text())
+        manifest["relevant_input_worktree_dirty"] = True
+        self.source_manifest.write_text(json.dumps(manifest))
         result = self.run_report()
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.output.exists())

@@ -6,7 +6,6 @@ FOUNDRY_COMMIT="4072e48705af9d93e3c0f6e29e93b5e9a40caed8"
 CHAIN_ID="31337"
 HARDFORK="london"
 BLOCK_GAS_LIMIT="30000000"
-PORT="18545"
 VECTOR_SHA256="fb321155cfb731e2506df13c8c741d97647875998cd825212c6494a7292e00e7"
 
 if [[ -L "$0" ]]; then
@@ -19,11 +18,27 @@ EVM_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 REPO_ROOT="$(cd "$EVM_DIR/../.." && pwd -P)"
 BENCH_DIR="$REPO_ROOT/benchmarks/evm"
 REPORTER="$SCRIPT_DIR/report-anvil.py"
+EXPECTATIONS="$SCRIPT_DIR/canonical-benchmark.json"
 VECTOR="$REPO_ROOT/spec-cache/conformance/porw/sketch-tile-v2.json"
 ARTIFACT="$EVM_DIR/out/PorwVerifier.sol/PorwVerifier.json"
 BROADCAST="$EVM_DIR/broadcast/AnvilBench.s.sol/$CHAIN_ID/run-latest.json"
 FINAL_REPORT="$BENCH_DIR/anvil-london.json"
-RPC_URL="http://127.0.0.1:$PORT"
+RPC_URL=""
+PORT=""
+
+RELEVANT_INPUTS=(
+    ".gitmodules"
+    "contracts/evm/foundry.toml"
+    "contracts/evm/lib/forge-std"
+    "contracts/evm/script/AnvilBench.s.sol"
+    "contracts/evm/scripts/canonical-benchmark.json"
+    "contracts/evm/scripts/report-anvil.py"
+    "contracts/evm/scripts/run-anvil-benchmark.sh"
+    "contracts/evm/src/Blake3.sol"
+    "contracts/evm/src/PorwVerifier.sol"
+    "contracts/evm/src/bench/PoRWBenchFixture.sol"
+    "spec-cache/conformance/porw/sketch-tile-v2.json"
+)
 
 [[ "$(git -C "$REPO_ROOT" rev-parse --show-toplevel)" == "$REPO_ROOT" ]] || {
     echo "repository boundary mismatch" >&2
@@ -33,8 +48,8 @@ RPC_URL="http://127.0.0.1:$PORT"
     echo "benchmark directory must be an existing non-symlink directory" >&2
     exit 1
 }
-[[ -f "$REPORTER" && ! -L "$REPORTER" && -f "$VECTOR" && ! -L "$VECTOR" ]] || {
-    echo "reporter or canonical vector is missing or symlinked" >&2
+[[ -f "$REPORTER" && ! -L "$REPORTER" && -f "$EXPECTATIONS" && ! -L "$EXPECTATIONS" && -f "$VECTOR" && ! -L "$VECTOR" ]] || {
+    echo "reporter, canonical expectations, or vector is missing or symlinked" >&2
     exit 1
 }
 [[ ! -L "$FINAL_REPORT" ]] || {
@@ -80,7 +95,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 
-for tool in forge cast anvil python3 git; do
+for tool in forge cast anvil python3 git cmp; do
     command -v "$tool" >/dev/null || {
         echo "required tool not found: $tool" >&2
         exit 1
@@ -104,6 +119,42 @@ check_foundry_version forge forge
 check_foundry_version cast cast
 check_foundry_version anvil anvil
 
+verify_relevant_inputs_match_index() {
+    local input index_entry mode index_oid worktree_oid submodule_status
+    for input in "${RELEVANT_INPUTS[@]}"; do
+        index_entry="$(git -C "$REPO_ROOT" ls-files -s -- "$input")"
+        [[ -n "$index_entry" ]] || {
+            echo "relevant input is not staged in the Git index: $input" >&2
+            return 1
+        }
+        read -r mode index_oid _ <<<"$index_entry"
+        if [[ "$mode" == "160000" ]]; then
+            [[ -d "$REPO_ROOT/$input" && ! -L "$REPO_ROOT/$input" ]] || {
+                echo "relevant submodule is missing or symlinked: $input" >&2
+                return 1
+            }
+            worktree_oid="$(git -C "$REPO_ROOT/$input" rev-parse HEAD)"
+            submodule_status="$(git -C "$REPO_ROOT/$input" status --porcelain)"
+            [[ "$worktree_oid" == "$index_oid" && -z "$submodule_status" ]] || {
+                echo "relevant submodule does not match the staged gitlink: $input" >&2
+                return 1
+            }
+        else
+            [[ -f "$REPO_ROOT/$input" && ! -L "$REPO_ROOT/$input" ]] || {
+                echo "relevant input is missing or symlinked: $input" >&2
+                return 1
+            }
+            worktree_oid="$(git -C "$REPO_ROOT" hash-object -- "$input")"
+            [[ "$worktree_oid" == "$index_oid" ]] || {
+                echo "relevant input has unstaged content: $input" >&2
+                return 1
+            }
+        fi
+    done
+}
+
+verify_relevant_inputs_match_index
+
 (
 cd "$EVM_DIR"
 forge config --json
@@ -122,36 +173,42 @@ if actual != expected:
     raise SystemExit(f"unpinned Foundry compiler configuration: {actual!r}")
 '
 
-port_is_free() {
-    python3 - "$PORT" <<'PY'
-import socket
-import sys
-
-sock = socket.socket()
-try:
-    try:
-        sock.bind(("127.0.0.1", int(sys.argv[1])))
-    except OSError:
-        raise SystemExit(1)
-finally:
-    sock.close()
-PY
-}
-
 wait_for_anvil() {
-    local attempt
+    local log_file=$1
+    local attempt client_version
     for attempt in $(seq 1 100); do
-        if cast block-number --rpc-url "$RPC_URL" >/dev/null 2>&1; then
-            [[ "$(cast chain-id --rpc-url "$RPC_URL")" == "$CHAIN_ID" ]] || {
-                echo "Anvil returned an unexpected chain id" >&2
-                return 1
-            }
-            return 0
-        fi
         kill -0 "$ANVIL_PID" 2>/dev/null || {
             echo "Anvil exited before RPC became ready" >&2
             return 1
         }
+        PORT="$(sed -n 's/.*Listening on 127\.0\.0\.1:\([0-9][0-9]*\).*/\1/p' "$log_file" | tail -1)"
+        if [[ -n "$PORT" ]]; then
+            [[ "$PORT" =~ ^[0-9]+$ && "$PORT" -gt 1024 && "$PORT" -le 65535 ]] || {
+                echo "Anvil reported an invalid dynamic port" >&2
+                return 1
+            }
+            RPC_URL="http://127.0.0.1:$PORT"
+        fi
+        if [[ -n "$RPC_URL" ]] && cast block-number --rpc-url "$RPC_URL" >/dev/null 2>&1; then
+            kill -0 "$ANVIL_PID" 2>/dev/null || {
+                echo "Anvil exited during RPC identity verification" >&2
+                return 1
+            }
+            [[ "$(cast chain-id --rpc-url "$RPC_URL")" == "$CHAIN_ID" ]] || {
+                echo "Anvil returned an unexpected chain id" >&2
+                return 1
+            }
+            client_version="$(cast rpc --rpc-url "$RPC_URL" web3_clientVersion)"
+            [[ "$client_version" == *"anvil/v$FOUNDRY_VERSION"* ]] || {
+                echo "RPC client identity is not the pinned Anvil version" >&2
+                return 1
+            }
+            kill -0 "$ANVIL_PID" 2>/dev/null || {
+                echo "Anvil exited before readiness was accepted" >&2
+                return 1
+            }
+            return 0
+        fi
         sleep 0.1
     done
     echo "timed out waiting for Anvil RPC" >&2
@@ -162,20 +219,17 @@ run_once() {
     local run_number=$1
     local run_dir="$TEMP_DIR/run-$run_number"
     mkdir "$run_dir"
-    port_is_free || {
-        echo "127.0.0.1:$PORT is already in use; refusing to attach to an unrelated node" >&2
-        return 1
-    }
+    PORT=""
+    RPC_URL=""
 
     anvil \
         --host 127.0.0.1 \
-        --port "$PORT" \
+        --port 0 \
         --chain-id "$CHAIN_ID" \
         --hardfork "$HARDFORK" \
-        --gas-limit "$BLOCK_GAS_LIMIT" \
-        --silent >"$run_dir/anvil.log" 2>&1 &
+        --gas-limit "$BLOCK_GAS_LIMIT" >"$run_dir/anvil.log" 2>&1 &
     ANVIL_PID=$!
-    wait_for_anvil
+    wait_for_anvil "$run_dir/anvil.log"
 
     (
         cd "$EVM_DIR"
@@ -220,6 +274,8 @@ PY
         --vector "$VECTOR" \
         --canonical-vector-sha256 "$VECTOR_SHA256" \
         --runtime-code "$run_dir/runtime-code.hex" \
+        --expectations "$EXPECTATIONS" \
+        --source-manifest "$TEMP_DIR/source-manifest.json" \
         --output-root "$run_dir" \
         --output "$run_dir/report.json" \
         --forge-version "$FOUNDRY_VERSION" \
@@ -232,9 +288,47 @@ PY
     stop_anvil
 }
 
+generate_source_manifest() {
+    local output=$1
+    python3 - "$REPO_ROOT" "$output" "${RELEVANT_INPUTS[@]}" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+root = Path(sys.argv[1])
+output = Path(sys.argv[2])
+entries = []
+for relative in sys.argv[3:]:
+    path = root / relative
+    if path.is_dir():
+        commit = subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
+        payload = ("gitlink\0" + commit).encode()
+        entries.append({"gitlink_commit": commit, "path": relative, "sha256": hashlib.sha256(payload).hexdigest()})
+    else:
+        entries.append({"path": relative, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+document = {
+    "entries": entries,
+    "git_base_commit": subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip(),
+    "relevant_input_worktree_dirty": False,
+    "schema": "aigg.porw.source-manifest.v1",
+}
+output.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
+
+generate_source_manifest "$TEMP_DIR/source-manifest.json"
+
 run_once 1
 run_once 2
 python3 "$REPORTER" --compare "$TEMP_DIR/run-1/report.json" "$TEMP_DIR/run-2/report.json"
+verify_relevant_inputs_match_index
+generate_source_manifest "$TEMP_DIR/source-manifest-final.json"
+cmp -s "$TEMP_DIR/source-manifest.json" "$TEMP_DIR/source-manifest-final.json" || {
+    echo "measurement-relevant inputs changed during the benchmark" >&2
+    exit 1
+}
 
 PUBLISH_TEMP="$(mktemp "$BENCH_DIR/.anvil-london.json.XXXXXXXX")"
 [[ -f "$PUBLISH_TEMP" && ! -L "$PUBLISH_TEMP" ]] || {

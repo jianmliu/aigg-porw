@@ -23,9 +23,18 @@ The runner checks the pinned Foundry build and Solidity settings, executes two
 fresh local Anvil chains, compares every deterministic report field except the
 transaction hashes and block timestamp, and atomically publishes evidence only
 after both runs agree. It binds the report to the canonical conformance vector
-by SHA-256 and requires the deployed runtime code to match the pinned compiler
-artifact byte for byte. The public Anvil development key used by the Forge
-script is never a production secret and must never fund a real account.
+and exact canonical Fraud calldata by SHA-256, and requires the deployed runtime
+code to match both the pinned compiler artifact and committed bytecode hash. A
+sorted source manifest binds every measurement-relevant source/config file and
+the forge-std gitlink. The runner refuses relevant files that differ from the
+Git index and checks them again before publication; intentional edits must be
+reviewed and staged first. This avoids a self-referential commit hash while
+making the precise measured source tree reproducible. Each run asks Anvil to
+bind an OS-selected localhost port and verifies the child PID, chain ID, and
+Anvil client identity before accepting RPC readiness.
+
+The public Anvil development key used by the Forge script is never a production
+secret and must never fund a real account.
 
 Auto EVM supports both Istanbul and London. This benchmark intentionally pins
 London so EIP-2028 calldata pricing is explicit: `21000 + 4 * zero bytes + 16 *

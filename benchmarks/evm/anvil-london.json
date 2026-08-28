@@ -1,19 +1,22 @@
 {
-  "block_timestamp": 1787912839,
+  "block_timestamp": 1787913804,
   "call": {
     "block_number": 2,
     "calldata": {
       "bytes": 6084,
       "nonzero_bytes": 5737,
+      "sha256": "9922c1eb76e5b34830f97ccb2ae109f58ccf14771f3f95fa14f1505f12dd35bb",
       "zero_bytes": 347
     },
     "execution_plus_memory_gas": 8258633,
+    "expected_verdict": "Fraud",
     "intrinsic_london_gas": 114180,
     "receipt_gas_used": 8372813,
     "selector": "0xb0fac614",
     "status": 1,
     "transaction_hash": "0xa07467b8903a1d30e418da726d569b1b0498361e2096c8af21e57b131de74ea5"
   },
+  "canonical_expectations_sha256": "52b9043d8711c4942b52e8266d79841913726c8abed16cc65c9b28addd212614",
   "canonical_vector_sha256": "fb321155cfb731e2506df13c8c741d97647875998cd825212c6494a7292e00e7",
   "chain_id": 31337,
   "classification": "proof_math_only",
@@ -38,10 +41,63 @@
     "solc": "0.8.33+commit.64118f21",
     "via_ir": true
   },
-  "schema": "aigg.porw.anvil-benchmark.v1",
+  "schema": "aigg.porw.anvil-benchmark.v2",
+  "source_identity": {
+    "entries": [
+      {
+        "path": ".gitmodules",
+        "sha256": "23ba35a036c8c140294dcac5b3e6faa58db2af802471121c7cec434e9d8c062c"
+      },
+      {
+        "path": "contracts/evm/foundry.toml",
+        "sha256": "e420baf61fbdee34b3d2abed640bcc2a8032a7a8afbb6327758891cab6e88564"
+      },
+      {
+        "gitlink_commit": "8bbcf6e3f8f62f419e5429a0bd89331c85c37824",
+        "path": "contracts/evm/lib/forge-std",
+        "sha256": "c6ae929158289e665e03a30ca3c2844e31ae82d4671f6f7a0fb91cb7156a1e0c"
+      },
+      {
+        "path": "contracts/evm/script/AnvilBench.s.sol",
+        "sha256": "a0ed1bf959969d6961789885fb183eec224e581a3820994cd0742472452e704d"
+      },
+      {
+        "path": "contracts/evm/scripts/canonical-benchmark.json",
+        "sha256": "52b9043d8711c4942b52e8266d79841913726c8abed16cc65c9b28addd212614"
+      },
+      {
+        "path": "contracts/evm/scripts/report-anvil.py",
+        "sha256": "13dbd9522dbbd89b5d55aef10c764e87fe0610df2358831c17cd9a2159e4e0fa"
+      },
+      {
+        "path": "contracts/evm/scripts/run-anvil-benchmark.sh",
+        "sha256": "34e2832ba1dd9a023f380e6cb9ba14008c6b8dbbbe0a07a9cb114cd50f0c90c4"
+      },
+      {
+        "path": "contracts/evm/src/Blake3.sol",
+        "sha256": "0fe5353891d99e811b72cb7bfefac018f64602bfc41e692eff4065e23bb5cd96"
+      },
+      {
+        "path": "contracts/evm/src/PorwVerifier.sol",
+        "sha256": "8c1ceed284ad96b647c23ccfe4f092f30ee161d67048a85dbfbbb3128d0a8284"
+      },
+      {
+        "path": "contracts/evm/src/bench/PoRWBenchFixture.sol",
+        "sha256": "54f5e58b427252af85a7442d8978bc98da7e84f7aeae78ab9c9b45c10129d372"
+      },
+      {
+        "path": "spec-cache/conformance/porw/sketch-tile-v2.json",
+        "sha256": "fb321155cfb731e2506df13c8c741d97647875998cd825212c6494a7292e00e7"
+      }
+    ],
+    "git_base_commit": "b23d061a5b945d7f14416ce3709edc286320df30",
+    "manifest_sha256": "0846efd3baab1504f185b9fbffd89179c6ec70b8df4e3c3efb23083dec8212fc",
+    "relevant_input_worktree_dirty": false
+  },
   "verifier": {
     "address": "0x5fbdb2315678afecb367f032d93f642f64180aa3",
     "creation_transaction_hash": "0xbad213faf4438ab811d1dfdb2098fd4e51068540dac7f5eb7c42ac2e36460775",
+    "runtime_bytecode_sha256": "5f71922f25b2ab6d7e0e7dc808d4895c923d6cd159165bf47cff5b7fb211e716",
     "runtime_code_bytes": 8932
   }
 }

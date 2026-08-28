@@ -115,6 +115,12 @@ contract GasBench is Test, PoRWBenchFixture {
     function test_exact_fraud_proof_calldata_and_total_gas() public view {
         bytes memory callData = fraudProofCalldata();
 
+        // Independent lock for scripts/canonical-benchmark.json. A successful
+        // transaction with any other calldata or verifier runtime is not the
+        // canonical Fraud benchmark.
+        assertEq(sha256(callData), 0x9922c1eb76e5b34830f97ccb2ae109f58ccf14771f3f95fa14f1505f12dd35bb);
+        assertEq(sha256(address(v).code), 0x5f71922f25b2ab6d7e0e7dc808d4895c923d6cd159165bf47cff5b7fb211e716);
+
         // 13 ABI head words, plus one length word for each dynamic value and
         // their padded bodies. The leading four bytes are the selector.
         uint256 expectedLength =

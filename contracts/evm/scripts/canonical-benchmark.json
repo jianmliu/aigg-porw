@@ -1,0 +1,10 @@
+{
+  "calldata_bytes": 6084,
+  "calldata_sha256": "9922c1eb76e5b34830f97ccb2ae109f58ccf14771f3f95fa14f1505f12dd35bb",
+  "canonical_vector_sha256": "fb321155cfb731e2506df13c8c741d97647875998cd825212c6494a7292e00e7",
+  "expected_verdict": "Fraud",
+  "runtime_bytecode_sha256": "5f71922f25b2ab6d7e0e7dc808d4895c923d6cd159165bf47cff5b7fb211e716",
+  "runtime_code_bytes": 8932,
+  "schema": "aigg.porw.anvil-canonical.v1",
+  "selector": "0xb0fac614"
+}

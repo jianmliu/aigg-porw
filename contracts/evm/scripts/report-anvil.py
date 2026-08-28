@@ -36,6 +36,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vector", required=True, type=Path)
     parser.add_argument("--canonical-vector-sha256", required=True)
     parser.add_argument("--runtime-code", required=True, type=Path)
+    parser.add_argument("--expectations", required=True, type=Path)
+    parser.add_argument("--source-manifest", required=True, type=Path)
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     for tool in ("forge", "cast", "anvil"):
@@ -133,12 +135,58 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     broadcast = load_json(args.broadcast, "broadcast artifact")
     artifact = load_json(args.artifact, "contract artifact")
     block = load_json(args.block, "block artifact")
+    expectations = load_json(args.expectations, "canonical expectations")
+    source_manifest = load_json(args.source_manifest, "source manifest")
+
+    if expectations.get("schema") != "aigg.porw.anvil-canonical.v1":
+        raise EvidenceError("unexpected canonical expectations schema")
+    if expectations.get("selector") != "0x" + SELECTOR or expectations.get("expected_verdict") != "Fraud":
+        raise EvidenceError("canonical expectations do not bind the Fraud entry point")
+    expected_calldata_bytes = parse_quantity(expectations.get("calldata_bytes"), "expected calldata bytes")
+    expected_calldata_sha = expectations.get("calldata_sha256")
+    expected_runtime_bytes = parse_quantity(expectations.get("runtime_code_bytes"), "expected runtime bytes")
+    expected_runtime_sha = expectations.get("runtime_bytecode_sha256")
+    if not isinstance(expected_calldata_sha, str) or re.fullmatch(r"[0-9a-f]{64}", expected_calldata_sha) is None:
+        raise EvidenceError("invalid expected calldata SHA-256")
+    if not isinstance(expected_runtime_sha, str) or re.fullmatch(r"[0-9a-f]{64}", expected_runtime_sha) is None:
+        raise EvidenceError("invalid expected runtime SHA-256")
+
+    if source_manifest.get("schema") != "aigg.porw.source-manifest.v1":
+        raise EvidenceError("unexpected source manifest schema")
+    git_base_commit = source_manifest.get("git_base_commit")
+    if not isinstance(git_base_commit, str) or COMMIT_RE.fullmatch(git_base_commit) is None:
+        raise EvidenceError("invalid source-manifest Git base commit")
+    if source_manifest.get("relevant_input_worktree_dirty") is not False:
+        raise EvidenceError("source manifest reports dirty relevant inputs")
+    source_entries = source_manifest.get("entries")
+    if not isinstance(source_entries, list) or not source_entries:
+        raise EvidenceError("source manifest has no entries")
+    source_paths: list[str] = []
+    for entry in source_entries:
+        if not isinstance(entry, dict):
+            raise EvidenceError("invalid source manifest entry")
+        path = entry.get("path")
+        digest = entry.get("sha256")
+        if (
+            not isinstance(path, str)
+            or not path
+            or path.startswith("/")
+            or ".." in Path(path).parts
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            raise EvidenceError("invalid source manifest entry")
+        source_paths.append(path)
+    if source_paths != sorted(set(source_paths)):
+        raise EvidenceError("source manifest paths must be unique and sorted")
 
     if args.vector.is_symlink() or not args.vector.is_file():
         raise EvidenceError("canonical vector must be a regular non-symlink file")
     vector_sha = hashlib.sha256(args.vector.read_bytes()).hexdigest()
     if vector_sha != args.canonical_vector_sha256.lower():
         raise EvidenceError("canonical vector SHA-256 mismatch")
+    if expectations.get("canonical_vector_sha256") != vector_sha:
+        raise EvidenceError("canonical expectations bind a different conformance vector")
 
     chain_id = parse_quantity(broadcast.get("chain"), "broadcast chain")
     if chain_id != EXPECTED_CHAIN_ID:
@@ -185,6 +233,9 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         raise EvidenceError(f"expected exactly one verifier selector match, found {len(calls)}")
 
     call, calldata = calls[0]
+    calldata_sha = hashlib.sha256(calldata).hexdigest()
+    if len(calldata) != expected_calldata_bytes or calldata_sha != expected_calldata_sha:
+        raise EvidenceError("verifier call does not match canonical Fraud calldata")
     call_hash = require_hash(call.get("hash"), "call transaction hash")
     call_receipt = receipt_for(receipts, call_hash, "call")
     status = parse_quantity(call_receipt.get("status"), "call receipt status")
@@ -228,6 +279,9 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         raise EvidenceError(f"invalid on-chain runtime code: {exc}") from exc
     if runtime != artifact_runtime:
         raise EvidenceError("on-chain runtime code differs from the pinned compiler artifact")
+    runtime_sha = hashlib.sha256(runtime).hexdigest()
+    if len(runtime) != expected_runtime_bytes or runtime_sha != expected_runtime_sha:
+        raise EvidenceError("verifier runtime code does not match canonical expectations")
     metadata = artifact.get("metadata")
     if not isinstance(metadata, dict):
         raise EvidenceError("contract metadata is missing")
@@ -251,7 +305,13 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "block_timestamp": block_timestamp,
         "call": {
             "block_number": call_block,
-            "calldata": {"bytes": len(calldata), "nonzero_bytes": nonzero_bytes, "zero_bytes": zero_bytes},
+            "calldata": {
+                "bytes": len(calldata),
+                "nonzero_bytes": nonzero_bytes,
+                "sha256": calldata_sha,
+                "zero_bytes": zero_bytes,
+            },
+            "expected_verdict": "Fraud",
             "execution_plus_memory_gas": execution_plus_memory,
             "intrinsic_london_gas": intrinsic,
             "receipt_gas_used": receipt_gas,
@@ -260,6 +320,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "transaction_hash": call_hash,
         },
         "canonical_vector_sha256": vector_sha,
+        "canonical_expectations_sha256": hashlib.sha256(args.expectations.read_bytes()).hexdigest(),
         "chain_id": chain_id,
         "classification": "proof_math_only",
         "environment": {
@@ -271,11 +332,18 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "solc": EXPECTED_SOLC,
             "via_ir": True,
         },
-        "schema": "aigg.porw.anvil-benchmark.v1",
+        "schema": "aigg.porw.anvil-benchmark.v2",
+        "source_identity": {
+            "entries": source_entries,
+            "git_base_commit": git_base_commit,
+            "manifest_sha256": hashlib.sha256(args.source_manifest.read_bytes()).hexdigest(),
+            "relevant_input_worktree_dirty": False,
+        },
         "verifier": {
             "address": verifier_address,
             "creation_transaction_hash": creation_hash,
             "runtime_code_bytes": len(runtime),
+            "runtime_bytecode_sha256": runtime_sha,
         },
     }
 
