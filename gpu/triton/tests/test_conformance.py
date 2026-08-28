@@ -124,7 +124,7 @@ def _merkle_proof(leaves: list[bytes], index: int) -> list[bytes]:
 def _merkle_verify_counted(
     root: bytes, leaf: bytes, index: int, leaf_count: int, proof: list[bytes]
 ) -> bool:
-    if leaf_count == 0 or index >= leaf_count:
+    if leaf_count <= 0 or index < 0 or index >= leaf_count:
         return False
     accumulator = leaf
     width = leaf_count
@@ -299,6 +299,16 @@ def test_weights_leaves_and_root_match_locked_tree():
     assert _hex(_merkle_root(leaves)) == vector["weights_tree"]["root"]
 
 
+def test_counted_merkle_rejects_negative_index_and_nonpositive_leaf_count():
+    vector = _vector()
+    fixture = vector["tampered_commitment_scenario"]
+    leaves = [_unhex(value) for value in fixture["partials_leaves"]]
+    root = _unhex(fixture["partials_root"])
+    assert not _merkle_verify_counted(root, leaves[1], -1, 2, [leaves[0]])
+    assert not _merkle_verify_counted(root, leaves[0], 0, 0, [])
+    assert not _merkle_verify_counted(root, leaves[0], 0, -1, [])
+
+
 def test_partials_tree_committed_opening_and_interior_non_inclusion_match():
     vector = _vector()
     fixture = vector["tampered_commitment_scenario"]
@@ -359,6 +369,8 @@ def test_partials_tree_committed_opening_and_interior_non_inclusion_match():
         "right_tile_idx",
         "nonadjacent_positions",
         "out_of_range_position",
+        "negative_left_index",
+        "negative_right_index",
         "failed_bracketing",
     ],
 )
@@ -379,6 +391,10 @@ def test_interior_non_inclusion_rejects_tampered_witness_fields(mutation):
         right["index"] = left["index"]
     elif mutation == "out_of_range_position":
         right["index"] += 1
+    elif mutation == "negative_left_index":
+        left["index"] = -1
+    elif mutation == "negative_right_index":
+        right["index"] = -1
     elif mutation == "failed_bracketing":
         challenged_tile = left["tile_idx"]
 
@@ -398,7 +414,7 @@ def test_interior_non_inclusion_rejects_tampered_witness_fields(mutation):
 
 @pytest.mark.parametrize(
     "mutation",
-    ["tile_idx", "s_tile", "leaf_index", "proof"],
+    ["tile_idx", "s_tile", "leaf_index", "negative_leaf_index", "proof"],
 )
 def test_committed_opening_rejects_tampered_witness_fields(mutation):
     vector = _vector()
@@ -414,6 +430,8 @@ def test_committed_opening_rejects_tampered_witness_fields(mutation):
         sketch ^= 1
     elif mutation == "leaf_index":
         leaf_index -= 1
+    elif mutation == "negative_leaf_index":
+        leaf_index = -1
     elif mutation == "proof":
         proof[0] = bytes([proof[0][0] ^ 1]) + proof[0][1:]
 
@@ -470,6 +488,7 @@ def test_fraud_and_no_fraud_algebraic_verdicts():
     [
         "claimed_s_tile",
         "partials_index",
+        "negative_partials_index",
         "partials_proof",
         "tile_idx",
         "tile_bytes",
@@ -499,6 +518,8 @@ def test_fraud_verdict_rejects_tampered_cryptographic_witness_fields(mutation):
         inputs["claimed_sketch"] ^= 1
     elif mutation == "partials_index":
         inputs["partials_index"] -= 1
+    elif mutation == "negative_partials_index":
+        inputs["partials_index"] = -1
     elif mutation == "partials_proof":
         proof = inputs["partials_proof"][0]
         inputs["partials_proof"][0] = bytes([proof[0] ^ 1]) + proof[1:]
