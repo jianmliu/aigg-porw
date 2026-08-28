@@ -5,13 +5,23 @@ license = "0BSD"
 version = "0.1.0"
 authors = ["Jianming Liu <liujm06@gmail.com>"]
 edition.workspace = true
+repository = "https://github.com/jianmliu/aigg-porw"
+readme = "README.md"
 include = [
     "/src",
+    "/tests",
     "/Cargo.toml",
+    "/LICENSE-0BSD",
+    "/README.md",
 ]
 
 [lib]
 bench = false
+
+[[test]]
+name = "spec_lock"
+path = "tests/spec_lock.rs"
+required-features = ["repository-conformance"]
 
 [dependencies]
 blake3.workspace = true
@@ -30,3 +40,4 @@ std = [
     "scale-info?/std",
 ]
 scale = ["dep:parity-scale-codec", "dep:scale-info"]
+repository-conformance = []

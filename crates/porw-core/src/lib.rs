@@ -176,7 +176,11 @@ pub fn merkle_proof(leaves: &[Hash32], mut index: usize) -> Vec<Hash32> {
     proof
 }
 
-/// Verify an inclusion proof produced by [`merkle_proof`].
+/// Verify Merkle hashing without a leaf-count commitment.
+///
+/// This low-level helper cannot reject ambiguous tree shapes, out-of-range
+/// indices, or non-canonical duplicate-last proofs. Security entrypoints must
+/// use [`merkle_verify_counted`] with an authenticated leaf count.
 pub fn merkle_verify(root: &Hash32, leaf: &Hash32, mut index: usize, proof: &[Hash32]) -> bool {
     let mut acc = *leaf;
     for sibling in proof {
@@ -188,6 +192,49 @@ pub fn merkle_verify(root: &Hash32, leaf: &Hash32, mut index: usize, proof: &[Ha
         index /= 2;
     }
     acc == *root
+}
+
+/// Verify an inclusion proof against an exact duplicate-last tree shape.
+///
+/// The verifier consumes exactly one sibling for each level of `leaf_count`,
+/// rejects out-of-range indices and proof-length drift, and requires the
+/// canonical self-sibling at every duplicate-last level.
+pub fn merkle_verify_counted(
+    root: &Hash32,
+    leaf: &Hash32,
+    mut index: u64,
+    leaf_count: u64,
+    proof: &[Hash32],
+) -> bool {
+    if leaf_count == 0 || index >= leaf_count {
+        return false;
+    }
+
+    let mut acc = *leaf;
+    let mut width = leaf_count;
+    let mut proof_index = 0usize;
+    while width > 1 {
+        let Some(sibling) = proof.get(proof_index) else {
+            return false;
+        };
+        if index % 2 == 0 {
+            if index + 1 == width {
+                if sibling != &acc {
+                    return false;
+                }
+                acc = merkle_parent(&acc, &acc);
+            } else {
+                acc = merkle_parent(&acc, sibling);
+            }
+        } else {
+            acc = merkle_parent(sibling, &acc);
+        }
+        index /= 2;
+        width = width.div_ceil(2);
+        proof_index += 1;
+    }
+
+    proof_index == proof.len() && acc == *root
 }
 
 // ---------------------------------------------------------------------------
@@ -418,25 +465,35 @@ pub enum FraudVerdict {
 /// Verify a tile fraud proof against a solution's commitments.
 ///
 /// The verifier derives the per-identity slot seed from `global_challenge` and
-/// the solution's adapter-defined `device_id`.
+/// the solution's adapter-defined `device_id`. `model_root` must equal
+/// `solution.model_id`; the adapter must authenticate `model_n_tiles`, which
+/// defines the exact shape of that weights tree. The solution's aligned,
+/// nonzero `coverage_bytes` defines the exact shape of the partials tree.
 pub fn verify_tile_fraud_proof(
     solution: &PorwSolution,
     global_challenge: &[u8; 32],
     model_root: &Hash32,
+    model_n_tiles: u64,
     proof: &TileFraudProof,
 ) -> FraudVerdict {
-    if proof.tile_bytes.len() != TILE_BYTES {
+    if model_root != &solution.model_id
+        || proof.tile_bytes.len() != TILE_BYTES
+        || solution.coverage_bytes == 0
+        || solution.coverage_bytes % TILE_BYTES as u64 != 0
+    {
         return FraudVerdict::Invalid;
     }
+    let coverage_n_tiles = solution.coverage_bytes / TILE_BYTES as u64;
     // 1. The claimed per-tile value must be committed under partials_root.
     // The leaf position is the coverage-order index the reporter supplies;
     // the leaf hash binds tile_idx, so the position cannot lie about which
     // tile the value was committed for.
     let claimed_leaf = partials_leaf(proof.tile_idx, proof.claimed_s_tile);
-    if !merkle_verify(
+    if !merkle_verify_counted(
         &solution.partials_root,
         &claimed_leaf,
-        proof.partials_index as usize,
+        proof.partials_index,
+        coverage_n_tiles,
         &proof.partials_proof,
     ) {
         return FraudVerdict::Invalid;
@@ -448,10 +505,11 @@ pub fn verify_tile_fraud_proof(
         .try_into()
         .expect("length checked above; qed");
     let weights_leaf_hash = weights_leaf(proof.tile_idx, tile);
-    if !merkle_verify(
+    if !merkle_verify_counted(
         model_root,
         &weights_leaf_hash,
-        proof.tile_idx as usize,
+        proof.tile_idx,
+        model_n_tiles,
         &proof.weights_proof,
     ) {
         return FraudVerdict::Invalid;
@@ -499,13 +557,13 @@ pub struct LeafWitness {
 
 impl LeafWitness {
     fn verify(&self, partials_root: &Hash32, n_leaves: u64) -> bool {
-        self.index < n_leaves
-            && merkle_verify(
-                partials_root,
-                &partials_leaf(self.tile_idx, self.s_tile),
-                self.index as usize,
-                &self.proof,
-            )
+        merkle_verify_counted(
+            partials_root,
+            &partials_leaf(self.tile_idx, self.s_tile),
+            self.index,
+            n_leaves,
+            &self.proof,
+        )
     }
 }
 
@@ -556,7 +614,7 @@ pub fn verify_opening_response(
             match (left, right) {
                 // Bracketed by two adjacent committed leaves.
                 (Some(l), Some(r)) => {
-                    let adjacent = l.index + 1 == r.index;
+                    let adjacent = l.index.checked_add(1) == Some(r.index);
                     let brackets = l.tile_idx < challenged_tile && challenged_tile < r.tile_idx;
                     if adjacent
                         && brackets
@@ -570,7 +628,7 @@ pub fn verify_opening_response(
                 }
                 // Beyond the last committed leaf.
                 (Some(l), None) => {
-                    if l.index + 1 == n_leaves
+                    if l.index.checked_add(1) == Some(n_leaves)
                         && l.tile_idx < challenged_tile
                         && l.verify(partials_root, n_leaves)
                     {

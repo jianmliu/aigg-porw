@@ -28,8 +28,8 @@ specification, the specification is authoritative.
 
 ## Imported components
 
-- [`crates/porw-core`](crates/porw-core/) — proof mathematics, reference logic,
-  and conformance vectors.
+- [`crates/porw-core`](crates/porw-core/) — proof mathematics and reference
+  logic. The read-only conformance cache is under [`spec-cache`](spec-cache/).
 - [`gpu/triton`](gpu/triton/) — Triton GPU implementation and benchmarks.
 - [`contracts/evm`](contracts/evm/) — EVM verifier, conformance tests, and gas
   benchmarks.

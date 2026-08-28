@@ -1,19 +1,18 @@
-"""PoRW sketch — canonical specification and numpy reference implementation.
+"""PoRW sketch — research implementation reference in NumPy.
 
-Spec v2 (u32-optimized, PoC parameters):
+Normative authority lives in the tagged private aigg-spec release. This module
+is an executable implementation reference, not the canonical specification.
 
-- The registered weight buffer is a byte array (the bytes as stored in HBM:
+Scheme v2 implementation (u32-optimized, PoC parameters):
+
+- The input weight buffer is a byte array (the bytes as stored in HBM:
   fp16/bf16/int8/fp4 — the sketch is over stored bytes, not decoded values).
-- Canonical word: **32-bit** little-endian word ``w_j`` (index j over the
-  buffer).  v1 used 16-bit words; 32-bit halves the PRF invocations with no
-  security loss (forgery granularity stays word-level).
-- Canonical tile: TILE_BYTES = 4096 bytes = TILE_WORDS = 1024 words.
-- Per-slot randomness: ``slot_seed`` (u32 in the PoC; production: u64 derived
-  from PoT global challenge + device_id).
+- Scheme word: **32-bit** little-endian word ``w_j`` (index j over the buffer).
+- Scheme tile: TILE_BYTES = 4096 bytes = TILE_WORDS = 1024 words.
+- Per-slot input: ``slot_seed`` (u32). Its derivation and identity binding are
+  deployment-adapter responsibilities.
 
-Coefficients (the crypto-critical part — see docs/porw-p1-feasibility.md §3
-for why per-WORD slot-fresh coefficients are mandatory; per-tile constants
-are compressible to 4 bytes/tile and completely break the scheme):
+Coefficients and linear sketch arithmetic:
 
     r_tile     = fmix32(fmix32(slot_seed ^ tile_idx))
     c_j        = fmix32(r_tile + (j_in_tile * GOLDEN32)) | 1  # per word, odd
@@ -25,10 +24,16 @@ so any kernel decomposition (any block shape, any launch order, atomic or
 idempotent accumulation) yields the same value as long as every covered word
 contributes exactly once per slot.
 
-All arithmetic is integer and exact — independent of GPU FP behavior.
-Forgery probability per tile per slot is ~2^-32, amplified across
-tiles/slots by fraud-proof cross-checks; a 64-bit variant is a
-straightforward parameter change.
+All arithmetic is integer and exact — independent of GPU FP behavior. Odd
+coefficients prevent one word's MSB delta from disappearing on its own, but do
+not make this linear sketch collision resistant. For every slot seed and tile,
+two word-MSB deltas cancel deterministically because
+``2^31 * (c_p + c_q) = 0 mod 2^32`` for odd ``c_p`` and ``c_q``.
+
+The sketch is an algebraic consistency check. It does not prove byte equality,
+residency, or inference execution. Cryptographic Merkle openings separately
+authenticate sampled bytes, subject to deployment admission and challenge
+assumptions.
 """
 
 import numpy as np
@@ -65,9 +70,8 @@ def tile_coeffs(slot_seed: int, tile_idx: np.ndarray | int) -> np.ndarray:
     tile_idx = np.asarray(tile_idx, dtype=np.uint64)
     r_tile = fmix32(fmix32((slot_seed & M32) ^ tile_idx))
     j = np.arange(TILE_WORDS, dtype=np.uint64)
-    # ``| 1``: odd multipliers are bijective mod 2^32, so every bit of the
-    # word (including the MSB) is bound — an even coefficient would let a
-    # bit-31 flip vanish (c * 2^31 mod 2^32 == 0 for even c).
+    # ``| 1`` prevents a single word's bit-31 delta from vanishing. It does
+    # not prevent deterministic cancellation between two word-MSB deltas.
     return fmix32(r_tile[..., None] + (j * GOLDEN32 & M32)) | 1
 
 

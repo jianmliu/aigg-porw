@@ -4,6 +4,10 @@
 //! wrapping u64 arithmetic, 4 tiles.
 
 use super::*;
+#[cfg(feature = "scale")]
+use alloc::vec;
+#[cfg(feature = "scale")]
+use parity_scale_codec::{Decode, Encode};
 
 const N_TILES: usize = 4;
 
@@ -135,6 +139,69 @@ fn merkle_proofs_roundtrip() {
 }
 
 #[test]
+fn counted_merkle_verification_accepts_complete_three_and_five_leaf_trees() {
+    for leaf_count in [3usize, 5] {
+        let leaves: Vec<Hash32> = (0..leaf_count)
+            .map(|i| *blake3::hash(&(i as u64).to_le_bytes()).as_bytes())
+            .collect();
+        let root = merkle_root(&leaves);
+        for (index, leaf) in leaves.iter().enumerate() {
+            assert!(merkle_verify_counted(
+                &root,
+                leaf,
+                index as u64,
+                leaf_count as u64,
+                &merkle_proof(&leaves, index),
+            ));
+        }
+        assert!(!merkle_verify_counted(
+            &root,
+            &leaves[0],
+            leaf_count as u64,
+            leaf_count as u64,
+            &merkle_proof(&leaves, 0),
+        ));
+    }
+}
+
+#[test]
+fn counted_merkle_verification_rejects_invalid_counts_and_proof_lengths() {
+    let leaves: Vec<Hash32> = (0..3u64)
+        .map(|i| *blake3::hash(&i.to_le_bytes()).as_bytes())
+        .collect();
+    let root = merkle_root(&leaves);
+    let proof = merkle_proof(&leaves, 1);
+
+    assert!(!merkle_verify_counted(&root, &leaves[1], 0, 0, &proof));
+    assert!(!merkle_verify_counted(&root, &leaves[1], 3, 3, &proof));
+
+    let mut missing = proof.clone();
+    missing.pop();
+    assert!(!merkle_verify_counted(&root, &leaves[1], 1, 3, &missing));
+
+    let mut extra = proof;
+    extra.push([0u8; 32]);
+    assert!(!merkle_verify_counted(&root, &leaves[1], 1, 3, &extra));
+}
+
+#[test]
+fn counted_merkle_verification_rejects_wrong_duplicate_last_siblings() {
+    let leaves: Vec<Hash32> = (0..5u64)
+        .map(|i| *blake3::hash(&i.to_le_bytes()).as_bytes())
+        .collect();
+    let root = merkle_root(&leaves);
+    let mut proof = merkle_proof(&leaves, 4);
+    assert!(merkle_verify_counted(&root, &leaves[4], 4, 5, &proof));
+
+    proof[0][0] ^= 1;
+    assert!(!merkle_verify_counted(&root, &leaves[4], 4, 5, &proof));
+
+    let mut proof = merkle_proof(&leaves, 4);
+    proof[1][0] ^= 1;
+    assert!(!merkle_verify_counted(&root, &leaves[4], 4, 5, &proof));
+}
+
+#[test]
 fn envelope_and_tickets() {
     // 70 GB coverage swept 3.2x against a 240 GB/slot envelope: allowed.
     let cov = 70_u64 << 30;
@@ -223,7 +290,7 @@ fn fraud_proof_honest_solution_shows_no_fraud() {
     let (solution, challenge, model_root, proofs) = build_solution_and_proofs(None);
     for proof in &proofs {
         assert_eq!(
-            verify_tile_fraud_proof(&solution, &challenge, &model_root, proof),
+            verify_tile_fraud_proof(&solution, &challenge, &model_root, N_TILES as u64, proof),
             FraudVerdict::NoFraud
         );
     }
@@ -233,12 +300,24 @@ fn fraud_proof_honest_solution_shows_no_fraud() {
 fn fraud_proof_catches_tampered_commitment() {
     let (solution, challenge, model_root, proofs) = build_solution_and_proofs(Some(2));
     assert_eq!(
-        verify_tile_fraud_proof(&solution, &challenge, &model_root, &proofs[2]),
+        verify_tile_fraud_proof(
+            &solution,
+            &challenge,
+            &model_root,
+            N_TILES as u64,
+            &proofs[2],
+        ),
         FraudVerdict::Fraud
     );
     // Untampered tiles remain clean.
     assert_eq!(
-        verify_tile_fraud_proof(&solution, &challenge, &model_root, &proofs[0]),
+        verify_tile_fraud_proof(
+            &solution,
+            &challenge,
+            &model_root,
+            N_TILES as u64,
+            &proofs[0],
+        ),
         FraudVerdict::NoFraud
     );
 }
@@ -249,19 +328,89 @@ fn fraud_proof_rejects_malformed_evidence() {
     // Tile bytes that do not authenticate under R_W.
     proofs[1].tile_bytes[0] ^= 1;
     assert_eq!(
-        verify_tile_fraud_proof(&solution, &challenge, &model_root, &proofs[1]),
+        verify_tile_fraud_proof(
+            &solution,
+            &challenge,
+            &model_root,
+            N_TILES as u64,
+            &proofs[1],
+        ),
         FraudVerdict::Invalid
     );
     // Wrong length.
     proofs[0].tile_bytes.pop();
     assert_eq!(
-        verify_tile_fraud_proof(&solution, &challenge, &model_root, &proofs[0]),
+        verify_tile_fraud_proof(
+            &solution,
+            &challenge,
+            &model_root,
+            N_TILES as u64,
+            &proofs[0],
+        ),
         FraudVerdict::Invalid
     );
     // Broken partials path.
     proofs[3].partials_proof[0][0] ^= 1;
     assert_eq!(
-        verify_tile_fraud_proof(&solution, &challenge, &model_root, &proofs[3]),
+        verify_tile_fraud_proof(
+            &solution,
+            &challenge,
+            &model_root,
+            N_TILES as u64,
+            &proofs[3],
+        ),
+        FraudVerdict::Invalid
+    );
+}
+
+#[test]
+fn fraud_proof_rejects_unbound_or_invalid_tree_context() {
+    let (solution, challenge, model_root, proofs) = build_solution_and_proofs(None);
+
+    let mut single_leaf_proof = proofs[0].clone();
+    single_leaf_proof.weights_proof.clear();
+    let tile: &[u8; TILE_BYTES] = single_leaf_proof.tile_bytes.as_slice().try_into().unwrap();
+    let unbound_root = weights_leaf(0, tile);
+    assert_ne!(unbound_root, solution.model_id);
+    assert_eq!(
+        verify_tile_fraud_proof(&solution, &challenge, &unbound_root, 1, &single_leaf_proof),
+        FraudVerdict::Invalid
+    );
+
+    let mut zero_coverage = solution.clone();
+    zero_coverage.coverage_bytes = 0;
+    assert_eq!(
+        verify_tile_fraud_proof(
+            &zero_coverage,
+            &challenge,
+            &model_root,
+            N_TILES as u64,
+            &proofs[0],
+        ),
+        FraudVerdict::Invalid
+    );
+
+    let mut misaligned_coverage = solution.clone();
+    misaligned_coverage.coverage_bytes += 1;
+    assert_eq!(
+        verify_tile_fraud_proof(
+            &misaligned_coverage,
+            &challenge,
+            &model_root,
+            N_TILES as u64,
+            &proofs[0],
+        ),
+        FraudVerdict::Invalid
+    );
+
+    assert_eq!(
+        verify_tile_fraud_proof(
+            &solution,
+            &challenge,
+            &model_root,
+            (N_TILES - 1) as u64,
+            &proofs[N_TILES - 1],
+        ),
         FraudVerdict::Invalid
     );
 }
@@ -314,7 +463,7 @@ fn fraud_proof_works_for_non_contiguous_coverage() {
         weights_proof: merkle_proof(&weight_leaves, 3),
     };
     assert_eq!(
-        verify_tile_fraud_proof(&solution, &challenge, &model_root, &proof),
+        verify_tile_fraud_proof(&solution, &challenge, &model_root, N_TILES as u64, &proof),
         FraudVerdict::Fraud
     );
 
@@ -323,7 +472,7 @@ fn fraud_proof_works_for_non_contiguous_coverage() {
     let mut shifted = proof.clone();
     shifted.partials_index = 0;
     assert_eq!(
-        verify_tile_fraud_proof(&solution, &challenge, &model_root, &shifted),
+        verify_tile_fraud_proof(&solution, &challenge, &model_root, N_TILES as u64, &shifted),
         FraudVerdict::Invalid
     );
 }
@@ -515,6 +664,97 @@ fn opening_responses_prove_commitment_and_non_commitment() {
 }
 
 #[test]
+fn opening_response_enforces_counted_odd_tree_shape() {
+    let entries = [(1u64, 11u32), (3, 33), (5, 55)];
+    let leaves: Vec<Hash32> = entries
+        .iter()
+        .map(|&(tile_idx, s_tile)| partials_leaf(tile_idx, s_tile))
+        .collect();
+    let root = merkle_root(&leaves);
+    let witness = LeafWitness {
+        tile_idx: entries[2].0,
+        s_tile: entries[2].1,
+        index: 2,
+        proof: merkle_proof(&leaves, 2),
+    };
+    assert_eq!(
+        verify_opening_response(
+            &root,
+            entries.len() as u64,
+            entries[2].0,
+            &OpeningResponse::Committed(witness.clone()),
+        ),
+        Ok(Some(entries[2].1))
+    );
+
+    let mut wrong_duplicate = witness.clone();
+    wrong_duplicate.proof[0][0] ^= 1;
+    assert_eq!(
+        verify_opening_response(
+            &root,
+            entries.len() as u64,
+            entries[2].0,
+            &OpeningResponse::Committed(wrong_duplicate),
+        ),
+        Err(())
+    );
+
+    let mut extra = witness;
+    extra.proof.push([0u8; 32]);
+    assert_eq!(
+        verify_opening_response(
+            &root,
+            entries.len() as u64,
+            entries[2].0,
+            &OpeningResponse::Committed(extra),
+        ),
+        Err(())
+    );
+}
+
+#[test]
+fn opening_response_rejects_overflowing_witness_indices_without_panicking() {
+    let overflow = LeafWitness {
+        tile_idx: 0,
+        s_tile: 0,
+        index: u64::MAX,
+        proof: Vec::new(),
+    };
+    let right = LeafWitness {
+        tile_idx: 2,
+        s_tile: 0,
+        index: 0,
+        proof: Vec::new(),
+    };
+    let root = [0u8; 32];
+
+    assert_eq!(
+        verify_opening_response(
+            &root,
+            1,
+            1,
+            &OpeningResponse::NotCommitted {
+                left: Some(overflow.clone()),
+                right: Some(right),
+            },
+        ),
+        Err(())
+    );
+    assert_eq!(
+        verify_opening_response(
+            &root,
+            1,
+            1,
+            &OpeningResponse::NotCommitted {
+                left: Some(overflow),
+                right: None,
+            },
+        ),
+        Err(())
+    );
+}
+
+#[test]
 fn scheme_id_is_stable() {
     // Pinned by ExecutionProfile.porw_scheme_id / IPoRWVerifier.schemeId()
     // in aigg-spec; a semantic change to the sketch is a NEW id, so this
@@ -524,6 +764,154 @@ fn scheme_id_is_stable() {
         porw_scheme_digest(),
         *blake3::hash(PORW_SCHEME_ID.as_bytes()).as_bytes()
     );
+}
+
+// Frozen from the pre-extraction `subspace-proof-of-residency` implementation
+// at 8d8569004c2322aabe26cd59c12bbfe7dc4de1a1. These literals are deliberately
+// not generated by the implementation under test.
+#[cfg(feature = "scale")]
+fn scale_golden_bytes(hex: &str) -> Vec<u8> {
+    assert_eq!(hex.len() % 2, 0);
+    hex.as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            u8::from_str_radix(core::str::from_utf8(pair).expect("ASCII hex"), 16)
+                .expect("valid frozen hex")
+        })
+        .collect()
+}
+
+#[cfg(feature = "scale")]
+fn assert_scale_golden<T>(value: &T, frozen_hex: &str)
+where
+    T: Encode + Decode + PartialEq + core::fmt::Debug,
+{
+    let expected = scale_golden_bytes(frozen_hex);
+    assert_eq!(value.encode(), expected, "SCALE bytes drifted");
+
+    let mut input = expected.as_slice();
+    assert_eq!(T::decode(&mut input).expect("golden must decode"), *value);
+    assert!(input.is_empty(), "golden decoder must consume every byte");
+
+    let mut truncated = &expected[..expected.len() - 1];
+    assert!(
+        T::decode(&mut truncated).is_err(),
+        "truncated golden encoding must fail"
+    );
+}
+
+#[cfg(feature = "scale")]
+fn scale_golden_solution() -> PorwSolution {
+    PorwSolution {
+        device_id: [0x11; 32],
+        model_id: [0x22; 32],
+        sketch: 0x4433_2211,
+        partials_root: [0x33; 32],
+        coverage_bytes: 0x0102_0304_0506_0708,
+        m_t_millis: 0x1112_1314_1516_1718,
+        chunk_index: 0x2122_2324_2526_2728,
+        signature: [0x44; 64],
+    }
+}
+
+#[cfg(feature = "scale")]
+fn scale_golden_witness() -> LeafWitness {
+    LeafWitness {
+        tile_idx: 0x2122_2324_2526_2728,
+        s_tile: 0x5566_7788,
+        index: 0x3132_3334_3536_3738,
+        proof: vec![[0x88; 32], [0x99; 32]],
+    }
+}
+
+#[test]
+#[cfg(feature = "scale")]
+fn porw_solution_scale_bytes_match_pre_extraction_golden() {
+    assert_scale_golden(
+        &scale_golden_solution(),
+        concat!(
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            "11223344",
+            "3333333333333333333333333333333333333333333333333333333333333333",
+            "080706050403020118171615141312112827262524232221",
+            "4444444444444444444444444444444444444444444444444444444444444444",
+            "4444444444444444444444444444444444444444444444444444444444444444",
+        ),
+    );
+}
+
+#[test]
+#[cfg(feature = "scale")]
+fn tile_fraud_proof_scale_bytes_match_pre_extraction_golden() {
+    let value = TileFraudProof {
+        tile_idx: 0x0102_0304_0506_0708,
+        claimed_s_tile: 0x1122_3344,
+        partials_index: 0x1112_1314_1516_1718,
+        partials_proof: vec![[0x55; 32], [0x66; 32]],
+        tile_bytes: vec![0xaa, 0xbb, 0xcc, 0xdd],
+        weights_proof: vec![[0x77; 32]],
+    };
+    assert_scale_golden(
+        &value,
+        concat!(
+            "080706050403020144332211181716151413121108",
+            "5555555555555555555555555555555555555555555555555555555555555555",
+            "6666666666666666666666666666666666666666666666666666666666666666",
+            "10aabbccdd04",
+            "7777777777777777777777777777777777777777777777777777777777777777",
+        ),
+    );
+}
+
+#[test]
+#[cfg(feature = "scale")]
+fn leaf_witness_scale_bytes_match_pre_extraction_golden() {
+    assert_scale_golden(
+        &scale_golden_witness(),
+        concat!(
+            "282726252423222188776655383736353433323108",
+            "8888888888888888888888888888888888888888888888888888888888888888",
+            "9999999999999999999999999999999999999999999999999999999999999999",
+        ),
+    );
+}
+
+#[test]
+#[cfg(feature = "scale")]
+fn committed_opening_response_scale_bytes_match_pre_extraction_golden() {
+    let value = OpeningResponse::Committed(scale_golden_witness());
+    assert_scale_golden(
+        &value,
+        concat!(
+            "00",
+            "282726252423222188776655383736353433323108",
+            "8888888888888888888888888888888888888888888888888888888888888888",
+            "9999999999999999999999999999999999999999999999999999999999999999",
+        ),
+    );
+}
+
+#[test]
+#[cfg(feature = "scale")]
+fn not_committed_opening_response_scale_bytes_match_pre_extraction_golden() {
+    let value = OpeningResponse::NotCommitted {
+        left: Some(scale_golden_witness()),
+        right: None,
+    };
+    assert_scale_golden(
+        &value,
+        concat!(
+            "0101",
+            "282726252423222188776655383736353433323108",
+            "8888888888888888888888888888888888888888888888888888888888888888",
+            "9999999999999999999999999999999999999999999999999999999999999999",
+            "00",
+        ),
+    );
+
+    let mut invalid_variant = &[2u8][..];
+    assert!(OpeningResponse::decode(&mut invalid_variant).is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -536,6 +924,7 @@ fn scheme_id_is_stable() {
 // chain-neutral reference implementation and fails if it differs from the
 // read-only cached bytes. Cache promotion happens in aigg-spec, never here.
 
+#[cfg(feature = "repository-conformance")]
 fn hex_bytes(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(2 + bytes.len() * 2);
     s.push_str("0x");
@@ -545,6 +934,7 @@ fn hex_bytes(bytes: &[u8]) -> String {
     s
 }
 
+#[cfg(feature = "repository-conformance")]
 fn json_hash_list(hashes: &[Hash32], indent: &str) -> String {
     hashes
         .iter()
@@ -553,6 +943,7 @@ fn json_hash_list(hashes: &[Hash32], indent: &str) -> String {
         .join(",\n")
 }
 
+#[cfg(feature = "repository-conformance")]
 fn generate_conformance_fixture() -> String {
     let tiles = buffer_tiles(&reference_buffer());
     let buffer = reference_buffer();
@@ -723,6 +1114,7 @@ fn generate_conformance_fixture() -> String {
 }
 
 #[test]
+#[cfg(feature = "repository-conformance")]
 fn conformance_fixture_is_current() {
     let generated = generate_conformance_fixture();
     let path = concat!(

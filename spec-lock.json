@@ -11,7 +11,9 @@
     "scheme_id": "aigg:porw:sketch-tile:v2",
     "vector_set": "sketch-tile-v2.0.0",
     "cache_path": "spec-cache/conformance/porw/sketch-tile-v2.json",
-    "sha256": "fb321155cfb731e2506df13c8c741d97647875998cd825212c6494a7292e00e7"
+    "sha256": "fb321155cfb731e2506df13c8c741d97647875998cd825212c6494a7292e00e7",
+    "provenance_cache_path": "spec-cache/conformance/porw/sketch-tile-v2.provenance.json",
+    "provenance_sha256": "fbb301486fb47da28fbfdad96a062abb3ad88615e0e3a1044ff0e0dbd3d1fc50"
   },
   "implementation": {
     "classification": "research",

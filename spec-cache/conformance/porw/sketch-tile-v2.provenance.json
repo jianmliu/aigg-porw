@@ -1,0 +1,132 @@
+{
+  "artifact": "conformance/porw/sketch-tile-v2.json",
+  "classification": "canonical-research",
+  "classification_gate": {
+    "name": "canonical-research-semantic-vector",
+    "production_capable": false,
+    "deferred_cases_block": "production-capable classification, not canonical-research semantic/vector status",
+    "meaning": "Stabilizes normative wire semantics and vector bytes after reproducible generation and independent executable reproduction; does not establish soundness, residency, inference execution, contract safety, or production security."
+  },
+  "scheme_id": "aigg:porw:sketch-tile:v2",
+  "vector_set": "sketch-tile-v2.0.0",
+  "sha256": "fb321155cfb731e2506df13c8c741d97647875998cd825212c6494a7292e00e7",
+  "origin": {
+    "repository": "https://github.com/jianmliu/subspace",
+    "commit": "8d8569004c2322aabe26cd59c12bbfe7dc4de1a1",
+    "generator_introduced_by": "b77aceeb1e1c78f6c1968ae6c161f04cc6e88092",
+    "path": "crates/subspace-proof-of-residency/conformance/sketch-tile-v2.json",
+    "command": "UPDATE_CONFORMANCE=1 cargo test -p subspace-proof-of-residency conformance"
+  },
+  "promotion": {
+    "rust_generator": {
+      "working_directory": "/Users/jianmingliu/Projects/.aigg-migration-sources/subspace-vector-reproduction",
+      "command": "RUSTUP_HOME=/Users/jianmingliu/Projects/.aigg-tools/rustup CARGO_HOME=/Users/jianmingliu/Projects/.aigg-tools/cargo UPDATE_CONFORMANCE=1 /Users/jianmingliu/Projects/.aigg-tools/cargo/bin/cargo +nightly-2025-05-31 test -p subspace-proof-of-residency conformance",
+      "environment": {
+        "RUSTUP_HOME": "/Users/jianmingliu/Projects/.aigg-tools/rustup",
+        "CARGO_HOME": "/Users/jianmingliu/Projects/.aigg-tools/cargo",
+        "toolchain": "nightly-2025-05-31"
+      },
+      "tested_source_commit": "8d8569004c2322aabe26cd59c12bbfe7dc4de1a1",
+      "result": "pass",
+      "pass_count": 1,
+      "covered_fields": [
+        "complete serialized vector",
+        "byte identity with conformance/porw/sketch-tile-v2.json",
+        "vector SHA-256"
+      ],
+      "tool_versions": {
+        "rustc": "rustc 1.89.0-nightly (70b3f4666 2025-05-30); commit-hash 70b3f4666e24ce22fc32f5e357dbcf85d3254e63; host aarch64-apple-darwin; LLVM 20.1.5",
+        "cargo": "cargo 1.89.0-nightly (68db37499 2025-05-22)",
+        "rustup": "rustup 1.29.0 (28d1352db 2026-03-05)"
+      },
+      "promotion_document": "conformance/porw/sketch-tile-v2.promotion.md"
+    },
+    "python_reference_reproduction": {
+      "working_directory": "/Users/jianmingliu/Projects/.aigg-migration-sources/subspace-vector-reproduction/porw-poc",
+      "command": "PYTHONDONTWRITEBYTECODE=1 PORW_VECTOR=/Users/jianmingliu/Projects/aigg-spec/.worktrees/aigg-porw-extraction/conformance/porw/sketch-tile-v2.json /Users/jianmingliu/Projects/.aigg-tools/porw-python-312/bin/python -m pytest /Users/jianmingliu/Projects/aigg-spec/.worktrees/aigg-porw-extraction/conformance/porw/harnesses/sketch_tile_v2_reference.py -q",
+      "tested_source_commit": "8d8569004c2322aabe26cd59c12bbfe7dc4de1a1",
+      "result": "pass",
+      "pass_count": 3,
+      "harness": {
+        "path": "conformance/porw/harnesses/sketch_tile_v2_reference.py",
+        "sha256": "efc00419b69e714deece186d83ee5b3d9b26e792d6b3ce19d0763f55a81c4f04",
+        "status": "tracked_promotion_evidence_not_source_commit",
+        "authoritative_implementation": false,
+        "requirements_path": "conformance/porw/harnesses/requirements-sketch-tile-v2.txt",
+        "requirements_sha256": "75363a827f75b01348bb160e9e9014d449b818bf4c019d3433d09a37bc7d6e02"
+      },
+      "covered_fields": [
+        "coefficients.tile0_first4",
+        "coefficients.tile3_first4",
+        "all three sketches cases",
+        "reference_buffer.blake3",
+        "deterministic two-word MSB collision with distinct weights_leaf hashes"
+      ],
+      "tool_versions": {
+        "python": "CPython 3.12.13 (main, May 10 2026, 19:20:41) [Clang 22.1.3]",
+        "numpy": "2.0.2",
+        "blake3": "1.0.9",
+        "pytest": "8.4.2"
+      },
+      "promotion_document": "conformance/porw/sketch-tile-v2.promotion.md"
+    },
+    "solidity_reproduction": {
+      "working_directory": "/Users/jianmingliu/Projects/.aigg-migration-sources/subspace-vector-reproduction/porw-evm-bench",
+      "command": "forge test --use 0.8.33 --evm-version london --match-path test/Conformance.t.sol -vv",
+      "tested_source_commit": "8d8569004c2322aabe26cd59c12bbfe7dc4de1a1",
+      "result": "pass",
+      "pass_count": 13,
+      "covered_fields": [
+        "scheme digest and BLAKE3 vectors",
+        "reference buffer commitment",
+        "slot seed derivation",
+        "partials and weights commitments",
+        "audit beacon",
+        "sketch vectors",
+        "committed opening",
+        "interior non-inclusion",
+        "tampered tile bytes",
+        "tampered committed sketch"
+      ],
+      "tool_versions": {
+        "forge": "Forge 1.7.1; commit 4072e48705af9d93e3c0f6e29e93b5e9a40caed8; build 2026-05-08T07:54:31.470926000Z; dist profile",
+        "solc": "0.8.33+commit.64118f21.Darwin.appleclang",
+        "evm_version": "london"
+      },
+      "promotion_document": "conformance/porw/sketch-tile-v2.promotion.md"
+    }
+  },
+  "release_tags": {
+    "porw-sketch-tile-v2.0.0-private.1": {
+      "status": "superseded",
+      "target_commit": "81d5c2c0ecda6552403d593e49b3e9909b95c2d2",
+      "tag_object": "a73437d893b9bf3e53e98fed5fd3a6b71788365c",
+      "reason": "Evidence commands omitted required working-directory metadata; vector bytes and scheme semantics are unchanged.",
+      "superseded_by": "porw-sketch-tile-v2.0.0-private.4"
+    },
+    "porw-sketch-tile-v2.0.0-private.2": {
+      "status": "superseded",
+      "target_commit": "e3d81f8941e281f6c3929b7ffde7ca4d7eefbe14",
+      "tag_object": "3c8b3431b298325c4b5deb3ca6fde6ad53896611",
+      "reason": "Working-directory metadata was corrected, but status text still contradicted canonical-research classification and the Python harness remained embedded_in_promotion_document_not_source_commit without a portable setup recipe; vector bytes and scheme semantics are unchanged.",
+      "superseded_by": "porw-sketch-tile-v2.0.0-private.4"
+    },
+    "porw-sketch-tile-v2.0.0-private.3": {
+      "status": "superseded",
+      "target_commit": "c92ae524cfdc965970da034184daa1e9ce80d994",
+      "tag_object": "8f5ac99d0b658a95f34049bc8676c904b1372386",
+      "reason": "The portable recipe accepted any CPython 3.12 patch release while the recorded evidence used CPython 3.12.13; vector bytes and scheme semantics are unchanged.",
+      "superseded_by": "porw-sketch-tile-v2.0.0-private.4"
+    },
+    "porw-sketch-tile-v2.0.0-private.4": {
+      "status": "current",
+      "supersedes": [
+        "porw-sketch-tile-v2.0.0-private.1",
+        "porw-sketch-tile-v2.0.0-private.2",
+        "porw-sketch-tile-v2.0.0-private.3"
+      ],
+      "target": "the corrected canonical-research promotion commit containing this provenance, resolved by the annotated tag",
+      "note": "Exact Python-version preflight metadata correction only; vector bytes and scheme semantics are unchanged."
+    }
+  }
+}
