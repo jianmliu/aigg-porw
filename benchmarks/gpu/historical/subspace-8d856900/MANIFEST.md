@@ -24,7 +24,7 @@ the current checkout.
 - Reported maximum memory clock: `1512 MHz`
 - Native correctness result: `11 passed, 1 warning in 2.49s`
 
-| E | N | K | M | top-k | Weight size | Baseline | Fused | Overhead | Sweep |
+| E | N | K | M | top-k | Weight size | Wrapper baseline | Wrapper fused | Wrapper ratio | Wrapper sweep |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 8 | 1024 | 2048 | 4 | 2 | 0.03 GB | 0.230 ms | 0.248 ms | 8.03% | 370 GB/s |
 | 8 | 1024 | 2048 | 64 | 2 | 0.03 GB | 0.253 ms | 0.271 ms | 7.42% | 377 GB/s |
@@ -45,3 +45,12 @@ the current checkout.
 
 The throughput values above apply only to this historical native A100 run.
 CPU or Triton-interpreter correctness runs do not update throughput claims.
+
+The imported benchmark timed the complete public wrappers. Each baseline and
+fused callback therefore included GPU-to-CPU routing transfer, NumPy alignment
+and validation, fresh device-buffer allocation/transfers, and result D2H
+copies. Their reported ratio is historical **end-to-end wrapper timing**, not a
+device-side fused-kernel overhead measurement. The sweep callback likewise
+included wrapper preparation. These values must not be relabeled under the
+current prepared-device-launch benchmark semantics without a new native-GPU
+run.

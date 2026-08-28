@@ -1,14 +1,17 @@
-"""GPU benchmark harness for the P1 overhead measurement (run on a real GPU).
+"""Prepared device-launch benchmark for the P1 PoRW kernels.
 
 Measures, per (E, N, K, M, top_k) config:
-  1. fused MoE GEMM baseline (ENABLE_SKETCH=False) tokens/s
-  2. fused MoE GEMM + sketch (ENABLE_SKETCH=True) tokens/s  -> overhead %
-  3. standalone sweep kernel GB/s vs theoretical HBM bandwidth
+  1. prepared MoE device launch with ENABLE_SKETCH=False
+  2. the same prepared launch with ENABLE_SKETCH=True -> device overhead %
+  3. prepared standalone sweep device launch -> GB/s
 
-Target: fused overhead < 2% on decode-shaped workloads (small M, large E*N*K).
+Routing transfer/alignment/validation, device-buffer allocation, and result D2H
+copies happen outside every timed callback. This benchmark therefore does not
+report end-to-end public-wrapper latency.
+
 Note: this PoC kernel is correctness-first (fp32 tl.dot, native wrapping u32
 sketch math).  Before trusting absolute numbers, switch the dot to native
-fp16/bf16; relative overhead is what matters here.
+fp16/bf16. Native-GPU evidence must record the exact checkout and environment.
 """
 
 import time
@@ -16,7 +19,12 @@ import time
 import numpy as np
 import torch
 
-from porw_sketch.kernels import run_moe_gemm, run_sketch_sweep
+from porw_sketch.kernels import (
+    _launch_prepared_moe,
+    _launch_prepared_sweep,
+    prepare_moe_gemm,
+    prepare_sketch_sweep,
+)
 from porw_sketch.spec import TILE_BYTES
 
 KDIM = TILE_BYTES // 2  # 2048 fp16 elements per row == one 4 KiB tile
@@ -43,7 +51,8 @@ def bench(fn, iters=50, warmup=10):
 
 
 def main():
-    assert torch.cuda.is_available(), "run this on a GPU box"
+    if not torch.cuda.is_available():
+        raise RuntimeError("device-launch benchmark requires a CUDA GPU")
     dev = torch.device("cuda")
     rng = np.random.default_rng(0)
     for E, N, K, M, top_k, iters in CONFIGS:
@@ -53,18 +62,24 @@ def main():
             rng.integers(0, E, size=(M, top_k)).astype(np.int32)
         ).to(dev)
 
+        prepared_moe = prepare_moe_gemm(a, b, topk_ids, 1)
         t_base = bench(
-            lambda: run_moe_gemm(a, b, topk_ids, 1, enable_sketch=False),
+            lambda: _launch_prepared_moe(
+                prepared_moe, enable_sketch=False
+            ),
             iters=iters,
         )
         t_fused = bench(
-            lambda: run_moe_gemm(a, b, topk_ids, 1, enable_sketch=True),
+            lambda: _launch_prepared_moe(
+                prepared_moe, enable_sketch=True
+            ),
             iters=iters,
         )
 
         buf = b.contiguous().view(torch.uint8).flatten()
+        prepared_sweep = prepare_sketch_sweep(buf, 1)
         t_sweep = bench(
-            lambda: run_sketch_sweep(buf, 1, copy_to_host=False),
+            lambda: _launch_prepared_sweep(prepared_sweep),
             iters=iters,
         )
         gbps = buf.numel() / t_sweep / 1e9
@@ -72,9 +87,10 @@ def main():
         gb = E * N * K * 2 / 1e9
         print(
             f"E={E} N={N} K={K} M={M} topk={top_k} ({gb:.2f} GB): "
-            f"base {t_base * 1e3:.3f}ms  fused {t_fused * 1e3:.3f}ms  "
-            f"overhead {(t_fused / t_base - 1) * 100:.2f}%  "
-            f"sweep {gbps:.0f} GB/s"
+            f"device_launch_base {t_base * 1e3:.3f}ms  "
+            f"device_launch_fused {t_fused * 1e3:.3f}ms  "
+            f"device_launch_overhead {(t_fused / t_base - 1) * 100:.2f}%  "
+            f"device_launch_sweep {gbps:.0f} GB/s"
         )
 
 

@@ -19,6 +19,8 @@
   不导入 Rust、Solidity 或 Triton 结果。
 - `tests/test_kernel_validation.py` — fused/sweep host wrapper 的 fail-closed
   输入、routing、block 参数以及 `python -O` 回归测试。
+- `tests/test_benchmark_honesty.py` — 确保 timed callback 只执行预先准备好的
+  device launch，不重新引入 routing、allocation 或 D2H wrapper 开销。
 - `bench_gpu.py` — GPU 开销基准（需真实 GPU，测融合开销 % 与扫描 GB/s）。
 - `requirements-test.in`、两个平台 hash lock 与 `ENVIRONMENT.md` —
   CPython 3.12.13 的固定测试环境及平台限制。
@@ -30,7 +32,8 @@ gpu/triton/.venv/bin/python -m pytest gpu/triton/tests -q -rs
 TRITON_INTERPRET=1 gpu/triton/.venv/bin/python \
   -m pytest gpu/triton/tests/test_sketch.py \
   gpu/triton/tests/test_conformance.py \
-  gpu/triton/tests/test_kernel_validation.py -q -rs
+  gpu/triton/tests/test_kernel_validation.py \
+  gpu/triton/tests/test_benchmark_honesty.py -q -rs
 ```
 
 环境创建、固定版本及 GPU 基准命令见 [`ENVIRONMENT.md`](ENVIRONMENT.md)。
@@ -45,11 +48,15 @@ TRITON_INTERPRET=1 gpu/triton/.venv/bin/python \
   environment-limited skip，不是通过。
 - **历史 native GPU：**导入的 A100 80GB PCIe 原始结果与字段限制保存在
   [`benchmarks/gpu/historical/subspace-8d856900`](../../benchmarks/gpu/historical/subspace-8d856900/)
-  中；它不是当前 checkout 的复测。
+  中；它不是当前 checkout 的复测。该旧结果计入完整 wrapper 的 routing、
+  allocation 与 D2H 成本，只能作为历史 end-to-end wrapper timing，不能解释为
+  当前 prepared device-launch 的 fused kernel overhead。
 - **发布前门槛：**Task 9 Linux x86_64 CI 必须通过 Triton 解释器测试；native
   GPU 仍需使用当前脚本复测，新输出只写入 `benchmarks/gpu/generated/`。
   该脚本拒绝 dirty worktree，临时隔离 Triton cache，并为已创建的每个结果
-  记录最终 success/failed 状态；生成目录被 Git 忽略。
+  记录最终 success/failed 状态；生成目录被 Git 忽略。当前脚本把 routing、
+  validation、allocation 和 D2H 移到 timed callback 之外，并以
+  `device_launch_*` 字段明确标注测量范围。
 
 ## 纯参考测试已验证的性质
 

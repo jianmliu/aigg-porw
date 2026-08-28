@@ -1,10 +1,12 @@
 """Fail-closed host validation for the public Triton launch wrappers."""
 
 import ast
+import importlib
 import os
 import subprocess
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import numpy as np
 import pytest
@@ -23,6 +25,27 @@ from porw_sketch.validation import (
 
 KERNELS_PATH = Path(__file__).resolve().parents[1] / "porw_sketch" / "kernels.py"
 CANONICAL_K = TILE_BYTES // 2
+
+
+@pytest.fixture
+def kernel_module(monkeypatch):
+    """Import kernels with a minimal Triton stub when Darwin has no wheel."""
+    module_name = "porw_sketch.kernels"
+    existing = sys.modules.get(module_name)
+    if existing is not None:
+        return existing
+
+    fake_language = ModuleType("triton.language")
+    fake_language.constexpr = object()
+    fake_triton = ModuleType("triton")
+    fake_triton.jit = lambda function: function
+    fake_triton.cdiv = lambda value, divisor: (value + divisor - 1) // divisor
+    fake_triton.language = fake_language
+    monkeypatch.setitem(sys.modules, "triton", fake_triton)
+    monkeypatch.setitem(sys.modules, "triton.language", fake_language)
+    module = importlib.import_module(module_name)
+    monkeypatch.setitem(sys.modules, module_name, module)
+    return module
 
 
 def fused_inputs():
@@ -290,9 +313,22 @@ def test_public_runtime_wrappers_contain_no_assert_statements():
         node.name: node
         for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name in {"make_params", "run_moe_gemm", "run_sketch_sweep"}
+        and node.name
+        in {
+            "make_params",
+            "prepare_moe_gemm",
+            "prepare_sketch_sweep",
+            "run_moe_gemm",
+            "run_sketch_sweep",
+        }
     }
-    assert wrappers.keys() == {"make_params", "run_moe_gemm", "run_sketch_sweep"}
+    assert wrappers.keys() == {
+        "make_params",
+        "prepare_moe_gemm",
+        "prepare_sketch_sweep",
+        "run_moe_gemm",
+        "run_sketch_sweep",
+    }
     assert not [
         node
         for wrapper in wrappers.values()
@@ -321,3 +357,122 @@ raise SystemExit(9)
         [sys.executable, "-O", "-c", script], env=env, check=False
     )
     assert result.returncode == 0
+
+
+class RecordingKernel:
+    def __init__(self):
+        self.calls = []
+
+    def __getitem__(self, grid):
+        def launch(*args, **kwargs):
+            self.calls.append((grid, args, kwargs))
+
+        return launch
+
+
+def _unexpected_preflight(*args, **kwargs):
+    raise AssertionError("timed launch repeated preflight or host conversion")
+
+
+def test_prepared_moe_launch_reuses_buffers_without_host_work(
+    kernel_module, monkeypatch
+):
+    a, b, topk_ids = fused_inputs()
+    prepared = kernel_module.prepare_moe_gemm(a, b, topk_ids, 0)
+    output_ids = tuple(
+        id(tensor)
+        for tensor in (prepared.c, prepared.partials, prepared.coverage)
+    )
+    recording = RecordingKernel()
+    monkeypatch.setattr(kernel_module, "moe_gemm_sketch_kernel", recording)
+    for name in (
+        "validate_fused_inputs",
+        "validate_aligned_routing",
+        "make_params",
+        "_u32_np",
+    ):
+        monkeypatch.setattr(kernel_module, name, _unexpected_preflight)
+    for name in ("zeros", "empty", "tensor", "from_numpy", "arange"):
+        monkeypatch.setattr(kernel_module.torch, name, _unexpected_preflight)
+
+    with pytest.raises(TypeError, match="validated prepared"):
+        kernel_module._launch_prepared_moe(object(), enable_sketch=False)
+    with pytest.raises(TypeError, match="bool"):
+        kernel_module._launch_prepared_moe(prepared, enable_sketch=1)
+    kernel_module._launch_prepared_moe(prepared, enable_sketch=False)
+    kernel_module._launch_prepared_moe(prepared, enable_sketch=True)
+
+    assert len(recording.calls) == 2
+    assert recording.calls[0][2]["ENABLE_SKETCH"] is False
+    assert recording.calls[1][2]["ENABLE_SKETCH"] is True
+    assert output_ids == tuple(
+        id(tensor)
+        for tensor in (prepared.c, prepared.partials, prepared.coverage)
+    )
+
+
+def test_prepared_sweep_launch_reuses_output_without_host_work(
+    kernel_module, monkeypatch
+):
+    buffer = torch.zeros(TILE_BYTES * 2, dtype=torch.uint8)
+    prepared = kernel_module.prepare_sketch_sweep(buffer, 0)
+    output_id = id(prepared.out)
+    recording = RecordingKernel()
+    monkeypatch.setattr(kernel_module, "sketch_sweep_kernel", recording)
+    for name in ("validate_sweep_inputs", "make_params", "_u32_np"):
+        monkeypatch.setattr(kernel_module, name, _unexpected_preflight)
+    for name in ("zeros", "empty", "tensor", "from_numpy", "arange"):
+        monkeypatch.setattr(kernel_module.torch, name, _unexpected_preflight)
+
+    with pytest.raises(TypeError, match="validated prepared"):
+        kernel_module._launch_prepared_sweep(object())
+    kernel_module._launch_prepared_sweep(prepared)
+    kernel_module._launch_prepared_sweep(prepared)
+
+    assert len(recording.calls) == 2
+    assert id(prepared.out) == output_id
+
+
+def test_private_prepared_launchers_have_no_preflight_or_host_copy_calls():
+    tree = ast.parse(KERNELS_PATH.read_text(encoding="utf-8"))
+    launchers = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"_launch_prepared_moe", "_launch_prepared_sweep"}
+    }
+    assert launchers.keys() == {
+        "_launch_prepared_moe",
+        "_launch_prepared_sweep",
+    }
+    forbidden = {
+        "cpu",
+        "numpy",
+        "zeros",
+        "empty",
+        "tensor",
+        "from_numpy",
+        "arange",
+        "make_params",
+        "validate_fused_inputs",
+        "validate_aligned_routing",
+        "validate_sweep_inputs",
+        "moe_align",
+        "_u32_np",
+    }
+    calls = {
+        launcher_name: {
+            node.func.attr
+            if isinstance(node.func, ast.Attribute)
+            else node.func.id
+            for node in ast.walk(launcher)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, (ast.Attribute, ast.Name))
+        }
+        for launcher_name, launcher in launchers.items()
+    }
+    assert not {
+        launcher: sorted(names & forbidden)
+        for launcher, names in calls.items()
+        if names & forbidden
+    }

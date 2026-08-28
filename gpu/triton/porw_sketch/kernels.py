@@ -3,8 +3,8 @@
 Two kernels:
 
 - ``sketch_sweep_kernel`` — the standalone per-slot sweep, now the PRIMARY
-  strategy (S1-over-coverage per the A100 measurements): the agent derives
-  the coverage set from router telemetry and sweeps exactly those tiles.
+  strategy (S1-over-coverage): the agent derives the coverage set from router
+  telemetry and sweeps exactly those tiles.
   Native u32 arithmetic throughout.
 
 - ``moe_gemm_sketch_kernel`` — structural replica of vLLM's
@@ -31,6 +31,7 @@ protocol's "at least once per slot" semantics without atomics.
 """
 
 import os
+from dataclasses import dataclass
 
 import torch
 
@@ -242,11 +243,181 @@ def moe_gemm_sketch_kernel(
 # ---------------------------------------------------------------------------
 
 
+_PREPARED_CAPABILITY = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedMoeLaunch:
+    """Validated device state. Construct only through ``prepare_moe_gemm``."""
+
+    capability: object
+    a: torch.Tensor
+    b: torch.Tensor
+    b32: torch.Tensor
+    c: torch.Tensor
+    sorted_token_ids: torch.Tensor
+    expert_ids: torch.Tensor
+    num_post_padded: torch.Tensor
+    partials: torch.Tensor
+    coverage: torch.Tensor
+    params: torch.Tensor
+    grid: tuple[int]
+    n: int
+    k: int
+    em: int
+    num_valid_tokens: int
+    top_k: int
+    block_m: int
+    block_n: int
+    block_k: int
+    group_m: int
+
+    def __post_init__(self):
+        if self.capability is not _PREPARED_CAPABILITY:
+            raise TypeError("prepared MoE launches require validated capability")
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedSweepLaunch:
+    """Validated device state. Construct only through ``prepare_sketch_sweep``."""
+
+    capability: object
+    words: torch.Tensor
+    out: torch.Tensor
+    tile_ids: torch.Tensor
+    params: torch.Tensor
+    n_tiles: int
+    block: int
+
+    def __post_init__(self):
+        if self.capability is not _PREPARED_CAPABILITY:
+            raise TypeError("prepared sweep launches require validated capability")
+
+
 def _u32_np(t: torch.Tensor):
     """int32 tensor (u32 bit patterns) -> numpy uint32 array."""
     import numpy as np
 
     return t.cpu().numpy().view(np.uint32)
+
+
+def prepare_moe_gemm(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    topk_ids: torch.Tensor,
+    slot_seed: int,
+    *,
+    block_m: int = 16,
+    block_n: int = 64,
+    block_k: int = 64,
+    group_m: int = 1,
+) -> _PreparedMoeLaunch:
+    """Validate and allocate reusable state for one canonical MoE launch."""
+    from .reference import moe_align
+
+    m, experts, n, k, top_k = validate_fused_inputs(
+        a,
+        b,
+        topk_ids,
+        slot_seed,
+        True,
+        block_m,
+        block_n,
+        block_k,
+        group_m,
+    )
+    num_valid_tokens = m * top_k
+    routing_host = topk_ids.detach().cpu().numpy()
+    sorted_token_ids, expert_ids, num_post_padded = moe_align(
+        routing_host, experts, block_m
+    )
+    validate_aligned_routing(
+        sorted_token_ids,
+        expert_ids,
+        num_post_padded,
+        routing_host,
+        experts,
+        block_m,
+    )
+
+    device = a.device
+    sorted_token_ids_t = torch.from_numpy(sorted_token_ids).to(device)
+    expert_ids_t = torch.from_numpy(expert_ids).to(device)
+    num_post_padded_t = torch.tensor(
+        [num_post_padded], dtype=torch.int32, device=device
+    )
+    em = sorted_token_ids_t.numel()
+    c = torch.zeros((num_valid_tokens, n), dtype=torch.float16, device=device)
+    n_tiles = experts * n
+    partials = torch.zeros(n_tiles, dtype=torch.int32, device=device)
+    coverage = torch.zeros(n_tiles, dtype=torch.int8, device=device)
+    params = make_params(slot_seed, device)
+    grid = (triton.cdiv(em, block_m) * triton.cdiv(n, block_n),)
+    return _PreparedMoeLaunch(
+        _PREPARED_CAPABILITY,
+        a,
+        b,
+        b.view(torch.int32),
+        c,
+        sorted_token_ids_t,
+        expert_ids_t,
+        num_post_padded_t,
+        partials,
+        coverage,
+        params,
+        grid,
+        n,
+        k,
+        em,
+        num_valid_tokens,
+        top_k,
+        block_m,
+        block_n,
+        block_k,
+        group_m,
+    )
+
+
+def _launch_prepared_moe(
+    prepared: _PreparedMoeLaunch, *, enable_sketch: bool
+) -> None:
+    """Launch only; the capability proves all host preflight already ran."""
+    if (
+        not isinstance(prepared, _PreparedMoeLaunch)
+        or prepared.capability is not _PREPARED_CAPABILITY
+    ):
+        raise TypeError("expected a validated prepared MoE launch")
+    if not isinstance(enable_sketch, bool):
+        raise TypeError("enable_sketch must be a bool")
+    moe_gemm_sketch_kernel[prepared.grid](
+        prepared.a,
+        prepared.b,
+        prepared.b32,
+        prepared.c,
+        prepared.sorted_token_ids,
+        prepared.expert_ids,
+        prepared.num_post_padded,
+        prepared.partials,
+        prepared.coverage,
+        prepared.params,
+        prepared.n,
+        prepared.k,
+        prepared.em,
+        prepared.num_valid_tokens,
+        prepared.a.stride(0),
+        prepared.a.stride(1),
+        prepared.b.stride(0),
+        prepared.b.stride(2),
+        prepared.b.stride(1),
+        prepared.c.stride(0),
+        prepared.c.stride(1),
+        top_k=prepared.top_k,
+        BLOCK_SIZE_M=prepared.block_m,
+        BLOCK_SIZE_N=prepared.block_n,
+        BLOCK_SIZE_K=prepared.block_k,
+        GROUP_SIZE_M=prepared.group_m,
+        ENABLE_SKETCH=enable_sketch,
+    )
 
 
 def run_moe_gemm(
@@ -263,77 +434,73 @@ def run_moe_gemm(
 ):
     """Launch the fused kernel; returns (c [M*top_k, N], partials u32 np,
     coverage np)."""
-    from .reference import moe_align
-
-    M, E, N, K, top_k = validate_fused_inputs(
+    if not isinstance(enable_sketch, bool):
+        raise TypeError("enable_sketch must be a bool")
+    prepared = prepare_moe_gemm(
         a,
         b,
         topk_ids,
         slot_seed,
-        enable_sketch,
-        block_m,
-        block_n,
-        block_k,
-        group_m,
+        block_m=block_m,
+        block_n=block_n,
+        block_k=block_k,
+        group_m=group_m,
     )
-    num_valid_tokens = M * top_k
-
-    routing_host = topk_ids.detach().cpu().numpy()
-    sorted_token_ids, expert_ids, num_post_padded = moe_align(
-        routing_host, E, block_m
+    _launch_prepared_moe(prepared, enable_sketch=enable_sketch)
+    return (
+        prepared.c,
+        _u32_np(prepared.partials),
+        prepared.coverage.cpu().numpy(),
     )
-    validate_aligned_routing(
-        sorted_token_ids,
-        expert_ids,
-        num_post_padded,
-        routing_host,
-        E,
-        block_m,
+
+
+def prepare_sketch_sweep(
+    buf_bytes: torch.Tensor,
+    slot_seed: int,
+    tile_ids: torch.Tensor | None = None,
+    block: int = 512,
+) -> _PreparedSweepLaunch:
+    """Validate and allocate reusable state for one canonical sweep launch."""
+    total_tiles = validate_sweep_inputs(
+        buf_bytes, tile_ids, slot_seed, block, False
     )
-    dev = a.device
-    sorted_token_ids = torch.from_numpy(sorted_token_ids).to(dev)
-    expert_ids_t = torch.from_numpy(expert_ids).to(dev)
-    num_post_padded_t = torch.tensor([num_post_padded], dtype=torch.int32, device=dev)
-    EM = sorted_token_ids.numel()
-
-    c = torch.zeros((num_valid_tokens, N), dtype=torch.float16, device=dev)
-    n_tiles = E * N  # 2*K bytes == TILE_BYTES: one tile per (expert, n) row
-    partials = torch.zeros(n_tiles, dtype=torch.int32, device=dev)
-    coverage = torch.zeros(n_tiles, dtype=torch.int8, device=dev)
-    b32 = b.view(torch.int32)
-    params = make_params(slot_seed, dev)
-
-    grid = (triton.cdiv(EM, block_m) * triton.cdiv(N, block_n),)
-    moe_gemm_sketch_kernel[grid](
-        a,
-        b,
-        b32,
-        c,
-        sorted_token_ids,
-        expert_ids_t,
-        num_post_padded_t,
-        partials,
-        coverage,
+    words = buf_bytes.view(torch.int32)
+    if tile_ids is None:
+        tile_ids = torch.arange(
+            total_tiles, dtype=torch.int64, device=buf_bytes.device
+        )
+    n_tiles = tile_ids.numel()
+    out = torch.zeros(n_tiles, dtype=torch.int32, device=buf_bytes.device)
+    params = make_params(slot_seed, buf_bytes.device)
+    return _PreparedSweepLaunch(
+        _PREPARED_CAPABILITY,
+        words,
+        out,
+        tile_ids,
         params,
-        N,
-        K,
-        EM,
-        num_valid_tokens,
-        a.stride(0),
-        a.stride(1),
-        b.stride(0),
-        b.stride(2),
-        b.stride(1),
-        c.stride(0),
-        c.stride(1),
-        top_k=top_k,
-        BLOCK_SIZE_M=block_m,
-        BLOCK_SIZE_N=block_n,
-        BLOCK_SIZE_K=block_k,
-        GROUP_SIZE_M=group_m,
-        ENABLE_SKETCH=enable_sketch,
+        n_tiles,
+        block,
     )
-    return c, _u32_np(partials), coverage.cpu().numpy()
+
+
+def _launch_prepared_sweep(prepared: _PreparedSweepLaunch) -> None:
+    """Launch only; the capability proves all host preflight already ran."""
+    if (
+        not isinstance(prepared, _PreparedSweepLaunch)
+        or prepared.capability is not _PREPARED_CAPABILITY
+    ):
+        raise TypeError("expected a validated prepared sweep launch")
+    if prepared.n_tiles == 0:
+        return
+    sketch_sweep_kernel[(prepared.n_tiles,)](
+        prepared.words,
+        prepared.out,
+        prepared.tile_ids,
+        prepared.params,
+        prepared.n_tiles,
+        TILE_WORDS_C=TILE_WORDS,
+        BLOCK=prepared.block,
+    )
 
 
 def run_sketch_sweep(
@@ -349,22 +516,8 @@ def run_sketch_sweep(
     subset; default = all tiles (S1-over-coverage with full coverage).
     Benchmarks may keep the int32/u32-bit-pattern result device-resident by
     setting ``copy_to_host=False``."""
-    total_tiles = validate_sweep_inputs(
-        buf_bytes, tile_ids, slot_seed, block, copy_to_host
-    )
-    words = buf_bytes.view(torch.int32)
-    if tile_ids is None:
-        # This range is safe by construction.  In particular, do not copy it
-        # back to the host on each timed full-sweep benchmark invocation.
-        tile_ids = torch.arange(total_tiles, dtype=torch.int64, device=buf_bytes.device)
-    n_tiles = tile_ids.numel()
-    if n_tiles == 0:
-        out = torch.empty(0, dtype=torch.int32, device=buf_bytes.device)
-        return _u32_np(out) if copy_to_host else out
-    out = torch.zeros(n_tiles, dtype=torch.int32, device=buf_bytes.device)
-    params = make_params(slot_seed, buf_bytes.device)
-    sketch_sweep_kernel[(n_tiles,)](
-        words, out, tile_ids, params, n_tiles,
-        TILE_WORDS_C=TILE_WORDS, BLOCK=block,
-    )
-    return _u32_np(out) if copy_to_host else out
+    if not isinstance(copy_to_host, bool):
+        raise TypeError("copy_to_host must be a bool")
+    prepared = prepare_sketch_sweep(buf_bytes, slot_seed, tile_ids, block)
+    _launch_prepared_sweep(prepared)
+    return _u32_np(prepared.out) if copy_to_host else prepared.out

@@ -129,6 +129,7 @@ jobs:
             gpu/triton/tests/test_sketch.py \
             gpu/triton/tests/test_conformance.py \
             gpu/triton/tests/test_kernel_validation.py \
+            gpu/triton/tests/test_benchmark_honesty.py \
             -q -rs --junitxml="$report"
           python - "$report" <<'PY'
           import sys
@@ -151,6 +152,8 @@ jobs:
               "test_moe_kernel_sketch_matches_spec",
               "test_moe_kernel_batch_invariance",
               "test_fused_equals_sweep_on_covered_tiles",
+              "test_prepared_moe_launch_matches_reference_and_reuses_outputs",
+              "test_prepared_sweep_launch_matches_reference_and_reuses_output",
           }
           missing = sorted(required_kernels - names)
           if tests == 0 or skipped or failures or errors or missing:

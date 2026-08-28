@@ -164,6 +164,8 @@ PY
 
   echo
   echo "=== benchmark parameters ==="
+  echo "measurement_scope: prepared_device_launch_only_v1"
+  echo "timed_callbacks_exclude: routing_transfer,alignment,validation,allocation,result_d2h"
   echo "slot_seed: 1"
   echo "warmup_iterations_per_measurement: 10"
   echo "reported_samples_per_metric_per_configuration: 1 arithmetic mean"

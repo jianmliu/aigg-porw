@@ -51,7 +51,14 @@ def kernel_runtime():
 
     try:
         import triton  # noqa: F401 - validates the separately pinned runtime
-        from porw_sketch.kernels import run_moe_gemm, run_sketch_sweep
+        from porw_sketch.kernels import (
+            _launch_prepared_moe,
+            _launch_prepared_sweep,
+            prepare_moe_gemm,
+            prepare_sketch_sweep,
+            run_moe_gemm,
+            run_sketch_sweep,
+        )
     except ImportError as error:
         if (
             interpreter
@@ -67,6 +74,10 @@ def kernel_runtime():
     device = "cpu" if interpreter else "cuda"
     return SimpleNamespace(
         tensor=lambda array: torch.from_numpy(array).to(device),
+        launch_prepared_moe=_launch_prepared_moe,
+        launch_prepared_sweep=_launch_prepared_sweep,
+        prepare_moe_gemm=prepare_moe_gemm,
+        prepare_sketch_sweep=prepare_sketch_sweep,
         run_moe_gemm=run_moe_gemm,
         run_sketch_sweep=run_sketch_sweep,
     )
@@ -397,3 +408,51 @@ def test_fused_equals_sweep_on_covered_tiles(moe_run, kernel_runtime):
     )
     mask = coverage.astype(bool)
     assert np.array_equal(partials[mask], sweep[mask])
+
+
+def test_prepared_moe_launch_matches_reference_and_reuses_outputs(kernel_runtime):
+    b = random_weights()
+    a = RNG.standard_normal((M, K), dtype=np.float32).astype(np.float16)
+    topk_ids = RNG.choice([0, 2, 3], size=(M, TOP_K)).astype(np.int32)
+    prepared = kernel_runtime.prepare_moe_gemm(
+        kernel_runtime.tensor(a.copy()),
+        kernel_runtime.tensor(b.copy()),
+        kernel_runtime.tensor(topk_ids.copy()),
+        SLOT_SEEDS[1],
+    )
+    output_ids = tuple(
+        id(tensor)
+        for tensor in (prepared.c, prepared.partials, prepared.coverage)
+    )
+    kernel_runtime.launch_prepared_moe(prepared, enable_sketch=False)
+    kernel_runtime.launch_prepared_moe(prepared, enable_sketch=True)
+
+    assert output_ids == tuple(
+        id(tensor)
+        for tensor in (prepared.c, prepared.partials, prepared.coverage)
+    )
+    np.testing.assert_allclose(
+        prepared.c.cpu().numpy().astype(np.float32),
+        moe_gemm_reference(a, b, topk_ids),
+        rtol=2e-2,
+        atol=2e-2,
+    )
+    expected = spec.sketch_tiles(SLOT_SEEDS[1], weight_bytes(b))
+    coverage = prepared.coverage.cpu().numpy().astype(bool)
+    partials = prepared.partials.cpu().numpy().view(np.uint32)
+    assert np.array_equal(partials[coverage].astype(np.uint64), expected[coverage])
+
+
+def test_prepared_sweep_launch_matches_reference_and_reuses_output(kernel_runtime):
+    buf = weight_bytes(random_weights())
+    prepared = kernel_runtime.prepare_sketch_sweep(
+        kernel_runtime.tensor(buf.copy()), SLOT_SEEDS[2]
+    )
+    output_id = id(prepared.out)
+    kernel_runtime.launch_prepared_sweep(prepared)
+    first = prepared.out.cpu().numpy().view(np.uint32).copy()
+    kernel_runtime.launch_prepared_sweep(prepared)
+
+    assert id(prepared.out) == output_id
+    assert np.array_equal(first.astype(np.uint64), spec.sketch_tiles(SLOT_SEEDS[2], buf))
+    assert np.array_equal(prepared.out.cpu().numpy().view(np.uint32), first)
