@@ -1,5 +1,5 @@
-//! Tests, including cross-language vectors generated from the Python
-//! reference spec in `porw-poc/porw_sketch/spec.py` (see repo docs). The
+//! Tests, including cross-language vectors generated from the independently
+//! maintained Python reference (see `gpu/triton/`). The
 //! deterministic buffer is `buf[i] = ((i * 2654435761) >> 7) & 0xFF` over
 //! wrapping u64 arithmetic, 4 tiles.
 
@@ -67,12 +67,11 @@ fn coefficients_are_odd() {
 }
 
 #[test]
-fn single_bit_corruption_always_detected() {
+fn a_single_bit_change_alters_the_linear_sketch() {
     let tiles = buffer_tiles(&reference_buffer());
     let baseline = sketch_tile(42, 0, &tiles[0]);
-    // Odd coefficients are bijective mod 2^32: any single-bit flip must
-    // change the sketch. Try every bit position of a few words plus a
-    // pseudo-random sample across the tile.
+    // This limited single-delta property does not imply collision resistance.
+    // Try every bit position of a few words plus a pseudo-random sample.
     let mut lcg = 0x1234_5678_u64;
     for trial in 0..256 {
         let (byte, bit) = if trial < 32 {
@@ -89,6 +88,29 @@ fn single_bit_corruption_always_detected() {
         let mut bad = tiles[0];
         bad[byte] ^= 1 << bit;
         assert_ne!(sketch_tile(42, 0, &bad), baseline, "byte {byte} bit {bit}");
+    }
+}
+
+#[test]
+fn two_word_msb_changes_cancel_in_the_linear_sketch_but_not_the_commitment() {
+    let original = [0u8; TILE_BYTES];
+    let mut changed = original;
+    changed[3] = 0x80;
+    changed[7] = 0x80;
+
+    for slot_seed in [0, 1, 42, 0xDEAD_BEEF, u32::MAX] {
+        for tile_idx in [0, 1, 7, u32::MAX as u64, u64::MAX] {
+            assert_eq!(
+                sketch_tile(slot_seed, tile_idx, &original),
+                sketch_tile(slot_seed, tile_idx, &changed),
+                "two MSB deltas cancel modulo 2^32 for seed {slot_seed:#x}, tile {tile_idx}"
+            );
+            assert_ne!(
+                weights_leaf(tile_idx, &original),
+                weights_leaf(tile_idx, &changed),
+                "the cryptographic byte commitment still distinguishes the tiles"
+            );
+        }
     }
 }
 
@@ -115,7 +137,7 @@ fn merkle_proofs_roundtrip() {
 #[test]
 fn envelope_and_tickets() {
     // 70 GB coverage swept 3.2x against a 240 GB/slot envelope: allowed.
-    let cov = 70_u64 * 1 << 30;
+    let cov = 70_u64 << 30;
     assert!(check_envelope(cov, 3200, 240 * (1 << 30)));
     // Claiming 4x against the same envelope: rejected.
     assert!(!check_envelope(cov, 4000, 240 * (1 << 30)));
@@ -224,7 +246,7 @@ fn fraud_proof_catches_tampered_commitment() {
 #[test]
 fn fraud_proof_rejects_malformed_evidence() {
     let (solution, challenge, model_root, mut proofs) = build_solution_and_proofs(None);
-    // Non-canonical tile bytes (not committed under R_W).
+    // Tile bytes that do not authenticate under R_W.
     proofs[1].tile_bytes[0] ^= 1;
     assert_eq!(
         verify_tile_fraud_proof(&solution, &challenge, &model_root, &proofs[1]),
@@ -508,12 +530,11 @@ fn scheme_id_is_stable() {
 // Cross-language conformance fixtures (aigg-spec §15)
 // ---------------------------------------------------------------------------
 //
-// `conformance/sketch-tile-v2.json` is the vector set an independent
+// The locked root cache is the vector set an independent
 // implementation (e.g. the Solidity verifier of the EVM deployment) must
 // reproduce bit-for-bit. This test regenerates the fixture content from the
-// canonical implementation and fails if the committed file drifts.
-// To update after an INTENTIONAL semantic change (which is a new scheme id):
-// `UPDATE_CONFORMANCE=1 cargo test -p subspace-proof-of-residency conformance`.
+// chain-neutral reference implementation and fails if it differs from the
+// read-only cached bytes. Cache promotion happens in aigg-spec, never here.
 
 fn hex_bytes(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(2 + bytes.len() * 2);
@@ -706,18 +727,13 @@ fn conformance_fixture_is_current() {
     let generated = generate_conformance_fixture();
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/conformance/sketch-tile-v2.json"
+        "/../../spec-cache/conformance/porw/sketch-tile-v2.json"
     );
-    if std::env::var("UPDATE_CONFORMANCE").is_ok() {
-        std::fs::write(path, &generated).expect("write fixture");
-        return;
-    }
-    let committed = std::fs::read_to_string(path)
-        .expect("fixture missing; run with UPDATE_CONFORMANCE=1 to create");
+    let committed = std::fs::read_to_string(path).expect("locked conformance vector missing");
     assert_eq!(
         committed, generated,
-        "conformance fixture drifted from the canonical implementation; an \
-         intentional semantic change requires a NEW scheme id and fixture, \
-         then UPDATE_CONFORMANCE=1"
+        "reference implementation differs from the locked conformance vector; \
+         an intentional semantic change requires a new scheme id and a new \
+         reviewed aigg-spec release"
     );
 }

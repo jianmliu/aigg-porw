@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["crates/porw-core"]
+
+[workspace.package]
+edition = "2024"
+
+[workspace.dependencies]
+blake3 = { version = "=1.8.2", default-features = false }
+parity-scale-codec = { version = "=3.6.12", default-features = false }
+scale-info = { version = "=2.11.2", default-features = false }

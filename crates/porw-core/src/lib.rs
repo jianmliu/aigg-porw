@@ -1,31 +1,29 @@
-//! Proof-of-Resident-Weights (PoRW) consensus primitives.
+//! Chain-neutral reference primitives for the research-only
+//! `aigg:porw:sketch-tile:v2` scheme.
 //!
-//! This crate is the canonical Rust implementation of the PoRW residency
-//! sketch (spec v2) and its supporting structures:
+//! The per-tile `u32` sketch is a linear algebraic consistency check. It is
+//! not collision resistant and does not by itself prove byte equality,
+//! residency, or inference execution. In particular, odd coefficients do not
+//! prevent deterministic two-word MSB cancellation: for odd coefficients
+//! `c_p` and `c_q`, `2^31 * (c_p + c_q) = 0 mod 2^32`.
 //!
-//! - the per-tile **sketch**: a challenge-randomized, word-granular linear
-//!   digest over raw weight bytes, computable only by reading every covered
-//!   word in the current slot (see `docs/porw-p1-feasibility.md` §3 for why
-//!   word-granular slot-fresh coefficients are mandatory);
-//! - **tile Merkle commitments** for both the registered model weights
-//!   (`R_W`, root over weight tiles) and the per-slot per-tile sketch values
-//!   (`partials_root`), enabling O(tile) fraud proofs;
-//! - **ticket expansion** turning a solution's sketch commitment into a
-//!   stream of 32-byte audit chunks (one lottery ticket each), whose length
-//!   is proportional to `coverage × service multiplier`;
-//! - the **hardware envelope check** capping claimed work at the device's
-//!   physical bandwidth, so a compromised TEE yields bounded inflation.
+//! BLAKE3 Merkle openings separately authenticate sampled tile bytes against
+//! a commitment. What those openings establish depends on deployment-level
+//! admission and challenge assumptions. Signature suites, device identity,
+//! response deadlines, consensus integration, and all economic consequences
+//! are adapters outside this proof-math crate.
 //!
-//! Bit-compatibility: `sketch_tile` matches the Python/numpy reference and
-//! the Triton kernels in `porw-poc/` bit-for-bit; cross-language test
-//! vectors generated from the Python spec are checked in `tests`.
+//! The implementation remains bit-compatible with the locked cross-language
+//! vectors and the separately maintained Python and Triton references.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
 
 use alloc::vec::Vec;
+#[cfg(feature = "scale")]
 use parity_scale_codec::{Decode, Encode};
+#[cfg(feature = "scale")]
 use scale_info::TypeInfo;
 
 /// Canonical tile size in bytes.
@@ -69,17 +67,21 @@ pub fn tile_seed(slot_seed: u32, tile_idx: u64) -> u32 {
     fmix32(fmix32(slot_seed ^ (tile_idx as u32)))
 }
 
-/// Per-word coefficient. Forced odd: odd multipliers are bijective mod 2^32,
-/// binding every bit of the word including the MSB (an even coefficient would
-/// let a bit-31 flip vanish, since c * 2^31 mod 2^32 == 0 for even c).
+/// Per-word coefficient, forced odd.
+///
+/// Odd multiplication is bijective for one `u32` word, so a single-word MSB
+/// delta is nonzero. This does not make the sum collision resistant: applying
+/// the MSB delta to two words always cancels because the sum of two odd
+/// coefficients is even.
 #[inline]
 pub fn word_coeff(r_tile: u32, j: u32) -> u32 {
     fmix32(r_tile.wrapping_add(j.wrapping_mul(GOLDEN32))) | 1
 }
 
-/// Sketch of one canonical tile: sum over 32-bit LE words of
+/// Linear algebraic sketch of one scheme-formatted tile: sum over 32-bit LE words of
 /// `coeff(j) * word(j) mod 2^32`. Order/partition independent (modular sum),
-/// so any kernel decomposition that touches each word exactly once agrees.
+/// so matching kernel decompositions agree. This value is not a cryptographic
+/// commitment and must not be treated as proof of byte equality or residency.
 pub fn sketch_tile(slot_seed: u32, tile_idx: u64, tile: &[u8; TILE_BYTES]) -> u32 {
     let r_tile = tile_seed(slot_seed, tile_idx);
     let mut acc = 0u32;
@@ -90,8 +92,10 @@ pub fn sketch_tile(slot_seed: u32, tile_idx: u64, tile: &[u8; TILE_BYTES]) -> u3
     acc
 }
 
-/// Per-device slot seed: first 4 LE bytes of blake3(global_challenge || device_id).
-/// Mixing the device id makes sketches non-transferable between devices.
+/// Per-identity slot seed: first 4 LE bytes of
+/// `blake3(global_challenge || device_id)`.
+///
+/// A deployment adapter defines and authenticates the meaning of `device_id`.
 pub fn derive_slot_seed(global_challenge: &[u8; 32], device_id: &[u8; 32]) -> u32 {
     let mut hasher = blake3::Hasher::new();
     hasher.update(global_challenge);
@@ -190,23 +194,22 @@ pub fn merkle_verify(root: &Hash32, leaf: &Hash32, mut index: usize, proof: &[Ha
 // Tickets and envelope
 // ---------------------------------------------------------------------------
 
-/// Number of lottery tickets for a solution: covered bytes swept per slot,
-/// in ticket units (one ticket per `ticket_unit` bytes of audited traffic).
+/// Number of ticket-sized units represented by the coverage and multiplier.
 /// `m_t_millis` is the service multiplier in thousandths of a full coverage
-/// sweep (>= 1000 means the coverage set was swept at least once).
+/// sweep. Interpreting this value for eligibility or rewards is deployment
+/// policy outside this crate.
 pub fn ticket_count(coverage_bytes: u64, m_t_millis: u64, ticket_unit: u64) -> u64 {
     (coverage_bytes.saturating_mul(m_t_millis) / 1000) / ticket_unit.max(1)
 }
 
-/// Hardware envelope: claimed audited traffic must not exceed what the
-/// device's registered bandwidth can physically move in one slot. This is
-/// the bound that turns a fully compromised TEE into bounded inflation.
+/// Arithmetic envelope check comparing claimed traffic with an adapter-supplied
+/// byte budget. It does not authenticate hardware or enforce an economic bound.
 pub fn check_envelope(coverage_bytes: u64, m_t_millis: u64, bandwidth_bytes_per_slot: u64) -> bool {
     // coverage_bytes * m_t_millis / 1000 <= bandwidth_bytes_per_slot
     coverage_bytes.saturating_mul(m_t_millis) <= bandwidth_bytes_per_slot.saturating_mul(1000)
 }
 
-/// Derive the `chunk_index`-th 32-byte audit chunk (lottery ticket) from a
+/// Derive the `chunk_index`-th 32-byte audit chunk from a
 /// solution commitment, via blake3 XOF over
 /// (model_id || partials_root || slot_seed). `model_id` is mixed in so a
 /// device announcing several models cannot replay one ticket stream across
@@ -232,31 +235,19 @@ pub fn ticket_chunk(
 // Cross-audit scheduling (epoch replica cross-verification)
 // ---------------------------------------------------------------------------
 //
-// Replicas of a model are the only parties that hold its canonical bytes, so
-// only replicas can audit replicas — and any replica can audit any peer,
-// because the target's sketch seed is public (`derive_slot_seed(challenge,
-// target_device)`) and the sketch is deterministic over the shared bytes.
-//
-// The schedule is a pure function of a per-epoch beacon: every honest node
-// computes the same assignment locally, nothing is stored on chain beyond the
-// beacon itself. The beacon MUST be unknowable before the epoch starts
-// (derived from epoch-boundary randomness), otherwise a cheater could predict
-// which tiles will be sampled and keep true values ready for just those.
-//
-// Assignments only direct honest effort and bound its bandwidth; enforcement
-// stays with the permissionless fraud path (`TileFraudProof` + slashing +
-// escrow forfeiture). An auditor that finds a mismatch reports it and takes
-// the accused's bond; auditors are not paid for clean audits and need not
-// acknowledge on chain.
+// These helpers assume the deployment supplies a participant set whose members
+// can access the same committed bytes. They do not establish that access,
+// residency, or participant identity. A deployment must also define beacon
+// unpredictability, admission, communications, deadlines, and any consequence
+// of a failed audit.
 
 /// Domain separator for all cross-audit derivations.
 const AUDIT_DOMAIN: &[u8] = b"porw-cross-audit-v1";
 
 /// Per-epoch audit beacon: blake3(domain || entropy || LE64 epoch).
 ///
-/// `entropy` must only become known at the epoch boundary (the PoT-derived
-/// randomness of the boundary block in production; the pallet uses the parent
-/// block hash at settlement as a placeholder until PoT randomness is plumbed).
+/// Security properties of `entropy`, including when it becomes knowable, are
+/// requirements of the deployment adapter.
 pub fn audit_beacon(epoch: u64, entropy: &Hash32) -> Hash32 {
     let mut hasher = blake3::Hasher::new();
     hasher.update(AUDIT_DOMAIN);
@@ -279,8 +270,7 @@ fn audit_rank(beacon: &Hash32, model_id: &Hash32, target: &Hash32, auditor: &Has
 /// The up-to-`k` replica devices assigned to audit `target` this epoch:
 /// the `k` lowest rank hashes among the model's replica set, excluding the
 /// target itself. Deterministic for all observers; an empty result means the
-/// model has no peer replicas (single-replica models fall back to
-/// storage-track arbitration — that is what `min_replicas` signals).
+/// model has no peer entries. The deployment decides how to handle that case.
 pub fn select_auditors(
     beacon: &Hash32,
     model_id: &Hash32,
@@ -346,12 +336,13 @@ pub fn audit_tile_sample(
 // Solution and fraud proof types
 // ---------------------------------------------------------------------------
 
-/// PoRW solution: what a winning device submits, signed by its node key.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TypeInfo)]
+/// Scheme solution data. Authentication and acceptance are adapter concerns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "scale", derive(Encode, Decode, TypeInfo))]
 pub struct PorwSolution {
-    /// Attested physical device (one card, one identity).
+    /// Adapter-defined participant identity bytes.
     pub device_id: [u8; 32],
-    /// Registered model commitment root (`R_W`) this solution audits.
+    /// Adapter-supplied model commitment root (`R_W`) this solution references.
     pub model_id: [u8; 32],
     /// Folded sketch over the coverage set (fast consistency check).
     pub sketch: u32,
@@ -362,19 +353,17 @@ pub struct PorwSolution {
     pub coverage_bytes: u64,
     /// Service multiplier in thousandths of a full coverage sweep.
     pub m_t_millis: u64,
-    /// Index of the winning ticket chunk.
+    /// Adapter-selected ticket chunk index.
     pub chunk_index: u64,
-    /// Ed25519 signature by the device's node key over
-    /// [`PorwSolution::signing_payload`]. Binds the solution to the device:
-    /// nothing else can be slashed for a solution it did not sign, and the
-    /// fraud path (and P3 block production) both verify it.
+    /// Adapter-defined 64-byte signature over [`PorwSolution::signing_payload`].
+    /// The signature suite and identity binding are not verified by this crate.
     pub signature: [u8; 64],
 }
 
 impl PorwSolution {
-    /// Canonical bytes the device signs: every field except the signature,
-    /// plus the disputed slot's `global_challenge` (so a signature for one
-    /// slot cannot be replayed as a solution for another).
+    /// Scheme-defined authentication payload: every field except the signature,
+    /// plus `global_challenge`. An adapter chooses and verifies the signature
+    /// suite and decides how challenges map to protocol periods.
     pub fn signing_payload(&self, global_challenge: &Hash32) -> Vec<u8> {
         let mut out = Vec::with_capacity(32 * 4 + 8 * 3 + 4);
         out.extend_from_slice(global_challenge);
@@ -391,14 +380,15 @@ impl PorwSolution {
 
 /// Tile-granular fraud proof against a committed solution: shows that the
 /// per-tile sketch value committed under `partials_root` disagrees with the
-/// value recomputed from the canonical weight bytes committed under `R_W`.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TypeInfo)]
+/// value recomputed from bytes authenticated under `R_W`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "scale", derive(Encode, Decode, TypeInfo))]
 pub struct TileFraudProof {
     /// The disputed tile.
     pub tile_idx: u64,
-    /// Claimed per-tile sketch value (as committed by the accused).
+    /// Claimed per-tile sketch value from the submitted commitment.
     pub claimed_s_tile: u32,
-    /// Position of the disputed leaf in the accused's partials tree. The
+    /// Position of the disputed leaf in the submitted partials tree. The
     /// partials tree is built in coverage order, so for a non-contiguous
     /// (MoE) coverage set the leaf position differs from `tile_idx`. Purely
     /// an opening hint: the leaf hash itself binds `tile_idx`, so a wrong
@@ -407,7 +397,7 @@ pub struct TileFraudProof {
     pub partials_index: u64,
     /// Inclusion proof of `(tile_idx, claimed_s_tile)` under `partials_root`.
     pub partials_proof: Vec<[u8; 32]>,
-    /// Canonical tile bytes (retrieved from the DSN / a resident replica).
+    /// Tile bytes whose BLAKE3 Merkle opening is supplied below.
     pub tile_bytes: Vec<u8>,
     /// Inclusion proof of `(tile_idx, tile_bytes)` under the model's `R_W`.
     pub weights_proof: Vec<[u8; 32]>,
@@ -416,8 +406,8 @@ pub struct TileFraudProof {
 /// Outcome of verifying a [`TileFraudProof`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FraudVerdict {
-    /// Proof is valid and demonstrates fraud: claimed value is committed,
-    /// tile bytes are canonical, and the recomputed sketch disagrees.
+    /// Proof is valid and demonstrates a committed mismatch: the claimed value
+    /// and tile bytes both authenticate, and the recomputed sketch disagrees.
     Fraud,
     /// Proof is valid but the recomputed sketch agrees — no fraud shown.
     NoFraud,
@@ -427,9 +417,8 @@ pub enum FraudVerdict {
 
 /// Verify a tile fraud proof against a solution's commitments.
 ///
-/// `global_challenge` is the PoT challenge of the disputed slot; the
-/// per-device slot seed is derived internally so the verifier needs no
-/// knowledge of the accused's workload.
+/// The verifier derives the per-identity slot seed from `global_challenge` and
+/// the solution's adapter-defined `device_id`.
 pub fn verify_tile_fraud_proof(
     solution: &PorwSolution,
     global_challenge: &[u8; 32],
@@ -452,7 +441,7 @@ pub fn verify_tile_fraud_proof(
     ) {
         return FraudVerdict::Invalid;
     }
-    // 2. The tile bytes must be the canonical bytes committed under R_W.
+    // 2. The tile bytes must authenticate against the supplied R_W root.
     let tile: &[u8; TILE_BYTES] = proof
         .tile_bytes
         .as_slice()
@@ -481,26 +470,22 @@ pub fn verify_tile_fraud_proof(
 // Opening-availability responses (data-availability challenges)
 // ---------------------------------------------------------------------------
 //
-// An auditor that is refused a Merkle opening can escalate on chain: it posts
-// an opening challenge naming a signed solution and a tile, and the accused
-// must answer within a window. The answer is one of two verifiable claims
-// against the solution's `partials_root`:
+// This module checks two response forms against `partials_root`:
 //
 // - the tile WAS committed → its opening (which the auditor then cross-checks,
 //   and can turn into a `TileFraudProof` if the value is wrong); or
 // - the tile was NOT committed → a non-inclusion proof: the pair of adjacent
 //   committed leaves that bracket the challenged tile index.
 //
-// Non-inclusion is provable because the protocol requires coverage sets to be
-// committed in STRICTLY ASCENDING tile order (the agent enforces this at
-// authoring), and the leaf count is pinned by the solution's signed
-// `coverage_bytes` (= leaves × TILE_BYTES). "Found wrong" and "refused to
-// answer" thereby carry equally actionable evidence: the first becomes a
-// fraud proof, the second an expired challenge — both slashable.
+// Non-inclusion is checkable because the scheme requires coverage sets in
+// STRICTLY ASCENDING tile order and the caller supplies the committed leaf
+// count. Challenge publication, response deadlines, and consequences remain
+// deployment-adapter responsibilities.
 
 /// One committed leaf presented as evidence: its tile index, committed sketch
 /// value, position in the partials tree, and inclusion proof.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TypeInfo)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "scale", derive(Encode, Decode, TypeInfo))]
 pub struct LeafWitness {
     /// Canonical tile index bound into the leaf hash.
     pub tile_idx: u64,
@@ -524,8 +509,9 @@ impl LeafWitness {
     }
 }
 
-/// The accused's answer to an opening challenge.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode, TypeInfo)]
+/// A response to an opening challenge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "scale", derive(Encode, Decode, TypeInfo))]
 pub enum OpeningResponse {
     /// The challenged tile was committed: here is its opening.
     Committed(LeafWitness),
@@ -544,11 +530,14 @@ pub enum OpeningResponse {
 
 /// Verify an [`OpeningResponse`] against a solution's commitments.
 ///
-/// `n_leaves` is the number of committed leaves, pinned by the signed
-/// solution: `coverage_bytes / TILE_BYTES`. Returns the opening's committed
-/// value when the response proves the tile was committed (`Some(s_tile)`),
-/// `None` when it validly proves non-commitment. `Err(())` = the response
-/// does not verify (equivalent to no answer).
+/// `n_leaves` is supplied by the caller, typically derived as
+/// `coverage_bytes / TILE_BYTES` from an adapter-authenticated solution.
+/// Returns the opened value for a committed tile (`Some(s_tile)`), `None` for
+/// valid non-commitment, and `Err(())` when the response does not verify.
+#[expect(
+    clippy::result_unit_err,
+    reason = "the locked v2 API uses Err(()) for every invalid response"
+)]
 pub fn verify_opening_response(
     partials_root: &Hash32,
     n_leaves: u64,

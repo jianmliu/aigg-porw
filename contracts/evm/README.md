@@ -10,7 +10,7 @@ feasibility gate of the AI3 Verifiable Compute Market Pilot proposal §8.4).
   recomputation, blake3 Merkle commitments (+ keccak variant for
   comparison), fraud-proof / opening / non-inclusion verification.
 - `test/Conformance.t.sol` — 13 differential tests against the Rust
-  reference via `../crates/subspace-proof-of-residency/conformance/`
+  reference via `../../spec-cache/conformance/porw/`
   (bit-identical or it is not the same scheme).
 - `test/Gas.t.sol` — the gas measurements at realistic tree depths.
 

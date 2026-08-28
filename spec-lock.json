@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "aigg_spec": {
+    "repository": "https://github.com/jianmliu/aigg-spec.git",
+    "tag": "porw-sketch-tile-v2.0.0-private.4",
+    "commit": "4e4a9390008948c1912be9a8eb0653ea1e03cd64",
+    "tag_status": "current",
+    "classification": "canonical-research"
+  },
+  "conformance": {
+    "scheme_id": "aigg:porw:sketch-tile:v2",
+    "vector_set": "sketch-tile-v2.0.0",
+    "cache_path": "spec-cache/conformance/porw/sketch-tile-v2.json",
+    "sha256": "fb321155cfb731e2506df13c8c741d97647875998cd825212c6494a7292e00e7"
+  },
+  "implementation": {
+    "classification": "research",
+    "economic_consequences": "disabled",
+    "production": {
+      "rewards": "disabled",
+      "custody": "disabled",
+      "slashing": "disabled",
+      "eligibility": "disabled"
+    }
+  }
+}

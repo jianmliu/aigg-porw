@@ -1,6 +1,6 @@
 [package]
-name = "subspace-proof-of-residency"
-description = "Proof-of-Resident-Weights (PoRW) consensus primitives: residency sketch, tile Merkle commitments, ticket expansion and fraud-proof verification"
+name = "aigg-porw-core"
+description = "Chain-neutral Proof-of-Resident-Weights (PoRW) research primitives and reference verification"
 license = "0BSD"
 version = "0.1.0"
 authors = ["Jianming Liu <liujm06@gmail.com>"]
@@ -15,13 +15,18 @@ bench = false
 
 [dependencies]
 blake3.workspace = true
-parity-scale-codec = { workspace = true, features = ["derive"] }
-scale-info = { workspace = true, features = ["derive"] }
+parity-scale-codec = { workspace = true, features = ["derive"], optional = true }
+scale-info = { workspace = true, features = ["derive"], optional = true }
+
+[dev-dependencies]
+serde_json = "=1.0.145"
+sha2 = "=0.10.9"
 
 [features]
 default = ["std"]
 std = [
     "blake3/std",
-    "parity-scale-codec/std",
-    "scale-info/std",
+    "parity-scale-codec?/std",
+    "scale-info?/std",
 ]
+scale = ["dep:parity-scale-codec", "dep:scale-info"]
