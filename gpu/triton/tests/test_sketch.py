@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from porw_sketch import spec
+from porw_sketch import reference, spec
 from porw_sketch.reference import covered_experts, moe_gemm_reference
 
 RNG = np.random.default_rng(7)
@@ -168,6 +168,39 @@ def test_per_word_coeff_scheme_resists_compression():
         assert (forged_b == honest).mean() < 0.01
 
 
+def test_coverage_tile_ids_validation_accepts_strict_ascending_int64():
+    assert reference.validate_coverage_tile_ids(
+        np.array([0, 2, 4], dtype=np.int64), total_tiles=5
+    ) is None
+    assert reference.validate_coverage_tile_ids(
+        np.array([], dtype=np.int64), total_tiles=5
+    ) is None
+
+
+@pytest.mark.parametrize(
+    ("tile_ids", "error"),
+    [
+        (np.array([0, 1], dtype=np.int32), TypeError),
+        (np.array([[0, 1]], dtype=np.int64), ValueError),
+        (np.array([-1, 1], dtype=np.int64), ValueError),
+        (np.array([0, 2], dtype=np.int64), ValueError),
+        (np.array([0, 0], dtype=np.int64), ValueError),
+        (np.array([1, 0], dtype=np.int64), ValueError),
+        (
+            np.array(
+                [np.iinfo(np.int64).max, np.iinfo(np.int64).min],
+                dtype=np.int64,
+            ),
+            ValueError,
+        ),
+        (np.array([0, 99, 1, 99], dtype=np.int64)[::2], ValueError),
+    ],
+)
+def test_coverage_tile_ids_validation_rejects_malformed_sets(tile_ids, error):
+    with pytest.raises(error):
+        reference.validate_coverage_tile_ids(tile_ids, total_tiles=2)
+
+
 # ---------------------------------------------------------------------------
 # Triton kernels (CPU interpreter without GPU; native backend with one)
 # ---------------------------------------------------------------------------
@@ -198,6 +231,26 @@ def test_sweep_kernel_coverage_subset(kernel_runtime):
         tile_ids=kernel_runtime.tensor(subset.astype(np.int64)),
     )
     assert np.array_equal(got.astype(np.uint64), full[subset])
+
+
+def test_sweep_wrapper_rejects_invalid_tile_ids_before_launch(kernel_runtime):
+    buffer = kernel_runtime.tensor(np.zeros(spec.TILE_BYTES * 2, dtype=np.uint8))
+    cases = [
+        np.array([0, 1], dtype=np.int32),
+        np.array([[0, 1]], dtype=np.int64),
+        np.array([-1, 1], dtype=np.int64),
+        np.array([0, 2], dtype=np.int64),
+        np.array([0, 0], dtype=np.int64),
+        np.array([1, 0], dtype=np.int64),
+        np.array([0, 99, 1, 99], dtype=np.int64)[::2],
+    ]
+    for tile_ids in cases:
+        with pytest.raises((TypeError, ValueError)):
+            kernel_runtime.run_sketch_sweep(
+                buffer,
+                SLOT_SEEDS[0],
+                tile_ids=kernel_runtime.tensor(tile_ids),
+            )
 
 
 @pytest.fixture(scope="module")

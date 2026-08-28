@@ -327,6 +327,11 @@ def run_sketch_sweep(
     total_tiles = words.numel() // TILE_WORDS
     if tile_ids is None:
         tile_ids = torch.arange(total_tiles, dtype=torch.int64, device=buf_bytes.device)
+    if not isinstance(tile_ids, torch.Tensor):
+        raise TypeError("tile_ids must be a torch.Tensor")
+    from .reference import validate_coverage_tile_ids
+
+    validate_coverage_tile_ids(tile_ids.detach().cpu().numpy(), total_tiles)
     n_tiles = tile_ids.numel()
     out = torch.zeros(n_tiles, dtype=torch.int32, device=buf_bytes.device)
     params = make_params(slot_seed, buf_bytes.device)

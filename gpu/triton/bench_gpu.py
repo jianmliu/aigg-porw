@@ -6,9 +6,9 @@ Measures, per (E, N, K, M, top_k) config:
   3. standalone sweep kernel GB/s vs theoretical HBM bandwidth
 
 Target: fused overhead < 2% on decode-shaped workloads (small M, large E*N*K).
-Note: this PoC kernel is correctness-first (fp32 tl.dot, int64 sketch math).
-Before trusting absolute numbers, switch the dot to native fp16/bf16 and the
-sketch math to u32 — relative overhead is what matters here.
+Note: this PoC kernel is correctness-first (fp32 tl.dot, native wrapping u32
+sketch math).  Before trusting absolute numbers, switch the dot to native
+fp16/bf16; relative overhead is what matters here.
 """
 
 import time

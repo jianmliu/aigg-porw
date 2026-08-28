@@ -5,11 +5,38 @@ set -euo pipefail
 PORW_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PORW_REPO_ROOT="$(cd -- "$PORW_SCRIPT_DIR/../.." && pwd -P)"
 PORW_PYTHON_BIN="${PORW_PYTHON:-}"
+PORW_OUTPUT_FILE=""
+PORW_TRITON_CACHE=""
 
 porw_fail() {
   echo "error: $*" >&2
   exit 1
 }
+
+porw_finish() {
+  PORW_EXIT_CODE=$?
+  trap - EXIT
+  set +e
+  if [[ -n "$PORW_OUTPUT_FILE" && -f "$PORW_OUTPUT_FILE" ]]; then
+    if [[ "$PORW_EXIT_CODE" -eq 0 ]]; then
+      PORW_TERMINAL_STATUS=success
+    else
+      PORW_TERMINAL_STATUS=failed
+    fi
+    {
+      echo
+      echo "=== terminal status ==="
+      echo "status: $PORW_TERMINAL_STATUS"
+      echo "exit_code: $PORW_EXIT_CODE"
+    } >> "$PORW_OUTPUT_FILE"
+  fi
+  if [[ -n "$PORW_TRITON_CACHE" && -d "$PORW_TRITON_CACHE" ]]; then
+    find "$PORW_TRITON_CACHE" -depth -delete
+  fi
+  exit "$PORW_EXIT_CODE"
+}
+
+trap porw_finish EXIT
 
 [[ -n "$PORW_PYTHON_BIN" ]] || porw_fail \
   "set PORW_PYTHON to the explicit CPython 3.12.13 environment from gpu/triton/ENVIRONMENT.md"
@@ -20,6 +47,10 @@ PORW_GIT_ROOT="$(git -C "$PORW_REPO_ROOT" rev-parse --show-toplevel 2>/dev/null)
   || porw_fail "gpu/triton is not inside an aigg-porw Git checkout"
 [[ "$(cd -- "$PORW_GIT_ROOT" && pwd -P)" == "$PORW_REPO_ROOT" ]] || porw_fail \
   "script path does not resolve to the current aigg-porw checkout root"
+
+PORW_DIRTY_STATUS="$(git -C "$PORW_REPO_ROOT" status --porcelain=v1 --untracked-files=normal)"
+[[ -z "$PORW_DIRTY_STATUS" ]] || porw_fail \
+  "refusing benchmark evidence from a dirty source worktree; commit or stash changes first"
 
 [[ "${TRITON_INTERPRET:-0}" != "1" ]] || porw_fail \
   "native GPU benchmarks cannot run with TRITON_INTERPRET=1"
@@ -62,28 +93,19 @@ print(f"preflight: Python {sys.version.split()[0]}, CUDA device {torch.cuda.get_
 PY
 
 PORW_COMMIT="$(git -C "$PORW_REPO_ROOT" rev-parse HEAD)"
-PORW_DIRTY_STATUS="$(git -C "$PORW_REPO_ROOT" status --porcelain=v1 --untracked-files=normal)"
-if [[ -n "$PORW_DIRTY_STATUS" ]]; then
-  PORW_DIRTY=yes
-else
-  PORW_DIRTY=no
-fi
 PORW_UTC_STAMP="$(date -u +%Y%m%d-%H%M%S)"
 PORW_OUTPUT_DIR="$PORW_REPO_ROOT/benchmarks/gpu/generated"
-PORW_OUTPUT_FILE="$PORW_OUTPUT_DIR/gpu-bench-$PORW_UTC_STAMP.txt"
 mkdir -p "$PORW_OUTPUT_DIR"
+PORW_OUTPUT_FILE="$(mktemp "$PORW_OUTPUT_DIR/gpu-bench-$PORW_UTC_STAMP-XXXXXXXX")"
+PORW_TRITON_CACHE="$(mktemp -d "${TMPDIR:-/tmp}/aigg-porw-triton-cache.XXXXXXXX")"
 
 export PYTHONDONTWRITEBYTECODE=1
-export TRITON_CACHE_DIR="$PORW_OUTPUT_DIR/triton-cache-$PORW_UTC_STAMP"
+export TRITON_CACHE_DIR="$PORW_TRITON_CACHE"
 {
   echo "=== provenance ==="
   echo "repository: $PORW_REPO_ROOT"
   echo "commit: $PORW_COMMIT"
-  echo "dirty: $PORW_DIRTY"
-  if [[ -n "$PORW_DIRTY_STATUS" ]]; then
-    echo "dirty_status:"
-    echo "$PORW_DIRTY_STATUS"
-  fi
+  echo "dirty: no"
   echo "utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "hostname: $(hostname)"
 
@@ -126,7 +148,13 @@ PY
 
   echo
   echo "=== correctness (native GPU backend) ==="
-  "$PORW_PYTHON_BIN" -m pytest "$PORW_SCRIPT_DIR/tests" -q -p no:cacheprovider
+  if "$PORW_PYTHON_BIN" -m pytest \
+    "$PORW_SCRIPT_DIR/tests" -q -p no:cacheprovider; then
+    echo "correctness_result: passed"
+  else
+    echo "correctness_result: failed"
+    exit 1
+  fi
 
   echo
   echo "=== benchmark output ==="

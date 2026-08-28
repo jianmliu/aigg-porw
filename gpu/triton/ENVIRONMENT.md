@@ -2,8 +2,9 @@
 
 ## Pinned environment
 
-The test environment uses CPython `3.12.13` and the direct dependencies pinned
-in [`requirements-test.txt`](requirements-test.txt):
+The test environment requires CPython `3.12.13` exactly; pytest rejects any
+other patch release at startup.  Human-maintained direct constraints live in
+[`requirements-test.in`](requirements-test.in):
 
 - NumPy `2.0.2`
 - pytest `8.4.2`
@@ -11,22 +12,39 @@ in [`requirements-test.txt`](requirements-test.txt):
 - PyTorch `2.8.0`
 - Triton `3.4.0` on Linux x86_64
 
-Triton `3.4.0` is not an inferred compatibility choice: the published
+Installations use the platform-specific, fully transitive hash locks:
+
+- [`requirements-test-darwin-arm64.lock`](requirements-test-darwin-arm64.lock)
+- [`requirements-test-linux-x86_64.lock`](requirements-test-linux-x86_64.lock)
+
+Every package is pinned and every accepted distribution has a hash. Triton
+`3.4.0` is not an inferred compatibility choice: the published
 `torch-2.8.0-cp312-cp312-manylinux_2_28_x86_64` wheel metadata requires exactly
-`triton==3.4.0` on Linux x86_64.  The requirements marker omits Triton where
-that wheel is unavailable, including Darwin arm64.
+`triton==3.4.0` on Linux x86_64. The Darwin arm64 lock omits Triton because no
+compatible distribution is published for that platform; the Linux x86_64
+lock includes it exactly.
 
 Create the repository-scoped environment on the current development host with:
 
 ```sh
 PORW_MANAGED_PYTHON=/Users/jianmingliu/Projects/.aigg-tools/python/cpython-3.12.13-macos-aarch64-none/bin/python3.12
 "$PORW_MANAGED_PYTHON" -m venv gpu/triton/.venv
-gpu/triton/.venv/bin/python -m pip install -r gpu/triton/requirements-test.txt
+gpu/triton/.venv/bin/python -m pip install --require-hashes \
+  -r gpu/triton/requirements-test-darwin-arm64.lock
 ```
 
 Do not install these packages into the system Python.  On a Linux x86_64 GPU
-host or CI runner, create the same scoped environment with CPython `3.12.13`;
-the platform marker will install Triton `3.4.0` there.
+host or CI runner, create the same scoped environment with CPython `3.12.13`
+and install with:
+
+```sh
+gpu/triton/.venv/bin/python -m pip install --require-hashes \
+  -r gpu/triton/requirements-test-linux-x86_64.lock
+```
+
+Regenerate locks from `requirements-test.in` with
+`uv pip compile --generate-hashes` for the named target platform. Do not
+install from the `.in` file in verification or CI.
 
 ## Verified current host
 
@@ -66,5 +84,9 @@ PORW_PYTHON="$PWD/gpu/triton/.venv/bin/python" gpu/triton/run_gpu_bench.sh
 ```
 
 The benchmark runner records new outputs only under
-`benchmarks/gpu/generated/`.  Interpreter results are correctness evidence
-only and must never be reported as throughput measurements.
+`benchmarks/gpu/generated/`, which is ignored by Git. It refuses a dirty source
+worktree before creating an artifact or cache, uses an isolated temporary
+Triton cache, and appends a terminal `success`/`failed` status plus exit code to
+every artifact it creates. A failure after evidence collection starts leaves
+the ignored partial artifact for diagnosis. Interpreter results are correctness
+evidence only and must never be reported as throughput measurements.

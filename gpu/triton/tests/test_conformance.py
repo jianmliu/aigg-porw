@@ -7,7 +7,9 @@ deadline, and boundary non-inclusion policy are outside its scope.
 """
 
 import json
+import hashlib
 from copy import deepcopy
+from numbers import Integral
 from pathlib import Path
 
 import numpy as np
@@ -17,8 +19,12 @@ from blake3 import blake3
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 VECTOR_PATH = REPO_ROOT / "spec-cache/conformance/porw/sketch-tile-v2.json"
+PROVENANCE_PATH = VECTOR_PATH.with_suffix(".provenance.json")
 MASK32 = np.uint64(0xFFFFFFFF)
 MASK64 = 0xFFFFFFFFFFFFFFFF
+U32_LIMIT = 1 << 32
+U64_LIMIT = 1 << 64
+TILE_BYTES = 4096
 FMIX_M1 = np.uint64(0x85EBCA6B)
 FMIX_M2 = np.uint64(0xC2B2AE35)
 
@@ -34,6 +40,18 @@ def _unhex(value: str) -> bytes:
 
 def _hex(value: bytes) -> str:
     return "0x" + value.hex()
+
+
+def _assert_invalid_without_exception(callback, expected):
+    try:
+        result = callback()
+    except (OverflowError, TypeError, ValueError) as error:
+        pytest.fail(f"malformed witness escaped validation: {error}")
+    assert result == expected
+
+
+def _is_uint(value, limit: int) -> bool:
+    return isinstance(value, Integral) and not isinstance(value, bool) and 0 <= value < limit
 
 
 def _reference_buffer(vector: dict) -> bytes:
@@ -74,13 +92,19 @@ def _sketch_tiles(
     return (coefficients * words).sum(axis=1) & MASK32
 
 
-def _weights_leaf(tile_index: int, tile: bytes) -> bytes:
-    return blake3(tile_index.to_bytes(8, "little") + tile).digest()
+def _weights_leaf(tile_index: int, tile: bytes) -> bytes | None:
+    if not _is_uint(tile_index, U64_LIMIT):
+        return None
+    if not isinstance(tile, (bytes, bytearray)) or len(tile) != TILE_BYTES:
+        return None
+    return blake3(int(tile_index).to_bytes(8, "little") + bytes(tile)).digest()
 
 
-def _partials_leaf(tile_index: int, sketch: int) -> bytes:
+def _partials_leaf(tile_index: int, sketch: int) -> bytes | None:
+    if not _is_uint(tile_index, U64_LIMIT) or not _is_uint(sketch, U32_LIMIT):
+        return None
     return blake3(
-        tile_index.to_bytes(8, "little") + sketch.to_bytes(4, "little")
+        int(tile_index).to_bytes(8, "little") + int(sketch).to_bytes(4, "little")
     ).digest()
 
 
@@ -94,7 +118,10 @@ def _merkle_root(leaves: list[bytes]) -> bytes:
     level = list(leaves)
     while len(level) > 1:
         level = [
-            _merkle_parent(level[index], level[index + 1] if index + 1 < len(level) else level[index])
+            _merkle_parent(
+                level[index],
+                level[index + 1] if index + 1 < len(level) else level[index],
+            )
             for index in range(0, len(level), 2)
         ]
     return level[0]
@@ -124,7 +151,12 @@ def _merkle_proof(leaves: list[bytes], index: int) -> list[bytes]:
 def _merkle_verify_counted(
     root: bytes, leaf: bytes, index: int, leaf_count: int, proof: list[bytes]
 ) -> bool:
-    if leaf_count <= 0 or index < 0 or index >= leaf_count:
+    if (
+        not _is_uint(index, U64_LIMIT)
+        or not _is_uint(leaf_count, U64_LIMIT)
+        or leaf_count == 0
+        or index >= leaf_count
+    ):
         return False
     accumulator = leaf
     width = leaf_count
@@ -155,6 +187,15 @@ def _verify_committed_opening(
     index: int,
     proof: list[bytes],
 ) -> bool:
+    if (
+        not _is_uint(leaf_count, U64_LIMIT)
+        or leaf_count == 0
+        or not _is_uint(challenged_tile, U64_LIMIT)
+        or not _is_uint(tile_index, U64_LIMIT)
+        or not _is_uint(sketch, U32_LIMIT)
+        or not _is_uint(index, U64_LIMIT)
+    ):
+        return False
     return tile_index == challenged_tile and _merkle_verify_counted(
         root,
         _partials_leaf(tile_index, sketch),
@@ -174,9 +215,26 @@ def _verify_interior_non_inclusion(
     left_proof: list[bytes],
     right_proof: list[bytes],
 ) -> bool:
+    if (
+        not _is_uint(leaf_count, U64_LIMIT)
+        or leaf_count == 0
+        or not _is_uint(challenged_tile, U64_LIMIT)
+    ):
+        return False
     left_index = left["index"]
     right_index = right["index"]
-    if not (0 <= left_index < leaf_count and 0 <= right_index < leaf_count):
+    if not all(
+        (
+            _is_uint(left["tile_idx"], U64_LIMIT),
+            _is_uint(left["s_tile"], U32_LIMIT),
+            _is_uint(left_index, U64_LIMIT),
+            _is_uint(right["tile_idx"], U64_LIMIT),
+            _is_uint(right["s_tile"], U32_LIMIT),
+            _is_uint(right_index, U64_LIMIT),
+        )
+    ):
+        return False
+    if not (left_index < leaf_count and right_index < leaf_count):
         return False
     if left_index + 1 != right_index:
         return False
@@ -204,6 +262,14 @@ def _fraud_verdict(
     tile: bytes,
     weights_proof: list[bytes],
 ) -> str:
+    if (
+        not _is_uint(tile_index, U64_LIMIT)
+        or not _is_uint(claimed_sketch, U32_LIMIT)
+        or not _is_uint(partials_index, U64_LIMIT)
+        or not isinstance(tile, (bytes, bytearray))
+        or len(tile) != TILE_BYTES
+    ):
+        return "Invalid"
     if not _merkle_verify_counted(
         partials_root,
         _partials_leaf(tile_index, claimed_sketch),
@@ -231,15 +297,41 @@ def test_vector_is_loaded_from_repository_root_and_scheme_is_exact():
     vector = _vector()
     assert VECTOR_PATH.is_file()
     assert vector["scheme"]["id"] == "aigg:porw:sketch-tile:v2"
-    assert _hex(blake3(vector["scheme"]["id"].encode()).digest()) == vector["scheme"]["digest"]
+    assert _hex(blake3(vector["scheme"]["id"].encode()).digest()) == vector[
+        "scheme"
+    ]["digest"]
     assert vector["params"] == {
         "tile_bytes": 4096,
         "tile_words": 1024,
         "golden32": "0x9e3779b9",
         "coverage_order": "strictly ascending tile index",
         "hash": "blake3",
-        "note": "signature suite is a deployment choice outside the scheme id (ed25519 on Substrate, secp256k1/ecrecover on EVM)",
+        "note": (
+            "signature suite is a deployment choice outside the scheme id "
+            "(ed25519 on Substrate, secp256k1/ecrecover on EVM)"
+        ),
     }
+
+
+def test_vector_and_canonical_provenance_raw_bytes_are_locked():
+    vector_sha256 = hashlib.sha256(VECTOR_PATH.read_bytes()).hexdigest()
+    provenance_sha256 = hashlib.sha256(PROVENANCE_PATH.read_bytes()).hexdigest()
+    assert vector_sha256 == "fb321155cfb731e2506df13c8c741d97647875998cd825212c6494a7292e00e7"
+    assert provenance_sha256 == "fbb301486fb47da28fbfdad96a062abb3ad88615e0e3a1044ff0e0dbd3d1fc50"
+
+    with PROVENANCE_PATH.open(encoding="utf-8") as stream:
+        provenance = json.load(stream)
+    assert provenance["artifact"] == "conformance/porw/sketch-tile-v2.json"
+    assert provenance["scheme_id"] == "aigg:porw:sketch-tile:v2"
+    assert provenance["vector_set"] == "sketch-tile-v2.0.0"
+    assert provenance["classification"] == "canonical-research"
+    assert provenance["classification_gate"]["name"] == (
+        "canonical-research-semantic-vector"
+    )
+    assert provenance["classification_gate"]["production_capable"] is False
+    assert provenance["sha256"] == vector_sha256
+    # The fixed raw SHA binds formula, note, and expected-description text
+    # that is intentionally not parsed as a second executable language here.
 
 
 def test_reference_buffer_matches_locked_hash():
@@ -277,8 +369,12 @@ def test_slot_seed_ticket_chunks_and_audit_beacon_match():
     weights_root = _unhex(vector["weights_tree"]["root"])
     partials_root = _unhex(vector["tampered_commitment_scenario"]["partials_root"])
     ticket_input = weights_root + partials_root + slot_seed.to_bytes(4, "little")
-    assert _hex(blake3(ticket_input).digest(length=32, seek=0)) == vector["ticket_chunks"]["index_0"]
-    assert _hex(blake3(ticket_input).digest(length=32, seek=32)) == vector["ticket_chunks"]["index_1"]
+    assert _hex(blake3(ticket_input).digest(length=32, seek=0)) == vector[
+        "ticket_chunks"
+    ]["index_0"]
+    assert _hex(blake3(ticket_input).digest(length=32, seek=32)) == vector[
+        "ticket_chunks"
+    ]["index_1"]
 
     beacon_fixture = vector["audit_beacon"]
     beacon_input = (
@@ -293,10 +389,35 @@ def test_weights_leaves_and_root_match_locked_tree():
     vector = _vector()
     tile_bytes = vector["params"]["tile_bytes"]
     buffer = _reference_buffer(vector)
-    tiles = [buffer[offset : offset + tile_bytes] for offset in range(0, len(buffer), tile_bytes)]
+    tiles = [
+        buffer[offset : offset + tile_bytes]
+        for offset in range(0, len(buffer), tile_bytes)
+    ]
     leaves = [_weights_leaf(index, tile) for index, tile in enumerate(tiles)]
     assert [_hex(leaf) for leaf in leaves] == vector["weights_tree"]["leaves"]
     assert _hex(_merkle_root(leaves)) == vector["weights_tree"]["root"]
+
+
+def test_leaf_helpers_validate_integer_ranges_and_exact_tile_length():
+    tile = bytes(TILE_BYTES)
+    assert isinstance(_weights_leaf(U64_LIMIT - 1, tile), bytes)
+    assert isinstance(_partials_leaf(U64_LIMIT - 1, U32_LIMIT - 1), bytes)
+    for tile_index in (-1, U64_LIMIT):
+        _assert_invalid_without_exception(
+            lambda tile_index=tile_index: _weights_leaf(tile_index, tile), None
+        )
+        _assert_invalid_without_exception(
+            lambda tile_index=tile_index: _partials_leaf(tile_index, 0), None
+        )
+    for sketch in (-1, U32_LIMIT):
+        _assert_invalid_without_exception(
+            lambda sketch=sketch: _partials_leaf(0, sketch), None
+        )
+    for malformed_tile in (tile[:-1], tile + b"\x00"):
+        _assert_invalid_without_exception(
+            lambda malformed_tile=malformed_tile: _weights_leaf(0, malformed_tile),
+            None,
+        )
 
 
 def test_counted_merkle_rejects_negative_index_and_nonpositive_leaf_count():
@@ -309,12 +430,64 @@ def test_counted_merkle_rejects_negative_index_and_nonpositive_leaf_count():
     assert not _merkle_verify_counted(root, leaves[0], 0, -1, [])
 
 
+@pytest.mark.parametrize(
+    ("index", "leaf_count"),
+    [(-1, 2), (U64_LIMIT, U64_LIMIT), (0, -1), (0, 0), (0, U64_LIMIT)],
+)
+def test_counted_merkle_rejects_out_of_domain_index_and_count(index, leaf_count):
+    vector = _vector()
+    fixture = vector["tampered_commitment_scenario"]
+    leaves = [_unhex(value) for value in fixture["partials_leaves"]]
+    _assert_invalid_without_exception(
+        lambda: _merkle_verify_counted(
+            _unhex(fixture["partials_root"]),
+            leaves[0],
+            index,
+            leaf_count,
+            [leaves[1]],
+        ),
+        False,
+    )
+
+
+@pytest.mark.parametrize("leaf_count", [3, 5])
+def test_counted_merkle_roundtrips_odd_duplicate_last_trees(leaf_count):
+    leaves = [blake3(f"leaf-{index}".encode()).digest() for index in range(leaf_count)]
+    root = _merkle_root(leaves)
+    for index, leaf in enumerate(leaves):
+        proof = _merkle_proof(leaves, index)
+        assert _merkle_verify_counted(root, leaf, index, leaf_count, proof)
+
+
+@pytest.mark.parametrize("leaf_count", [3, 5])
+def test_counted_merkle_rejects_wrong_duplicate_self_and_proof_length(leaf_count):
+    leaves = [blake3(f"leaf-{index}".encode()).digest() for index in range(leaf_count)]
+    root = _merkle_root(leaves)
+    index = leaf_count - 1
+    proof = _merkle_proof(leaves, index)
+    assert proof[0] == leaves[index]
+
+    wrong_self = list(proof)
+    wrong_self[0] = leaves[index - 1]
+    assert not _merkle_verify_counted(root, leaves[index], index, leaf_count, wrong_self)
+    assert not _merkle_verify_counted(root, leaves[index], index, leaf_count, proof[:-1])
+    assert not _merkle_verify_counted(
+        root, leaves[index], index, leaf_count, proof + [leaves[0]]
+    )
+    assert not _merkle_verify_counted(root, leaves[index], -1, leaf_count, proof)
+    assert not _merkle_verify_counted(
+        root, leaves[index], leaf_count, leaf_count, proof
+    )
+
+
 def test_partials_tree_committed_opening_and_interior_non_inclusion_match():
     vector = _vector()
     fixture = vector["tampered_commitment_scenario"]
     leaves = [
         _partials_leaf(tile_index, sketch)
-        for tile_index, sketch in zip(fixture["coverage"], fixture["committed_s_tiles"], strict=True)
+        for tile_index, sketch in zip(
+            fixture["coverage"], fixture["committed_s_tiles"], strict=True
+        )
     ]
     assert [_hex(leaf) for leaf in leaves] == fixture["partials_leaves"]
     root = _merkle_root(leaves)
@@ -446,6 +619,102 @@ def test_committed_opening_rejects_tampered_witness_fields(mutation):
     )
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("challenged_tile", -1),
+        ("challenged_tile", U64_LIMIT),
+        ("tile_index", -1),
+        ("tile_index", U64_LIMIT),
+        ("sketch", -1),
+        ("sketch", U32_LIMIT),
+        ("index", -1),
+        ("index", U64_LIMIT),
+        ("leaf_count", -1),
+        ("leaf_count", 0),
+        ("leaf_count", U64_LIMIT),
+    ],
+)
+def test_committed_opening_rejects_out_of_domain_numeric_fields(field, value):
+    vector = _vector()
+    fixture = vector["tampered_commitment_scenario"]
+    opening = fixture["opening_committed_tile_3"]
+    inputs = {
+        "root": _unhex(fixture["partials_root"]),
+        "leaf_count": len(fixture["partials_leaves"]),
+        "challenged_tile": 3,
+        "tile_index": fixture["coverage"][opening["leaf_index"]],
+        "sketch": fixture["committed_s_tiles"][opening["leaf_index"]],
+        "index": opening["leaf_index"],
+        "proof": [_unhex(item) for item in opening["proof"]],
+    }
+    inputs[field] = value
+    _assert_invalid_without_exception(
+        lambda: _verify_committed_opening(**inputs), False
+    )
+
+
+@pytest.mark.parametrize(
+    ("side", "field", "value"),
+    [
+        ("left", "tile_idx", -1),
+        ("left", "tile_idx", U64_LIMIT),
+        ("left", "s_tile", -1),
+        ("left", "s_tile", U32_LIMIT),
+        ("left", "index", -1),
+        ("left", "index", U64_LIMIT),
+        ("right", "tile_idx", -1),
+        ("right", "tile_idx", U64_LIMIT),
+        ("right", "s_tile", -1),
+        ("right", "s_tile", U32_LIMIT),
+        ("right", "index", -1),
+        ("right", "index", U64_LIMIT),
+    ],
+)
+def test_non_inclusion_rejects_out_of_domain_witness_fields(side, field, value):
+    vector = _vector()
+    fixture = vector["tampered_commitment_scenario"]
+    witnesses = deepcopy(fixture["non_inclusion_tile_2"])
+    witnesses[side][field] = value
+    leaves = [_unhex(item) for item in fixture["partials_leaves"]]
+    original = fixture["non_inclusion_tile_2"]
+    _assert_invalid_without_exception(
+        lambda: _verify_interior_non_inclusion(
+            root=_unhex(fixture["partials_root"]),
+            leaf_count=len(leaves),
+            challenged_tile=2,
+            left=witnesses["left"],
+            right=witnesses["right"],
+            left_proof=_merkle_proof(leaves, original["left"]["index"]),
+            right_proof=_merkle_proof(leaves, original["right"]["index"]),
+        ),
+        False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("challenged_tile", "leaf_count"),
+    [(-1, 2), (U64_LIMIT, 2), (2, -1), (2, 0), (2, U64_LIMIT)],
+)
+def test_non_inclusion_rejects_out_of_domain_context(challenged_tile, leaf_count):
+    vector = _vector()
+    fixture = vector["tampered_commitment_scenario"]
+    witnesses = fixture["non_inclusion_tile_2"]
+    leaves = [_unhex(item) for item in fixture["partials_leaves"]]
+    _assert_invalid_without_exception(
+        lambda: _verify_interior_non_inclusion(
+            root=_unhex(fixture["partials_root"]),
+            leaf_count=leaf_count,
+            challenged_tile=challenged_tile,
+            left=witnesses["left"],
+            right=witnesses["right"],
+            left_proof=_merkle_proof(leaves, witnesses["left"]["index"]),
+            right_proof=_merkle_proof(leaves, witnesses["right"]["index"]),
+        ),
+        False,
+    )
+
+
 def test_fraud_and_no_fraud_algebraic_verdicts():
     vector = _vector()
     fixture = vector["tampered_commitment_scenario"]
@@ -532,6 +801,66 @@ def test_fraud_verdict_rejects_tampered_cryptographic_witness_fields(mutation):
         inputs["weights_proof"][0] = bytes([proof[0] ^ 1]) + proof[1:]
 
     assert _fraud_verdict(**inputs) == "Invalid"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("tile_index", -1),
+        ("tile_index", U64_LIMIT),
+        ("claimed_sketch", -1),
+        ("claimed_sketch", U32_LIMIT),
+        ("partials_index", -1),
+        ("partials_index", U64_LIMIT),
+    ],
+)
+def test_fraud_verdict_rejects_out_of_domain_numeric_fields(field, value):
+    vector = _vector()
+    fixture = vector["tampered_commitment_scenario"]
+    fraud = fixture["fraud_proof_tile_3"]
+    tile_bytes = vector["params"]["tile_bytes"]
+    buffer = _reference_buffer(vector)
+    tile = buffer[fraud["tile_idx"] * tile_bytes : (fraud["tile_idx"] + 1) * tile_bytes]
+    inputs = {
+        "partials_root": _unhex(fixture["partials_root"]),
+        "weights_root": _unhex(vector["weights_tree"]["root"]),
+        "challenge": _unhex(vector["slot_seed_derivation"]["global_challenge"]),
+        "device_id": _unhex(vector["slot_seed_derivation"]["device_id"]),
+        "tile_index": fraud["tile_idx"],
+        "claimed_sketch": fraud["claimed_s_tile"],
+        "partials_index": fraud["partials_index"],
+        "partials_proof": [_unhex(item) for item in fraud["partials_proof"]],
+        "tile": tile,
+        "weights_proof": [_unhex(item) for item in fraud["weights_proof"]],
+    }
+    inputs[field] = value
+    _assert_invalid_without_exception(lambda: _fraud_verdict(**inputs), "Invalid")
+
+
+@pytest.mark.parametrize("tile_delta", [-1, 1])
+def test_fraud_verdict_rejects_noncanonical_tile_length(tile_delta):
+    vector = _vector()
+    fixture = vector["tampered_commitment_scenario"]
+    fraud = fixture["fraud_proof_tile_3"]
+    buffer = _reference_buffer(vector)
+    tile_start = fraud["tile_idx"] * TILE_BYTES
+    canonical_tile = buffer[tile_start : tile_start + TILE_BYTES]
+    tile = canonical_tile[:-1] if tile_delta < 0 else canonical_tile + b"\x00"
+    _assert_invalid_without_exception(
+        lambda: _fraud_verdict(
+            partials_root=_unhex(fixture["partials_root"]),
+            weights_root=_unhex(vector["weights_tree"]["root"]),
+            challenge=_unhex(vector["slot_seed_derivation"]["global_challenge"]),
+            device_id=_unhex(vector["slot_seed_derivation"]["device_id"]),
+            tile_index=fraud["tile_idx"],
+            claimed_sketch=fraud["claimed_s_tile"],
+            partials_index=fraud["partials_index"],
+            partials_proof=[_unhex(item) for item in fraud["partials_proof"]],
+            tile=tile,
+            weights_proof=[_unhex(item) for item in fraud["weights_proof"]],
+        ),
+        "Invalid",
+    )
 
 
 def test_two_word_msb_collision_is_deterministic_but_weights_leaves_differ():

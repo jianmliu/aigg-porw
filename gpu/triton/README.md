@@ -13,13 +13,13 @@
     在权重 tile 加载点融合 sketch（`ENABLE_SKETCH` constexpr 可开关）；
   - `sketch_sweep_kernel`：独立扫描（S1，用于 dense/cuBLAS 层）。
 - `porw_sketch/reference.py` — `moe_align_block_size` 最小复刻与 GEMM 参考。
-- `tests/test_sketch.py` — 5 项纯 NumPy 性质测试与 6 项单独门控的 Triton
-  kernel 测试；纯测试不受 CUDA/Triton 可用性影响。
+- `tests/test_sketch.py` — 纯 NumPy 性质与 host wrapper 输入验证，以及单独
+  门控的 Triton kernel 测试；纯测试不受 CUDA/Triton 可用性影响。
 - `tests/test_conformance.py` — 独立的 Python BLAKE3/NumPy 锁定向量验证；
   不导入 Rust、Solidity 或 Triton 结果。
 - `bench_gpu.py` — GPU 开销基准（需真实 GPU，测融合开销 % 与扫描 GB/s）。
-- `requirements-test.txt` 与 `ENVIRONMENT.md` — CPython 3.12.13 的固定测试
-  环境及平台限制。
+- `requirements-test.in`、两个平台 hash lock 与 `ENVIRONMENT.md` —
+  CPython 3.12.13 的固定测试环境及平台限制。
 
 ## 运行
 
@@ -31,6 +31,8 @@ TRITON_INTERPRET=1 gpu/triton/.venv/bin/python \
 
 环境创建、固定版本及 GPU 基准命令见 [`ENVIRONMENT.md`](ENVIRONMENT.md)。
 `TRITON_INTERPRET=1` 必须显式设置；不会因为缺少 CUDA 而自动声称解释器已运行。
+安装必须使用对应平台的 lock 与 `pip --require-hashes`，不能直接从 `.in`
+文件安装。
 
 ## 当前验证状态
 
@@ -42,6 +44,8 @@ TRITON_INTERPRET=1 gpu/triton/.venv/bin/python \
   中；它不是当前 checkout 的复测。
 - **发布前门槛：**Task 9 Linux x86_64 CI 必须通过 Triton 解释器测试；native
   GPU 仍需使用当前脚本复测，新输出只写入 `benchmarks/gpu/generated/`。
+  该脚本拒绝 dirty worktree，临时隔离 Triton cache，并为已创建的每个结果
+  记录最终 success/failed 状态；生成目录被 Git 忽略。
 
 ## 纯参考测试已验证的性质
 
@@ -50,7 +54,9 @@ TRITON_INTERPRET=1 gpu/triton/.venv/bin/python \
 2. 锁定向量：reference buffer/hash、系数、全部 sketch case、slot seed、
    weights/partials Merkle 树、ticket chunk、audit beacon、committed opening、
    interior non-inclusion、Fraud/NoFraud 代数结果逐项独立重算。向量不包含
-   boundary admission 等部署策略案例。
+   boundary admission 等部署策略案例。向量与 canonical provenance companion
+   的原始 SHA-256 也被固定，因此没有另行语义执行的 formula、note 与说明
+   文本仍受字节级完整性检查覆盖。
 3. 攻击演示：tile 级常数系数方案可由 4 字节/tile 的摘要重现；v2 的两个
    word MSB 变化可确定性碰撞，但对应 BLAKE3 weights leaf 不同。已记录的
    64 泛函/最小二乘实验只说明这些具体实验未重现测试输出，不构成一般

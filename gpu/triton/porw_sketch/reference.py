@@ -3,6 +3,30 @@
 import numpy as np
 
 
+def validate_coverage_tile_ids(tile_ids: np.ndarray, total_tiles: int) -> None:
+    """Validate the canonical strictly ascending coverage-set encoding."""
+    if (
+        not isinstance(total_tiles, int)
+        or isinstance(total_tiles, bool)
+        or total_tiles <= 0
+    ):
+        raise ValueError("total_tiles must be a positive integer")
+    if not isinstance(tile_ids, np.ndarray):
+        raise TypeError("tile_ids must be a NumPy array")
+    if tile_ids.dtype != np.dtype(np.int64):
+        raise TypeError("tile_ids must have dtype int64")
+    if tile_ids.ndim != 1:
+        raise ValueError("tile_ids must be one-dimensional")
+    if not tile_ids.flags.c_contiguous:
+        raise ValueError("tile_ids must use contiguous storage")
+    if tile_ids.size == 0:
+        return
+    if np.any(tile_ids < 0) or np.any(tile_ids >= total_tiles):
+        raise ValueError("tile_ids must be within the canonical tile range")
+    if np.any(tile_ids[1:] <= tile_ids[:-1]):
+        raise ValueError("tile_ids must be strictly ascending and unique")
+
+
 def moe_align(topk_ids: np.ndarray, num_experts: int, block_m: int):
     """Minimal reimplementation of vLLM's ``moe_align_block_size``.
 
