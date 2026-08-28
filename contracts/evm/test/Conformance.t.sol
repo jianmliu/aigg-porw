@@ -151,7 +151,19 @@ contract ConformanceTest is Test {
         // Tampered committed value: Fraud (0).
         assertEq(
             v.verifyTileFraudProof(
-                PARTIALS_ROOT, WEIGHTS_ROOT, CHALLENGE, DEVICE, 3, COMMITTED_S3, 1, pp, tileBytes(3), wp
+                PARTIALS_ROOT,
+                2,
+                WEIGHTS_ROOT,
+                WEIGHTS_ROOT,
+                4,
+                CHALLENGE,
+                DEVICE,
+                3,
+                COMMITTED_S3,
+                1,
+                pp,
+                tileBytes(3),
+                wp
             ),
             0
         );
@@ -159,7 +171,10 @@ contract ConformanceTest is Test {
         bytes memory bad = tileBytes(3);
         bad[0] = bytes1(uint8(bad[0]) ^ 1);
         assertEq(
-            v.verifyTileFraudProof(PARTIALS_ROOT, WEIGHTS_ROOT, CHALLENGE, DEVICE, 3, COMMITTED_S3, 1, pp, bad, wp), 2
+            v.verifyTileFraudProof(
+                PARTIALS_ROOT, 2, WEIGHTS_ROOT, WEIGHTS_ROOT, 4, CHALLENGE, DEVICE, 3, COMMITTED_S3, 1, pp, bad, wp
+            ),
+            2
         );
     }
 }

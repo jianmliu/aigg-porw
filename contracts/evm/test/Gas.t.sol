@@ -15,6 +15,8 @@ contract GasBench is Test {
     PorwVerifier v;
 
     uint64 constant TILE_IDX = 3;
+    uint64 constant MODEL_N_LEAVES = 17_000_000;
+    uint64 constant COVERAGE_N_LEAVES = 2_000_000;
     uint32 constant SLOT_SEED = 1970174283;
     bytes32 constant CHALLENGE = 0x0909090909090909090909090909090909090909090909090909090909090909;
     bytes32 constant DEVICE = 0x0303030303030303030303030303030303030303030303030303030303030303;
@@ -101,14 +103,44 @@ contract GasBench is Test {
         console2.log("verifyOpeningCommitted depth-21:", g0 - gasleft());
     }
 
-    function test_gas_fraud_proof_full_path() public {
-        uint256 g0 = gasleft();
-        uint8 verdict = v.verifyTileFraudProof(
-            partialsRoot, modelRoot, CHALLENGE, DEVICE, TILE_IDX, trueS + 1, 1, pProof, tile, wProof
+    function fraudProofCalldata() internal view returns (bytes memory) {
+        return abi.encodeCall(
+            PorwVerifier.verifyTileFraudProof,
+            (
+                partialsRoot,
+                COVERAGE_N_LEAVES,
+                modelRoot,
+                modelRoot,
+                MODEL_N_LEAVES,
+                CHALLENGE,
+                DEVICE,
+                TILE_IDX,
+                trueS + 1,
+                uint64(1),
+                pProof,
+                tile,
+                wProof
+            )
         );
-        uint256 used = g0 - gasleft();
-        assertEq(verdict, 0); // Fraud: the full path executed
-        console2.log("verifyTileFraudProof (p21 + w25 + tile hash + sketch):", used);
+    }
+
+    function wordAt(bytes memory data, uint256 offset) internal pure returns (bytes32 word) {
+        require(offset + 32 <= data.length, "word out of bounds");
+        assembly ("memory-safe") {
+            word := mload(add(add(data, 0x20), offset))
+        }
+    }
+
+    function calldataComposition(bytes memory data)
+        internal
+        pure
+        returns (uint256 zeroBytes, uint256 nonZeroBytes, uint256 calldataGas)
+    {
+        for (uint256 i = 0; i < data.length; i++) {
+            if (data[i] == 0) zeroBytes++;
+            else nonZeroBytes++;
+        }
+        calldataGas = zeroBytes * 4 + nonZeroBytes * 16;
     }
 
     function test_gas_ecrecover_baseline() public {
@@ -122,19 +154,39 @@ contract GasBench is Test {
         assertEq(rec, a);
     }
 
-    function test_calldata_cost_estimate() public pure {
-        // Fraud-proof calldata: 4096-byte tile (pseudo-random, ~all nonzero)
-        // + 25*32 + 21*32 proof bytes + ~10 words of fixed fields.
-        uint256 tileB = 4096;
-        uint256 proofB = (25 + 21) * 32;
-        uint256 fixedB = 10 * 32;
-        uint256 total = tileB + proofB + fixedB;
-        // EIP-2028: 16 gas per nonzero byte (worst case: all nonzero).
-        console2.log("fraud-proof calldata bytes:", total);
-        console2.log("fraud-proof calldata gas (worst case, 16/B):", total * 16);
-        // Opening response: leaf fields + depth-21 proof.
-        uint256 opening = 6 * 32 + 21 * 32;
-        console2.log("opening calldata bytes:", opening);
-        console2.log("opening calldata gas (16/B):", opening * 16);
+    function test_exact_fraud_proof_calldata_and_total_gas() public view {
+        bytes memory callData = fraudProofCalldata();
+
+        // 13 ABI head words, plus one length word for each dynamic value and
+        // their padded bodies. The leading four bytes are the selector.
+        uint256 expectedLength =
+            4 + 13 * 32 + (1 + pProof.length) * 32 + (1 + tile.length / 32) * 32 + (1 + wProof.length) * 32;
+        assertEq(callData.length, expectedLength);
+        assertEq(bytes4(wordAt(callData, 0)), PorwVerifier.verifyTileFraudProof.selector);
+
+        uint256 partialsOffset = uint256(wordAt(callData, 4 + 10 * 32));
+        uint256 tileOffset = uint256(wordAt(callData, 4 + 11 * 32));
+        uint256 weightsOffset = uint256(wordAt(callData, 4 + 12 * 32));
+        assertEq(uint256(wordAt(callData, 4 + partialsOffset)), pProof.length);
+        assertEq(uint256(wordAt(callData, 4 + tileOffset)), tile.length);
+        assertEq(uint256(wordAt(callData, 4 + weightsOffset)), wProof.length);
+
+        (uint256 zeroBytes, uint256 nonZeroBytes, uint256 intrinsicCalldataGas) = calldataComposition(callData);
+        assertEq(zeroBytes + nonZeroBytes, callData.length);
+
+        uint256 g0 = gasleft();
+        (bool ok, bytes memory result) = address(v).staticcall(callData);
+        uint256 executionGas = g0 - gasleft();
+        assertTrue(ok);
+        uint8 verdict = abi.decode(result, (uint8));
+        assertEq(verdict, 0);
+        uint256 totalGas = 21_000 + intrinsicCalldataGas + executionGas;
+
+        console2.log("fraud-proof calldata bytes:", callData.length);
+        console2.log("fraud-proof calldata zero bytes:", zeroBytes);
+        console2.log("fraud-proof calldata non-zero bytes:", nonZeroBytes);
+        console2.log("fraud-proof intrinsic calldata gas (EIP-2028):", intrinsicCalldataGas);
+        console2.log("fraud-proof execution gas:", executionGas);
+        console2.log("fraud-proof total gas (21000 + calldata + execution):", totalGas);
     }
 }

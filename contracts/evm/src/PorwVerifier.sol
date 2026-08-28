@@ -111,6 +111,40 @@ contract PorwVerifier {
         return acc == root;
     }
 
+    /// Inclusion verification against an exact duplicate-last tree shape.
+    /// Security entry points use this count-aware form so an inclusion cannot
+    /// be replayed with an out-of-range index, a shorter/longer path, or a
+    /// non-canonical sibling at a duplicate-last level.
+    function merkleVerifyCounted(bytes32 root, bytes32 leaf, uint64 index, uint64 leafCount, bytes32[] calldata proof)
+        public
+        pure
+        returns (bool)
+    {
+        if (leafCount == 0 || index >= leafCount) return false;
+
+        bytes32 acc = leaf;
+        uint64 width = leafCount;
+        uint256 proofIndex;
+        while (width > 1) {
+            if (proofIndex >= proof.length) return false;
+            bytes32 sibling = proof[proofIndex];
+            if (index % 2 == 0) {
+                if (index + 1 == width) {
+                    if (sibling != acc) return false;
+                    acc = Blake3.hash(bytes.concat(acc, acc));
+                } else {
+                    acc = Blake3.hash(bytes.concat(acc, sibling));
+                }
+            } else {
+                acc = Blake3.hash(bytes.concat(sibling, acc));
+            }
+            index /= 2;
+            width = width / 2 + width % 2;
+            proofIndex++;
+        }
+        return proofIndex == proof.length && acc == root;
+    }
+
     /// keccak256 variant — gas comparison only (a NEW scheme id if adopted).
     function merkleVerifyKeccak(bytes32 root, bytes32 leaf, uint256 index, bytes32[] calldata proof)
         public
@@ -133,23 +167,30 @@ contract PorwVerifier {
     /// is committed under partials_root, the tile bytes are canonical under
     /// the model root, and the recomputed sketch disagrees. Returns
     /// 0 = Fraud, 1 = NoFraud, 2 = Invalid.
+    /// @dev An integration adapter must authenticate `solutionModelId`,
+    /// `modelNLeaves`, and `coverageNLeaves` before forwarding them here.
     function verifyTileFraudProof(
         bytes32 partialsRoot,
+        uint64 coverageNLeaves,
         bytes32 modelRoot,
+        bytes32 solutionModelId,
+        uint64 modelNLeaves,
         bytes32 globalChallenge,
         bytes32 deviceId,
         uint64 tileIdx,
         uint32 claimedSTile,
-        uint256 partialsIndex,
+        uint64 partialsIndex,
         bytes32[] calldata partialsProof,
         bytes calldata tileBytes,
         bytes32[] calldata weightsProof
     ) external pure returns (uint8) {
-        if (tileBytes.length != TILE_BYTES) return 2;
-        if (!merkleVerify(partialsRoot, partialsLeaf(tileIdx, claimedSTile), partialsIndex, partialsProof)) {
+        if (modelRoot != solutionModelId || tileBytes.length != TILE_BYTES) return 2;
+        if (!merkleVerifyCounted(
+                partialsRoot, partialsLeaf(tileIdx, claimedSTile), partialsIndex, coverageNLeaves, partialsProof
+            )) {
             return 2;
         }
-        if (!merkleVerify(modelRoot, weightsLeaf(tileIdx, tileBytes), tileIdx, weightsProof)) {
+        if (!merkleVerifyCounted(modelRoot, weightsLeaf(tileIdx, tileBytes), tileIdx, modelNLeaves, weightsProof)) {
             return 2;
         }
         uint32 slotSeed = deriveSlotSeed(globalChallenge, deviceId);
@@ -163,11 +204,10 @@ contract PorwVerifier {
         uint64 nLeaves,
         uint64 challengedTile,
         uint32 sTile,
-        uint256 index,
+        uint64 index,
         bytes32[] calldata proof
     ) external pure returns (bool) {
-        if (index >= nLeaves) return false;
-        return merkleVerify(partialsRoot, partialsLeaf(challengedTile, sTile), index, proof);
+        return merkleVerifyCounted(partialsRoot, partialsLeaf(challengedTile, sTile), index, nLeaves, proof);
     }
 
     /// `verify_opening_response`, NotCommitted bracketed arm: adjacent
@@ -178,18 +218,50 @@ contract PorwVerifier {
         uint64 challengedTile,
         uint64 leftTile,
         uint32 leftS,
-        uint256 leftIndex,
+        uint64 leftIndex,
         bytes32[] calldata leftProof,
         uint64 rightTile,
         uint32 rightS,
-        uint256 rightIndex,
+        uint64 rightIndex,
         bytes32[] calldata rightProof
     ) external pure returns (bool) {
-        if (leftIndex + 1 != rightIndex || rightIndex >= nLeaves) return false;
+        if (leftIndex == type(uint64).max || leftIndex + 1 != rightIndex) return false;
         if (!(leftTile < challengedTile && challengedTile < rightTile)) return false;
-        if (!merkleVerify(partialsRoot, partialsLeaf(leftTile, leftS), leftIndex, leftProof)) {
+        if (!merkleVerifyCounted(partialsRoot, partialsLeaf(leftTile, leftS), leftIndex, nLeaves, leftProof)) {
             return false;
         }
-        return merkleVerify(partialsRoot, partialsLeaf(rightTile, rightS), rightIndex, rightProof);
+        return merkleVerifyCounted(partialsRoot, partialsLeaf(rightTile, rightS), rightIndex, nLeaves, rightProof);
+    }
+
+    /// `verify_opening_response`, NotCommitted before-first arm: the first
+    /// committed leaf is greater than the challenged tile.
+    function verifyOpeningNonInclusionBeforeFirst(
+        bytes32 partialsRoot,
+        uint64 nLeaves,
+        uint64 challengedTile,
+        uint64 rightTile,
+        uint32 rightS,
+        uint64 rightIndex,
+        bytes32[] calldata rightProof
+    ) external pure returns (bool) {
+        if (rightIndex != 0 || challengedTile >= rightTile) return false;
+        return merkleVerifyCounted(partialsRoot, partialsLeaf(rightTile, rightS), rightIndex, nLeaves, rightProof);
+    }
+
+    /// `verify_opening_response`, NotCommitted after-last arm: the last
+    /// committed leaf is less than the challenged tile.
+    function verifyOpeningNonInclusionAfterLast(
+        bytes32 partialsRoot,
+        uint64 nLeaves,
+        uint64 challengedTile,
+        uint64 leftTile,
+        uint32 leftS,
+        uint64 leftIndex,
+        bytes32[] calldata leftProof
+    ) external pure returns (bool) {
+        if (nLeaves == 0 || leftIndex != nLeaves - 1 || leftTile >= challengedTile) {
+            return false;
+        }
+        return merkleVerifyCounted(partialsRoot, partialsLeaf(leftTile, leftS), leftIndex, nLeaves, leftProof);
     }
 }

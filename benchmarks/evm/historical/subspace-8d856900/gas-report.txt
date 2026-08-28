@@ -1,0 +1,9 @@
+Historical imported report (environment not reproducibly pinned)
+Reported compiler label: Solidity 0.8.33
+Effective imported configuration: compiler and EVM version unspecified
+Local replay before migration: Solidity 0.8.34 / Osaka
+
+verifyTileFraudProof (partials depth 21 + weights depth 25 + tile hash + sketch)
+function-body gas: 8,618,217
+
+This is historical evidence only, not a London benchmark result.

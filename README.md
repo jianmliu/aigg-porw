@@ -34,11 +34,10 @@ specification, the specification is authoritative.
 - [`contracts/evm`](contracts/evm/) — EVM verifier, conformance tests, and gas
   benchmarks.
 
-`contracts/evm/lib/forge-std` is an untouched historical source baseline retained
-for extraction and content-identity verification. Its presence is not an
-endorsement of an ongoing vendoring policy. Task 7 will replace it with
-forge-std v1.10.0 pinned at commit
-`8bbcf6e3f8f62f419e5429a0bd89331c85c37824`.
+`contracts/evm/lib/forge-std` is a Git submodule pinned to forge-std v1.10.0 at
+commit `8bbcf6e3f8f62f419e5429a0bd89331c85c37824`. The imported mutable copy remains
+recoverable from the preserved EVM split history but is not part of the active
+tree.
 
 ## Extraction provenance
 
