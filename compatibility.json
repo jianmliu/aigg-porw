@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "release": "v0.1.0-research.1",
+  "classification": "research",
+  "spec_tag": "porw-sketch-tile-v2.0.0-private.4",
+  "spec_commit": "4e4a9390008948c1912be9a8eb0653ea1e03cd64",
+  "scheme_id": "aigg:porw:sketch-tile:v2",
+  "conformance": {
+    "vector_sha256": "fb321155cfb731e2506df13c8c741d97647875998cd825212c6494a7292e00e7",
+    "provenance_sha256": "fbb301486fb47da28fbfdad96a062abb3ad88615e0e3a1044ff0e0dbd3d1fc50"
+  },
+  "subspace": {
+    "status": "not_integrated",
+    "source_baseline": "8d8569004c2322aabe26cd59c12bbfe7dc4de1a1"
+  },
+  "ai3_inference": {
+    "status": "not_integrated"
+  },
+  "production_economics": {
+    "status": "disabled"
+  },
+  "production_effects": {
+    "rewards": "disabled",
+    "custody": "disabled",
+    "slashing": "disabled",
+    "eligibility": "disabled"
+  }
+}

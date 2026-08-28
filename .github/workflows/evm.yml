@@ -1,0 +1,71 @@
+name: PoRW EVM
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evm-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evm:
+    name: Solidity and receipt-backed London gas
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      FOUNDRY_PROFILE: default
+    steps:
+      - name: Check out source and the pinned forge-std gitlink
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Verify the forge-std submodule pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule update --init --recursive
+          expected=8bbcf6e3f8f62f419e5429a0bd89331c85c37824
+          test "$(git -C contracts/evm/lib/forge-std rev-parse HEAD)" = "$expected"
+          test -z "$(git -C contracts/evm/lib/forge-std status --porcelain)"
+          test "$(git ls-files -s contracts/evm/lib/forge-std | awk '{print $2}')" = "$expected"
+
+      - name: Install Foundry 1.7.1
+        uses: foundry-rs/foundry-toolchain@82dee4ba654bd2146511f85f0d013af94670c4de # v1.4.0
+        with:
+          version: v1.7.1
+          cache: false
+
+      - name: Run the full Solidity suite
+        working-directory: contracts/evm
+        shell: bash
+        run: |
+          set -euo pipefail
+          forge clean
+          forge test -vv
+
+      - name: Validate fresh Anvil receipts against the committed baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          contracts/evm/scripts/run-anvil-benchmark.sh --check-committed
+          git diff --exit-code -- benchmarks/evm/anvil-london.json
+          test -z "$(git status --porcelain --untracked-files=all -- benchmarks/evm/anvil-london.json)"
+
+      - name: Upload the validated benchmark evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: porw-anvil-london-${{ github.sha }}
+          path: benchmarks/evm/anvil-london.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+          overwrite: false
+          include-hidden-files: false

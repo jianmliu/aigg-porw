@@ -1,7 +1,15 @@
 # AIGG PoRW
 
-This private research repository contains chain-neutral Proof of Resident Weights
-(PoRW) implementations and benchmarks.
+This private repository contains the `v0.1.0-research.1` release candidate for
+chain-neutral Proof of Resident Weights (PoRW) implementations and benchmarks.
+It is research software, not a production-capable reward or inference system.
+
+The release is locked to scheme `aigg:porw:sketch-tile:v2`, private normative
+spec tag `porw-sketch-tile-v2.0.0-private.4` at commit
+`4e4a9390008948c1912be9a8eb0653ea1e03cd64`, canonical vector SHA-256
+`fb321155cfb731e2506df13c8c741d97647875998cd825212c6494a7292e00e7`, and
+provenance SHA-256
+`fbb301486fb47da28fbfdad96a062abb3ad88615e0e3a1044ff0e0dbd3d1fc50`.
 
 ## Repository boundary
 
@@ -34,6 +42,10 @@ specification, the specification is authoritative.
 - [`contracts/evm`](contracts/evm/) — EVM verifier, conformance tests, and gas
   benchmarks.
 
+The root Rust workspace also contains the unpublished
+`conformance/rust-runner`, which checks the cached canonical vector without
+adding repository-only responsibilities to the public core crate.
+
 `contracts/evm/lib/forge-std` is a Git submodule pinned to forge-std v1.10.0 at
 commit `8bbcf6e3f8f62f419e5429a0bd89331c85c37824`. The imported mutable copy remains
 recoverable from the preserved EVM split history but is not part of the active
@@ -64,10 +76,50 @@ Git records the prefix relocation as a subtree merge, not a file rename for
 `--follow` to traverse. The split-tip commands above query the preserved history
 directly.
 
+## Reproducible gates
+
+The local gates use the pinned Rust toolchain in `rust-toolchain.toml`, locked
+Cargo dependencies, CPython 3.12.13 with a platform-specific hash lock, Solidity
+0.8.33, London, optimizer 200, `via_ir`, Foundry 1.7.1, and forge-std v1.10.0.
+
+```sh
+cargo test --workspace --locked
+cargo test -p aigg-porw-core --locked
+cargo test -p aigg-porw-core --features scale --locked
+cargo check -p aigg-porw-core --no-default-features --locked
+
+gpu/triton/.venv/bin/python -m pytest \
+  gpu/triton/tests/test_sketch.py \
+  gpu/triton/tests/test_conformance.py -q -rs
+
+(cd contracts/evm && forge clean && forge test -vv)
+contracts/evm/scripts/run-anvil-benchmark.sh --check-committed
+```
+
+On Darwin arm64, Triton is unavailable and the local Python run cannot satisfy
+the mandatory interpreter gate. The release requires the Linux x86_64 CI run
+with `TRITON_INTERPRET=1`, exact hash-locked dependencies, all named kernel tests
+collected, and zero skips. CI also proves tests leave `spec-cache` unchanged and
+fresh real-Anvil receipts have no unexplained deterministic drift from the
+committed benchmark.
+
+See [`RELEASE.md`](RELEASE.md) for the release procedure, [`SECURITY.md`](SECURITY.md)
+for mandatory production gates, and [`compatibility.json`](compatibility.json)
+for machine-readable status.
+
+## Consumer compatibility
+
+Subspace is `not_integrated`; commit
+`8d8569004c2322aabe26cd59c12bbfe7dc4de1a1` is an extraction baseline, not a
+passing consumer integration. `ai3-inference` is also `not_integrated`.
+Production economics are disabled. No current test turns proof of resident
+capacity into proof that a user inference request was executed.
+
 ## Status and licensing
 
 This repository is private research software. Its interfaces and implementation
-structure are not yet stable or production commitments.
+structure are not stable or production commitments. Production rewards,
+custody, slashing, and eligibility effects are disabled.
 
 Imported source history, attribution, and existing license files are preserved.
 Each imported component and vendored dependency remains under its existing terms;

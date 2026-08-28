@@ -1,0 +1,170 @@
+name: PoRW conformance
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: conformance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  conformance:
+    name: Rust, spec lock, and Triton interpreter
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_NO_CACHE_DIR: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      TRITON_INTERPRET: "1"
+    steps:
+      - name: Check out the reviewed source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly-2025-05-31 \
+            --profile minimal \
+            --component rustfmt \
+            --component clippy
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Verify the canonical spec lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          lock = json.loads(Path("spec-lock.json").read_text(encoding="utf-8"))
+          expected = {
+              "tag": "porw-sketch-tile-v2.0.0-private.4",
+              "commit": "4e4a9390008948c1912be9a8eb0653ea1e03cd64",
+              "scheme_id": "aigg:porw:sketch-tile:v2",
+              "vector_sha256": "fb321155cfb731e2506df13c8c741d97647875998cd825212c6494a7292e00e7",
+              "provenance_sha256": "fbb301486fb47da28fbfdad96a062abb3ad88615e0e3a1044ff0e0dbd3d1fc50",
+          }
+          actual = {
+              "tag": lock["aigg_spec"]["tag"],
+              "commit": lock["aigg_spec"]["commit"],
+              "scheme_id": lock["conformance"]["scheme_id"],
+              "vector_sha256": lock["conformance"]["sha256"],
+              "provenance_sha256": lock["conformance"]["provenance_sha256"],
+          }
+          if actual != expected:
+              raise SystemExit(f"unexpected spec lock: {actual!r}")
+
+          for path_key, digest_key in (
+              ("cache_path", "sha256"),
+              ("provenance_cache_path", "provenance_sha256"),
+          ):
+              path = Path(lock["conformance"][path_key])
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              expected_digest = lock["conformance"][digest_key]
+              if digest != expected_digest:
+                  raise SystemExit(
+                      f"SHA-256 mismatch for {path}: {digest} != {expected_digest}"
+                  )
+          PY
+
+      - name: Test the Rust workspace and feature boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --workspace --locked
+          cargo test -p aigg-porw-core --locked
+          cargo test -p aigg-porw-core --features scale --locked
+          cargo check -p aigg-porw-core --no-default-features --locked
+
+      - name: Install exact CPython and hash-locked Triton dependencies
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: 3.12.13
+          check-latest: false
+
+      - name: Verify and install the Linux interpreter environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = x86_64
+          python - <<'PY'
+          import hashlib
+          import platform
+          from pathlib import Path
+
+          if platform.python_implementation() != "CPython":
+              raise SystemExit("the interpreter must be CPython")
+          if platform.python_version() != "3.12.13":
+              raise SystemExit(f"unexpected Python: {platform.python_version()}")
+          lock = Path("gpu/triton/requirements-test-linux-x86_64.lock")
+          digest = hashlib.sha256(lock.read_bytes()).hexdigest()
+          expected = "44a84f53dd718ba565f274431b6a6dc3390d60f215328daa5f9293562413964a"
+          if digest != expected:
+              raise SystemExit(f"requirements lock mismatch: {digest} != {expected}")
+          PY
+          python -m pip install --require-hashes \
+            -r gpu/triton/requirements-test-linux-x86_64.lock
+
+      - name: Run Python and mandatory Triton interpreter conformance
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/triton-interpreter.xml"
+          python -m pytest \
+            gpu/triton/tests/test_sketch.py \
+            gpu/triton/tests/test_conformance.py \
+            -q -rs --junitxml="$report"
+          python - "$report" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse(sys.argv[1]).getroot()
+          suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite"))
+          tests = sum(int(suite.attrib.get("tests", 0)) for suite in suites)
+          skipped = sum(int(suite.attrib.get("skipped", 0)) for suite in suites)
+          failures = sum(int(suite.attrib.get("failures", 0)) for suite in suites)
+          errors = sum(int(suite.attrib.get("errors", 0)) for suite in suites)
+          names = {case.attrib.get("name", "") for case in root.iter("testcase")}
+          required_kernels = {
+              "test_sweep_kernel_matches_reference",
+              "test_sweep_kernel_coverage_subset",
+              "test_sweep_wrapper_rejects_invalid_tile_ids_before_launch",
+              "test_sweep_internal_full_coverage_skips_caller_validation",
+              "test_sweep_empty_external_coverage_returns_uint32_without_launch",
+              "test_moe_kernel_gemm_correct",
+              "test_moe_kernel_sketch_matches_spec",
+              "test_moe_kernel_batch_invariance",
+              "test_fused_equals_sweep_on_covered_tiles",
+          }
+          missing = sorted(required_kernels - names)
+          if tests == 0 or skipped or failures or errors or missing:
+              raise SystemExit(
+                  "interpreter gate failed: "
+                  f"tests={tests}, skipped={skipped}, failures={failures}, "
+                  f"errors={errors}, missing_kernel_tests={missing}"
+              )
+          print(f"interpreter gate accepted {tests} tests with zero skips")
+          PY
+
+      - name: Prove the spec cache stayed read-only
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- spec-cache
+          test -z "$(git status --porcelain --untracked-files=all -- spec-cache)"
