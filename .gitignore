@@ -1,1 +1,5 @@
 .worktrees/
+/target/
+**/.pytest_cache/
+/gpu/triton/.venv/
+/contracts/evm/broadcast/
