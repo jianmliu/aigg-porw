@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
+import {Blake3} from "../src/Blake3.sol";
 import {PorwVerifier} from "../src/PorwVerifier.sol";
 
 contract OpeningBoundariesTest is Test {
@@ -20,6 +21,38 @@ contract OpeningBoundariesTest is Test {
     function proof(bytes32 sibling) internal pure returns (bytes32[] memory out) {
         out = new bytes32[](1);
         out[0] = sibling;
+    }
+
+    function twoLeafFixture(uint64 leftTile, uint32 leftS, uint64 rightTile, uint32 rightS)
+        internal
+        view
+        returns (bytes32 root, bytes32[] memory leftProof, bytes32[] memory rightProof)
+    {
+        bytes32 leftLeaf = verifier.partialsLeaf(leftTile, leftS);
+        bytes32 rightLeaf = verifier.partialsLeaf(rightTile, rightS);
+        root = Blake3.hash(bytes.concat(leftLeaf, rightLeaf));
+        leftProof = proof(rightLeaf);
+        rightProof = proof(leftLeaf);
+    }
+
+    function threeLeafOuterWitnesses()
+        internal
+        view
+        returns (bytes32 root, bytes32[] memory leftProof, bytes32[] memory rightProof)
+    {
+        bytes32 leftLeaf = verifier.partialsLeaf(1, S1);
+        bytes32 middleLeaf = verifier.partialsLeaf(2, 222);
+        bytes32 rightLeaf = verifier.partialsLeaf(3, S3);
+        bytes32 leftParent = Blake3.hash(bytes.concat(leftLeaf, middleLeaf));
+        bytes32 rightParent = Blake3.hash(bytes.concat(rightLeaf, rightLeaf));
+        root = Blake3.hash(bytes.concat(leftParent, rightParent));
+
+        leftProof = new bytes32[](2);
+        leftProof[0] = middleLeaf;
+        leftProof[1] = rightParent;
+        rightProof = new bytes32[](2);
+        rightProof[0] = rightLeaf;
+        rightProof[1] = leftParent;
     }
 
     function callBeforeFirst(uint64 challengedTile, uint64 rightTile, uint32 rightS, uint64 rightIndex)
@@ -69,15 +102,24 @@ contract OpeningBoundariesTest is Test {
     }
 
     function test_rejectsUnsortedClaimedNeighbors() public view {
-        assertFalse(verifier.verifyOpeningNonInclusion(PARTIALS_ROOT, 2, 2, 3, S3, 0, proof(P1), 1, S1, 1, proof(P0)));
+        (bytes32 root, bytes32[] memory leftProof, bytes32[] memory rightProof) = twoLeafFixture(3, S3, 1, S1);
+        assertTrue(verifier.verifyOpeningCommitted(root, 2, 3, S3, 0, leftProof));
+        assertTrue(verifier.verifyOpeningCommitted(root, 2, 1, S1, 1, rightProof));
+        assertFalse(verifier.verifyOpeningNonInclusion(root, 2, 2, 3, S3, 0, leftProof, 1, S1, 1, rightProof));
     }
 
     function test_rejectsDuplicateClaimedNeighbors() public view {
-        assertFalse(verifier.verifyOpeningNonInclusion(PARTIALS_ROOT, 2, 2, 1, S1, 0, proof(P1), 1, S1, 1, proof(P0)));
+        (bytes32 root, bytes32[] memory leftProof, bytes32[] memory rightProof) = twoLeafFixture(1, S1, 1, S1);
+        assertTrue(verifier.verifyOpeningCommitted(root, 2, 1, S1, 0, leftProof));
+        assertTrue(verifier.verifyOpeningCommitted(root, 2, 1, S1, 1, rightProof));
+        assertFalse(verifier.verifyOpeningNonInclusion(root, 2, 2, 1, S1, 0, leftProof, 1, S1, 1, rightProof));
     }
 
     function test_rejectsNonAdjacentClaimedNeighbors() public view {
-        assertFalse(verifier.verifyOpeningNonInclusion(PARTIALS_ROOT, 3, 2, 1, S1, 0, proof(P1), 3, S3, 2, proof(P0)));
+        (bytes32 root, bytes32[] memory leftProof, bytes32[] memory rightProof) = threeLeafOuterWitnesses();
+        assertTrue(verifier.verifyOpeningCommitted(root, 3, 1, S1, 0, leftProof));
+        assertTrue(verifier.verifyOpeningCommitted(root, 3, 3, S3, 2, rightProof));
+        assertFalse(verifier.verifyOpeningNonInclusion(root, 3, 2, 1, S1, 0, leftProof, 3, S3, 2, rightProof));
     }
 
     function test_beforeFirstRequiresActualFirstLeaf() public view {
