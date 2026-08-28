@@ -266,4 +266,3 @@ Head: the current branch HEAD
 
 Resolve every Critical or Important finding, then rerun Tasks 3 and 4 before
 reporting completion.
-

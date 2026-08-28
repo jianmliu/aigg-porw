@@ -1,6 +1,6 @@
 # Pytest Kernel Isolation Design
 
-**Status:** Proposed
+**Status:** Implemented
 
 **Date:** 2026-08-28
 
@@ -74,10 +74,10 @@ Verification proceeds in four gates:
 4. Run `gpu/triton/run_gpu_bench.sh` unchanged on an A100 and require a generated
    artifact with `status: success` and `exit_code: 0`.
 
-The expected native result is that all 157 currently collected tests pass in
-one process before the benchmark executes. Performance values are reported only
-from the successful artifact; the isolation fix itself makes no performance
-claim.
+The expected native result is that all 158 currently collected tests pass in
+one process before the benchmark executes: 157 existing tests plus the new
+isolation regression. Performance values are reported only from the successful
+artifact; the isolation fix itself makes no performance claim.
 
 ## Failure Handling
 
@@ -85,4 +85,3 @@ If the private module cannot be constructed, the fixture fails immediately
 rather than falling back to canonical import state. If the combined A100 suite
 still observes ordinary functions at a kernel launch boundary, the artifact is
 failed and no benchmark values are accepted.
-
