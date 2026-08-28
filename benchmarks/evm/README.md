@@ -19,6 +19,13 @@ Generate the evidence from the repository root with:
 contracts/evm/scripts/run-anvil-benchmark.sh
 ```
 
+From a clean committed checkout, verify the committed evidence with fresh real
+receipts without modifying the worktree:
+
+```sh
+contracts/evm/scripts/run-anvil-benchmark.sh --check-committed
+```
+
 The runner checks the pinned Foundry build and Solidity settings, executes two
 fresh local Anvil chains, compares every deterministic report field except the
 transaction hashes and block timestamp, and atomically publishes evidence only
@@ -28,8 +35,9 @@ code to match both the pinned compiler artifact and committed bytecode hash. A
 sorted source manifest binds every measurement-relevant source/config file and
 the forge-std gitlink. The runner refuses relevant files that differ from the
 Git index and checks them again before publication; intentional edits must be
-reviewed and staged first. This avoids a self-referential commit hash while
-making the precise measured source tree reproducible. Each run asks Anvil to
+reviewed and staged first. The manifest intentionally contains no commit ID:
+only exact content hashes and the forge-std gitlink participate, so it remains
+identical before and after the commit that contains it. Each run asks Anvil to
 bind an OS-selected localhost port and verifies the child PID, chain ID, and
 Anvil client identity before accepting RPC readiness.
 

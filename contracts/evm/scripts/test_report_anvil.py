@@ -104,8 +104,7 @@ class ReportAnvilTest(unittest.TestCase):
         self.source_manifest.write_text(
             json.dumps(
                 {
-                    "schema": "aigg.porw.source-manifest.v1",
-                    "git_base_commit": "aa" * 20,
+                    "schema": "aigg.porw.source-manifest.v2",
                     "relevant_input_worktree_dirty": False,
                     "entries": [{"path": "src/PorwVerifier.sol", "sha256": "bb" * 32}],
                 },
@@ -177,6 +176,7 @@ class ReportAnvilTest(unittest.TestCase):
         self.assertEqual(report["verifier"]["runtime_bytecode_sha256"], hashlib.sha256(bytes.fromhex("6000")).hexdigest())
         self.assertEqual(report["call"]["calldata"]["sha256"], hashlib.sha256(bytes.fromhex(SELECTOR + "00ff")).hexdigest())
         self.assertEqual(report["call"]["expected_verdict"], "Fraud")
+        self.assertNotIn("git_base_commit", report["source_identity"])
         self.assertEqual(report["block_timestamp"], 0x1234)
 
     def test_rejects_ambiguous_selector_match_without_overwriting(self) -> None:

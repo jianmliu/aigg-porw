@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+MODE="publish"
+if [[ $# -eq 1 && "$1" == "--check-committed" ]]; then
+    MODE="check"
+elif [[ $# -ne 0 ]]; then
+    echo "usage: $0 [--check-committed]" >&2
+    exit 2
+fi
+
 FOUNDRY_VERSION="1.7.1"
 FOUNDRY_COMMIT="4072e48705af9d93e3c0f6e29e93b5e9a40caed8"
 CHAIN_ID="31337"
@@ -310,9 +318,8 @@ for relative in sys.argv[3:]:
         entries.append({"path": relative, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
 document = {
     "entries": entries,
-    "git_base_commit": subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip(),
     "relevant_input_worktree_dirty": False,
-    "schema": "aigg.porw.source-manifest.v1",
+    "schema": "aigg.porw.source-manifest.v2",
 }
 output.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
@@ -329,6 +336,16 @@ cmp -s "$TEMP_DIR/source-manifest.json" "$TEMP_DIR/source-manifest-final.json" |
     echo "measurement-relevant inputs changed during the benchmark" >&2
     exit 1
 }
+
+if [[ "$MODE" == "check" ]]; then
+    [[ -f "$FINAL_REPORT" && ! -L "$FINAL_REPORT" ]] || {
+        echo "committed benchmark evidence is missing or symlinked" >&2
+        exit 1
+    }
+    python3 "$REPORTER" --compare "$FINAL_REPORT" "$TEMP_DIR/run-1/report.json"
+    echo "fresh clean-head evidence matches committed deterministic fields: $FINAL_REPORT"
+    exit 0
+fi
 
 PUBLISH_TEMP="$(mktemp "$BENCH_DIR/.anvil-london.json.XXXXXXXX")"
 [[ -f "$PUBLISH_TEMP" && ! -L "$PUBLISH_TEMP" ]] || {

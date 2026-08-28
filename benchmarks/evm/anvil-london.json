@@ -1,5 +1,5 @@
 {
-  "block_timestamp": 1787913804,
+  "block_timestamp": 1787914069,
   "call": {
     "block_number": 2,
     "calldata": {
@@ -67,11 +67,11 @@
       },
       {
         "path": "contracts/evm/scripts/report-anvil.py",
-        "sha256": "13dbd9522dbbd89b5d55aef10c764e87fe0610df2358831c17cd9a2159e4e0fa"
+        "sha256": "9fd7b7b00f23f7789d9234f4b7a289350299b62b3134d85ef18c3b855aea6fda"
       },
       {
         "path": "contracts/evm/scripts/run-anvil-benchmark.sh",
-        "sha256": "34e2832ba1dd9a023f380e6cb9ba14008c6b8dbbbe0a07a9cb114cd50f0c90c4"
+        "sha256": "3fe3f2461add201a759328cd1f51c41ec28b278e47809d1280918823f0c5f4f9"
       },
       {
         "path": "contracts/evm/src/Blake3.sol",
@@ -90,8 +90,7 @@
         "sha256": "fb321155cfb731e2506df13c8c741d97647875998cd825212c6494a7292e00e7"
       }
     ],
-    "git_base_commit": "b23d061a5b945d7f14416ce3709edc286320df30",
-    "manifest_sha256": "0846efd3baab1504f185b9fbffd89179c6ec70b8df4e3c3efb23083dec8212fc",
+    "manifest_sha256": "c14ab8e199c7f466549f8356dc10966f85c65bc1251022e038d63b1dbaf1f338",
     "relevant_input_worktree_dirty": false
   },
   "verifier": {

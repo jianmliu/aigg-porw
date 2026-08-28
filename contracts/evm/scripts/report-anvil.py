@@ -151,11 +151,8 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(expected_runtime_sha, str) or re.fullmatch(r"[0-9a-f]{64}", expected_runtime_sha) is None:
         raise EvidenceError("invalid expected runtime SHA-256")
 
-    if source_manifest.get("schema") != "aigg.porw.source-manifest.v1":
+    if source_manifest.get("schema") != "aigg.porw.source-manifest.v2":
         raise EvidenceError("unexpected source manifest schema")
-    git_base_commit = source_manifest.get("git_base_commit")
-    if not isinstance(git_base_commit, str) or COMMIT_RE.fullmatch(git_base_commit) is None:
-        raise EvidenceError("invalid source-manifest Git base commit")
     if source_manifest.get("relevant_input_worktree_dirty") is not False:
         raise EvidenceError("source manifest reports dirty relevant inputs")
     source_entries = source_manifest.get("entries")
@@ -335,7 +332,6 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "schema": "aigg.porw.anvil-benchmark.v2",
         "source_identity": {
             "entries": source_entries,
-            "git_base_commit": git_base_commit,
             "manifest_sha256": hashlib.sha256(args.source_manifest.read_bytes()).hexdigest(),
             "relevant_input_worktree_dirty": False,
         },
