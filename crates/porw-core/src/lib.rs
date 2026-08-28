@@ -244,16 +244,20 @@ pub fn merkle_verify_counted(
 /// Number of ticket-sized units represented by the coverage and multiplier.
 /// `m_t_millis` is the service multiplier in thousandths of a full coverage
 /// sweep. Interpreting this value for eligibility or rewards is deployment
-/// policy outside this crate.
+/// policy outside this crate. A zero `ticket_unit` is treated as one, and a
+/// mathematically larger-than-`u64` count is capped at `u64::MAX`.
 pub fn ticket_count(coverage_bytes: u64, m_t_millis: u64, ticket_unit: u64) -> u64 {
-    (coverage_bytes.saturating_mul(m_t_millis) / 1000) / ticket_unit.max(1)
+    let count = (u128::from(coverage_bytes) * u128::from(m_t_millis) / 1000)
+        / u128::from(ticket_unit.max(1));
+    count.min(u128::from(u64::MAX)) as u64
 }
 
 /// Arithmetic envelope check comparing claimed traffic with an adapter-supplied
 /// byte budget. It does not authenticate hardware or enforce an economic bound.
 pub fn check_envelope(coverage_bytes: u64, m_t_millis: u64, bandwidth_bytes_per_slot: u64) -> bool {
     // coverage_bytes * m_t_millis / 1000 <= bandwidth_bytes_per_slot
-    coverage_bytes.saturating_mul(m_t_millis) <= bandwidth_bytes_per_slot.saturating_mul(1000)
+    u128::from(coverage_bytes) * u128::from(m_t_millis)
+        <= u128::from(bandwidth_bytes_per_slot) * 1000
 }
 
 /// Derive the `chunk_index`-th 32-byte audit chunk from a

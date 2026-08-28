@@ -20,8 +20,8 @@ The full-path case uses a 4 KiB tile, a depth-21 partials proof representing a
 | Zero calldata bytes | 347 |
 | Non-zero calldata bytes | 5,737 |
 | Intrinsic calldata gas (EIP-2028 byte costs) | 93,180 |
-| In-process static-call execution gas | 8,263,594 |
-| Estimated total (`21,000 + calldata + execution`) | 8,377,774 |
+| In-process static-call execution gas | 8,258,984 |
+| Estimated total (`21,000 + calldata + execution`) | 8,373,164 |
 | `PorwVerifier` runtime size | 8,932 bytes |
 | `PorwVerifier` initcode size | 8,959 bytes |
 | EIP-170 runtime margin | 15,644 bytes |
@@ -35,5 +35,7 @@ after-last non-inclusion entry points. No payment, bond, deadline, reward, or
 slashing logic was added.
 
 The execution and total figures above are deterministic Foundry in-process
-measurements, not transaction-receipt gas. The real Anvil transaction benchmark
-is a separate follow-up gate; this report does not claim to replace it.
+measurements, not transaction-receipt gas. The separate real-Anvil benchmark in
+[`anvil-london.json`](anvil-london.json) records receipt gas of 8,372,813 for
+the same canonical call; the two measurements have distinct accounting paths
+and should not be substituted for one another.

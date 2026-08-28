@@ -90,7 +90,8 @@ cargo check -p aigg-porw-core --no-default-features --locked
 
 gpu/triton/.venv/bin/python -m pytest \
   gpu/triton/tests/test_sketch.py \
-  gpu/triton/tests/test_conformance.py -q -rs
+  gpu/triton/tests/test_conformance.py \
+  gpu/triton/tests/test_kernel_validation.py -q -rs
 
 (cd contracts/evm && forge clean && forge test -vv)
 contracts/evm/scripts/run-anvil-benchmark.sh --check-committed

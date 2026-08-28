@@ -17,6 +17,8 @@
   门控的 Triton kernel 测试；纯测试不受 CUDA/Triton 可用性影响。
 - `tests/test_conformance.py` — 独立的 Python BLAKE3/NumPy 锁定向量验证；
   不导入 Rust、Solidity 或 Triton 结果。
+- `tests/test_kernel_validation.py` — fused/sweep host wrapper 的 fail-closed
+  输入、routing、block 参数以及 `python -O` 回归测试。
 - `bench_gpu.py` — GPU 开销基准（需真实 GPU，测融合开销 % 与扫描 GB/s）。
 - `requirements-test.in`、两个平台 hash lock 与 `ENVIRONMENT.md` —
   CPython 3.12.13 的固定测试环境及平台限制。
@@ -26,7 +28,9 @@
 ```bash
 gpu/triton/.venv/bin/python -m pytest gpu/triton/tests -q -rs
 TRITON_INTERPRET=1 gpu/triton/.venv/bin/python \
-  -m pytest gpu/triton/tests/test_sketch.py -q -rs
+  -m pytest gpu/triton/tests/test_sketch.py \
+  gpu/triton/tests/test_conformance.py \
+  gpu/triton/tests/test_kernel_validation.py -q -rs
 ```
 
 环境创建、固定版本及 GPU 基准命令见 [`ENVIRONMENT.md`](ENVIRONMENT.md)。

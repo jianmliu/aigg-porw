@@ -42,6 +42,12 @@ import triton
 import triton.language as tl
 
 from .spec import FMIX_M1, FMIX_M2, GOLDEN32, TILE_WORDS
+from .validation import (
+    validate_aligned_routing,
+    validate_fused_inputs,
+    validate_slot_seed,
+    validate_sweep_inputs,
+)
 
 
 def _wrap_i32(v: int) -> int:
@@ -52,6 +58,7 @@ def _wrap_i32(v: int) -> int:
 
 def make_params(slot_seed: int, device) -> torch.Tensor:
     """int32 tensor [M1, M2, GOLDEN, seed] (u32 bit patterns)."""
+    validate_slot_seed(slot_seed)
     return torch.tensor(
         [_wrap_i32(FMIX_M1), _wrap_i32(FMIX_M2), _wrap_i32(GOLDEN32),
          _wrap_i32(slot_seed)],
@@ -258,14 +265,30 @@ def run_moe_gemm(
     coverage np)."""
     from .reference import moe_align
 
-    M, K = a.shape
-    E, N, Kb = b.shape
-    assert K == Kb and b.is_contiguous() and K % 2 == 0 and block_k % 2 == 0
-    top_k = topk_ids.shape[1]
+    M, E, N, K, top_k = validate_fused_inputs(
+        a,
+        b,
+        topk_ids,
+        slot_seed,
+        enable_sketch,
+        block_m,
+        block_n,
+        block_k,
+        group_m,
+    )
     num_valid_tokens = M * top_k
 
+    routing_host = topk_ids.detach().cpu().numpy()
     sorted_token_ids, expert_ids, num_post_padded = moe_align(
-        topk_ids.cpu().numpy(), E, block_m
+        routing_host, E, block_m
+    )
+    validate_aligned_routing(
+        sorted_token_ids,
+        expert_ids,
+        num_post_padded,
+        routing_host,
+        E,
+        block_m,
     )
     dev = a.device
     sorted_token_ids = torch.from_numpy(sorted_token_ids).to(dev)
@@ -326,17 +349,14 @@ def run_sketch_sweep(
     subset; default = all tiles (S1-over-coverage with full coverage).
     Benchmarks may keep the int32/u32-bit-pattern result device-resident by
     setting ``copy_to_host=False``."""
-    assert buf_bytes.dtype == torch.uint8 and buf_bytes.numel() % (TILE_WORDS * 4) == 0
+    total_tiles = validate_sweep_inputs(
+        buf_bytes, tile_ids, slot_seed, block, copy_to_host
+    )
     words = buf_bytes.view(torch.int32)
-    total_tiles = words.numel() // TILE_WORDS
     if tile_ids is None:
         # This range is safe by construction.  In particular, do not copy it
         # back to the host on each timed full-sweep benchmark invocation.
         tile_ids = torch.arange(total_tiles, dtype=torch.int64, device=buf_bytes.device)
-    else:
-        from .reference import validate_coverage_tile_tensor
-
-        validate_coverage_tile_tensor(tile_ids, total_tiles, buf_bytes.device)
     n_tiles = tile_ids.numel()
     if n_tiles == 0:
         out = torch.empty(0, dtype=torch.int32, device=buf_bytes.device)

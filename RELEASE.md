@@ -52,7 +52,8 @@ cargo check -p aigg-porw-core --no-default-features --locked
 
 gpu/triton/.venv/bin/python -m pytest \
   gpu/triton/tests/test_sketch.py \
-  gpu/triton/tests/test_conformance.py -q -rs
+  gpu/triton/tests/test_conformance.py \
+  gpu/triton/tests/test_kernel_validation.py -q -rs
 
 (cd contracts/evm && forge clean && forge test -vv)
 contracts/evm/scripts/run-anvil-benchmark.sh --check-committed
@@ -70,11 +71,37 @@ The release controller must run these commands from the reviewed commit after
 confirming the required CI checks belong to that same commit:
 
 ```sh
-git fetch origin \
-  refs/heads/feat/aigg-porw-extraction:refs/remotes/origin/feat/aigg-porw-extraction
+set -euo pipefail
+
+# Set this to the independently reviewed commit approved for release.
+test -n "${EXPECTED_REVIEWED_COMMIT:?set EXPECTED_REVIEWED_COMMIT}"
+command -v gh >/dev/null
+git fetch --no-tags origin \
+  refs/heads/main:refs/remotes/origin/main
+release_commit="$(git rev-parse --verify "${EXPECTED_REVIEWED_COMMIT}^{commit}")"
+test "$(git rev-parse --verify HEAD)" = "$release_commit"
+test "$(git rev-parse --verify refs/remotes/origin/main)" = "$release_commit"
 test -z "$(git status --porcelain --untracked-files=all)"
-release_commit="$(git rev-parse HEAD)"
-test "$(git rev-parse refs/remotes/origin/feat/aigg-porw-extraction)" = "$release_commit"
+test -z "$(git submodule status --recursive | sed -n '/^[+-U]/p')"
+test -z "$(git tag --list v0.1.0-research.1)"
+
+# Query check runs for the immutable commit, not a branch-level badge. The API
+# command and each required conclusion are fail-fast prerequisites to tagging.
+repo="jianmliu/aigg-porw"
+for required_check in \
+  "Rust, spec lock, and Triton interpreter" \
+  "Solidity and receipt-backed London gas"
+do
+  summary="$(gh api --method GET \
+    "repos/$repo/commits/$release_commit/check-runs" \
+    -f per_page=100 \
+    -f filter=latest \
+    --jq ".check_runs | map(select(.name == \"$required_check\")) | [length, (map(select(.status == \"completed\" and .conclusion == \"success\")) | length)] | @tsv")"
+  read -r matching successful <<<"$summary"
+  test "$matching" -ge 1
+  test "$successful" = "$matching"
+done
+
 git tag -a v0.1.0-research.1 "$release_commit" \
   -m "Private PoRW research release 0.1.0"
 test "$(git cat-file -t refs/tags/v0.1.0-research.1)" = tag
@@ -82,6 +109,6 @@ test "$(git rev-list -n 1 v0.1.0-research.1)" = "$release_commit"
 git push origin refs/tags/v0.1.0-research.1
 ```
 
-This procedure intentionally tags the reviewed feature-branch commit without
-rewriting the repository's current `main` history. Never retarget or force-push
-the release tag.
+The reviewed commit is fast-forwarded to private `origin/main` only after its
+exact-head checks succeed; this procedure therefore tags that protected remote
+identity. Never retarget or force-push the release tag.

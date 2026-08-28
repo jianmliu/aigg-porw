@@ -230,6 +230,13 @@ fn envelope_and_tickets() {
     );
 }
 
+#[test]
+fn envelope_and_tickets_do_not_fail_open_at_u64_boundaries() {
+    assert!(!check_envelope(u64::MAX, 2, u64::MAX / 1000 + 1));
+    assert_eq!(ticket_count(u64::MAX, 1000, u64::MAX), 1);
+    assert_eq!(ticket_count(u64::MAX, u64::MAX, 1), u64::MAX);
+}
+
 fn build_solution_and_proofs(
     tamper_tile: Option<usize>,
 ) -> (PorwSolution, [u8; 32], Hash32, Vec<TileFraudProof>) {
