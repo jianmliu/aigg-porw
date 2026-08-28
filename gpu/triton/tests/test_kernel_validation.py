@@ -28,12 +28,16 @@ CANONICAL_K = TILE_BYTES // 2
 
 
 @pytest.fixture
-def kernel_module(monkeypatch):
+def kernel_module(monkeypatch, request):
     """Import kernels with a minimal Triton stub when Darwin has no wheel."""
     module_name = "porw_sketch.kernels"
     existing = sys.modules.get(module_name)
     if existing is not None:
         return existing
+
+    # kernels.py mutates TRITON_INTERPRET at import time on CUDA-less hosts;
+    # restore whatever was set before this stub-backed import ran.
+    prior_interpret = os.environ.get("TRITON_INTERPRET")
 
     fake_language = ModuleType("triton.language")
     fake_language.constexpr = object()
@@ -44,7 +48,22 @@ def kernel_module(monkeypatch):
     monkeypatch.setitem(sys.modules, "triton", fake_triton)
     monkeypatch.setitem(sys.modules, "triton.language", fake_language)
     module = importlib.import_module(module_name)
-    monkeypatch.setitem(sys.modules, module_name, module)
+
+    def _remove_stub_backed_import():
+        # import_module registered the module itself before monkeypatch could
+        # snapshot the empty slot, so evict it and the parent-package binding
+        # explicitly; a later import must not see stub-jit kernel objects.
+        if sys.modules.get(module_name) is module:
+            del sys.modules[module_name]
+        parent = sys.modules.get("porw_sketch")
+        if parent is not None and getattr(parent, "kernels", None) is module:
+            delattr(parent, "kernels")
+        if prior_interpret is None:
+            os.environ.pop("TRITON_INTERPRET", None)
+        else:
+            os.environ["TRITON_INTERPRET"] = prior_interpret
+
+    request.addfinalizer(_remove_stub_backed_import)
     return module
 
 
