@@ -1,7 +1,7 @@
 """Fail-closed host validation for the public Triton launch wrappers."""
 
 import ast
-import importlib
+import importlib.util
 import os
 import subprocess
 import sys
@@ -24,17 +24,13 @@ from porw_sketch.validation import (
 
 
 KERNELS_PATH = Path(__file__).resolve().parents[1] / "porw_sketch" / "kernels.py"
+STUB_MODULE_NAME = "porw_sketch._kernels_validation_stub"
 CANONICAL_K = TILE_BYTES // 2
 
 
 @pytest.fixture
 def kernel_module(monkeypatch):
-    """Import kernels with a minimal Triton stub when Darwin has no wheel."""
-    module_name = "porw_sketch.kernels"
-    existing = sys.modules.get(module_name)
-    if existing is not None:
-        return existing
-
+    """Load host wrappers with fake Triton without touching canonical imports."""
     fake_language = ModuleType("triton.language")
     fake_language.constexpr = object()
     fake_triton = ModuleType("triton")
@@ -43,9 +39,25 @@ def kernel_module(monkeypatch):
     fake_triton.language = fake_language
     monkeypatch.setitem(sys.modules, "triton", fake_triton)
     monkeypatch.setitem(sys.modules, "triton.language", fake_language)
-    module = importlib.import_module(module_name)
-    monkeypatch.setitem(sys.modules, module_name, module)
+
+    module_spec = importlib.util.spec_from_file_location(
+        STUB_MODULE_NAME,
+        KERNELS_PATH,
+    )
+    if module_spec is None or module_spec.loader is None:
+        raise RuntimeError(f"cannot load isolated kernel module from {KERNELS_PATH}")
+    module = importlib.util.module_from_spec(module_spec)
+    monkeypatch.setitem(sys.modules, STUB_MODULE_NAME, module)
+    module_spec.loader.exec_module(module)
     return module
+
+
+def test_kernel_module_stub_does_not_replace_canonical_import(kernel_module):
+    import porw_sketch
+
+    assert kernel_module.__name__ == STUB_MODULE_NAME
+    assert sys.modules.get("porw_sketch.kernels") is not kernel_module
+    assert getattr(porw_sketch, "kernels", None) is not kernel_module
 
 
 def fused_inputs():
