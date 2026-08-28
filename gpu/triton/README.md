@@ -1,7 +1,8 @@
 # PoRW P1 PoC — 推理融合 sketch 可行性验证
 
-见设计文档 `docs/proof-of-resident-weights.md` 与可行性报告
-`docs/porw-p1-feasibility.md`。
+背景设计与可行性记录来自锁定的导入基线：
+[`proof-of-resident-weights.md`](https://github.com/jianmliu/subspace/blob/8d8569004c2322aabe26cd59c12bbfe7dc4de1a1/docs/proof-of-resident-weights.md)
+与 [`porw-p1-feasibility.md`](https://github.com/jianmliu/subspace/blob/8d8569004c2322aabe26cd59c12bbfe7dc4de1a1/docs/porw-p1-feasibility.md)。
 
 ## 内容
 

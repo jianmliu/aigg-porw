@@ -3,14 +3,22 @@
 version = 4
 
 [[package]]
+name = "aigg-porw-conformance-runner"
+version = "0.0.0"
+dependencies = [
+ "aigg-porw-core",
+ "blake3",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "aigg-porw-core"
 version = "0.1.0"
 dependencies = [
  "blake3",
  "parity-scale-codec",
  "scale-info",
- "serde_json",
- "sha2",
 ]
 
 [[package]]

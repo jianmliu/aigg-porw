@@ -9,9 +9,9 @@ adapter feature. The package rename and feature extraction do not change the
 SCALE field bytes of the v2 data structures. Package-qualified `TypeInfo` paths
 may differ because the Rust package name changed.
 
-The `repository-conformance` feature is for checks that consume the repository's
-read-only `spec-cache`. It is not enabled by default, so an unpacked crate can
-run its default tests without files outside the package.
+Repository-only vector and spec-lock checks live in the unpublished
+`aigg-porw-conformance-runner` workspace package. This crate's tests are
+self-contained, including when every published feature is enabled.
 
 The linear `u32` sketch is an algebraic consistency check, not a
 collision-resistant commitment or proof of byte equality, residency, or

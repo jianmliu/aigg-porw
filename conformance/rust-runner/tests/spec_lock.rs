@@ -1,5 +1,3 @@
-#![cfg(feature = "repository-conformance")]
-
 use sha2::{Digest, Sha256};
 
 const EXPECTED_REPOSITORY: &str = "https://github.com/jianmliu/aigg-spec.git";

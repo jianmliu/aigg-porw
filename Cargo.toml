@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/porw-core"]
+members = [
+    "conformance/rust-runner",
+    "crates/porw-core",
+]
 
 [workspace.package]
 edition = "2024"

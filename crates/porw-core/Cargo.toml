@@ -9,7 +9,6 @@ repository = "https://github.com/jianmliu/aigg-porw"
 readme = "README.md"
 include = [
     "/src",
-    "/tests",
     "/Cargo.toml",
     "/LICENSE-0BSD",
     "/README.md",
@@ -18,19 +17,10 @@ include = [
 [lib]
 bench = false
 
-[[test]]
-name = "spec_lock"
-path = "tests/spec_lock.rs"
-required-features = ["repository-conformance"]
-
 [dependencies]
 blake3.workspace = true
 parity-scale-codec = { workspace = true, features = ["derive"], optional = true }
 scale-info = { workspace = true, features = ["derive"], optional = true }
-
-[dev-dependencies]
-serde_json = "=1.0.145"
-sha2 = "=0.10.9"
 
 [features]
 default = ["std"]
@@ -40,4 +30,3 @@ std = [
     "scale-info?/std",
 ]
 scale = ["dep:parity-scale-codec", "dep:scale-info"]
-repository-conformance = []
