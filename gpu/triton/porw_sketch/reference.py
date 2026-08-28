@@ -27,6 +27,25 @@ def validate_coverage_tile_ids(tile_ids: np.ndarray, total_tiles: int) -> None:
         raise ValueError("tile_ids must be strictly ascending and unique")
 
 
+def validate_coverage_tile_tensor(
+    tile_ids, total_tiles: int, expected_device
+) -> None:
+    """Validate caller-owned tensor metadata before any host-side copy."""
+    import torch
+
+    if not isinstance(tile_ids, torch.Tensor):
+        raise TypeError("tile_ids must be a torch.Tensor")
+    if tile_ids.dtype != torch.int64:
+        raise TypeError("tile_ids must have dtype int64")
+    if tile_ids.ndim != 1:
+        raise ValueError("tile_ids must be one-dimensional")
+    if tile_ids.device != torch.device(expected_device):
+        raise ValueError("tile_ids must be on the weight buffer device")
+    if not tile_ids.is_contiguous():
+        raise ValueError("tile_ids must use contiguous storage")
+    validate_coverage_tile_ids(tile_ids.detach().cpu().numpy(), total_tiles)
+
+
 def moe_align(topk_ids: np.ndarray, num_experts: int, block_m: int):
     """Minimal reimplementation of vLLM's ``moe_align_block_size``.
 

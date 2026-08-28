@@ -201,6 +201,32 @@ def test_coverage_tile_ids_validation_rejects_malformed_sets(tile_ids, error):
         reference.validate_coverage_tile_ids(tile_ids, total_tiles=2)
 
 
+def test_coverage_tensor_validation_checks_original_storage_and_metadata():
+    import torch
+
+    valid = torch.tensor([0, 1], dtype=torch.int64)
+    assert reference.validate_coverage_tile_tensor(
+        valid, total_tiles=2, expected_device=valid.device
+    ) is None
+
+    non_contiguous = torch.tensor([0, 99, 1, 99], dtype=torch.int64)[::2]
+    assert non_contiguous.tolist() == [0, 1]
+    assert not non_contiguous.is_contiguous()
+    invalid_cases = [
+        (torch.tensor([0, 1], dtype=torch.int32), valid.device, TypeError),
+        (torch.tensor([[0, 1]], dtype=torch.int64), valid.device, ValueError),
+        (non_contiguous, valid.device, ValueError),
+        (valid, torch.device("meta"), ValueError),
+    ]
+    for tile_ids, expected_device, error in invalid_cases:
+        with pytest.raises(error):
+            reference.validate_coverage_tile_tensor(
+                tile_ids,
+                total_tiles=2,
+                expected_device=expected_device,
+            )
+
+
 # ---------------------------------------------------------------------------
 # Triton kernels (CPU interpreter without GPU; native backend with one)
 # ---------------------------------------------------------------------------
@@ -242,7 +268,6 @@ def test_sweep_wrapper_rejects_invalid_tile_ids_before_launch(kernel_runtime):
         np.array([0, 2], dtype=np.int64),
         np.array([0, 0], dtype=np.int64),
         np.array([1, 0], dtype=np.int64),
-        np.array([0, 99, 1, 99], dtype=np.int64)[::2],
     ]
     for tile_ids in cases:
         with pytest.raises((TypeError, ValueError)):
@@ -251,6 +276,57 @@ def test_sweep_wrapper_rejects_invalid_tile_ids_before_launch(kernel_runtime):
                 SLOT_SEEDS[0],
                 tile_ids=kernel_runtime.tensor(tile_ids),
             )
+
+    device_resident = kernel_runtime.tensor(
+        np.array([0, 99, 1, 99], dtype=np.int64)
+    )
+    non_contiguous = device_resident[::2]
+    assert non_contiguous.cpu().tolist() == [0, 1]
+    assert not non_contiguous.is_contiguous()
+    with pytest.raises(ValueError, match="contiguous"):
+        kernel_runtime.run_sketch_sweep(
+            buffer,
+            SLOT_SEEDS[0],
+            tile_ids=non_contiguous,
+        )
+
+
+def test_sweep_internal_full_coverage_skips_caller_validation(
+    kernel_runtime, monkeypatch
+):
+    def unexpected_validation(*args, **kwargs):
+        raise AssertionError("internal arange must not perform a D2H validation")
+
+    monkeypatch.setattr(
+        reference, "validate_coverage_tile_ids", unexpected_validation
+    )
+    monkeypatch.setattr(
+        reference,
+        "validate_coverage_tile_tensor",
+        unexpected_validation,
+        raising=False,
+    )
+    buffer = np.zeros(spec.TILE_BYTES * 2, dtype=np.uint8)
+    device_buffer = kernel_runtime.tensor(buffer)
+    got = kernel_runtime.run_sketch_sweep(
+        device_buffer, SLOT_SEEDS[0], copy_to_host=False
+    )
+    assert got.shape == (2,)
+    assert got.device == device_buffer.device
+
+
+def test_sweep_empty_external_coverage_returns_uint32_without_launch(
+    kernel_runtime,
+):
+    buffer = kernel_runtime.tensor(
+        np.zeros(spec.TILE_BYTES * 2, dtype=np.uint8)
+    )
+    empty = kernel_runtime.tensor(np.array([], dtype=np.int64))
+    got = kernel_runtime.run_sketch_sweep(
+        buffer, SLOT_SEEDS[0], tile_ids=empty
+    )
+    assert got.dtype == np.uint32
+    assert got.shape == (0,)
 
 
 @pytest.fixture(scope="module")

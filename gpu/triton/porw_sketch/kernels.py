@@ -318,25 +318,33 @@ def run_sketch_sweep(
     slot_seed: int,
     tile_ids: torch.Tensor | None = None,
     block: int = 512,
+    *,
+    copy_to_host: bool = True,
 ):
     """Sweep over a uint8 buffer; returns per-swept-tile sketches (numpy
     uint32, in tile_ids order).  ``tile_ids`` (int64) selects a coverage
-    subset; default = all tiles (S1-over-coverage with full coverage)."""
+    subset; default = all tiles (S1-over-coverage with full coverage).
+    Benchmarks may keep the int32/u32-bit-pattern result device-resident by
+    setting ``copy_to_host=False``."""
     assert buf_bytes.dtype == torch.uint8 and buf_bytes.numel() % (TILE_WORDS * 4) == 0
     words = buf_bytes.view(torch.int32)
     total_tiles = words.numel() // TILE_WORDS
     if tile_ids is None:
+        # This range is safe by construction.  In particular, do not copy it
+        # back to the host on each timed full-sweep benchmark invocation.
         tile_ids = torch.arange(total_tiles, dtype=torch.int64, device=buf_bytes.device)
-    if not isinstance(tile_ids, torch.Tensor):
-        raise TypeError("tile_ids must be a torch.Tensor")
-    from .reference import validate_coverage_tile_ids
+    else:
+        from .reference import validate_coverage_tile_tensor
 
-    validate_coverage_tile_ids(tile_ids.detach().cpu().numpy(), total_tiles)
+        validate_coverage_tile_tensor(tile_ids, total_tiles, buf_bytes.device)
     n_tiles = tile_ids.numel()
+    if n_tiles == 0:
+        out = torch.empty(0, dtype=torch.int32, device=buf_bytes.device)
+        return _u32_np(out) if copy_to_host else out
     out = torch.zeros(n_tiles, dtype=torch.int32, device=buf_bytes.device)
     params = make_params(slot_seed, buf_bytes.device)
     sketch_sweep_kernel[(n_tiles,)](
         words, out, tile_ids, params, n_tiles,
         TILE_WORDS_C=TILE_WORDS, BLOCK=block,
     )
-    return _u32_np(out)
+    return _u32_np(out) if copy_to_host else out

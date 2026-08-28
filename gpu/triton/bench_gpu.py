@@ -63,7 +63,10 @@ def main():
         )
 
         buf = b.contiguous().view(torch.uint8).flatten()
-        t_sweep = bench(lambda: run_sketch_sweep(buf, 1), iters=iters)
+        t_sweep = bench(
+            lambda: run_sketch_sweep(buf, 1, copy_to_host=False),
+            iters=iters,
+        )
         gbps = buf.numel() / t_sweep / 1e9
 
         gb = E * N * K * 2 / 1e9

@@ -5,12 +5,36 @@ set -euo pipefail
 PORW_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PORW_REPO_ROOT="$(cd -- "$PORW_SCRIPT_DIR/../.." && pwd -P)"
 PORW_PYTHON_BIN="${PORW_PYTHON:-}"
+PORW_OUTPUT_DIR="$PORW_REPO_ROOT/benchmarks/gpu/generated"
 PORW_OUTPUT_FILE=""
 PORW_TRITON_CACHE=""
 
 porw_fail() {
   echo "error: $*" >&2
   exit 1
+}
+
+porw_verify_output_dir() {
+  [[ ! -L "$PORW_OUTPUT_DIR" ]] || porw_fail \
+    "benchmark output directory must not be a symlink: $PORW_OUTPUT_DIR"
+  [[ ! -e "$PORW_OUTPUT_DIR" || -d "$PORW_OUTPUT_DIR" ]] || porw_fail \
+    "benchmark output path is not a directory: $PORW_OUTPUT_DIR"
+
+  PORW_OUTPUT_PARENT="$(cd -- "$(dirname -- "$PORW_OUTPUT_DIR")" && pwd -P)" \
+    || porw_fail "cannot resolve benchmark output parent"
+  case "$PORW_OUTPUT_PARENT/" in
+    "$PORW_REPO_ROOT/"*) ;;
+    *) porw_fail "benchmark output parent resolves outside the repository" ;;
+  esac
+
+  if [[ -d "$PORW_OUTPUT_DIR" ]]; then
+    PORW_PHYSICAL_OUTPUT="$(cd -- "$PORW_OUTPUT_DIR" && pwd -P)" \
+      || porw_fail "cannot resolve benchmark output directory"
+    case "$PORW_PHYSICAL_OUTPUT/" in
+      "$PORW_REPO_ROOT/"*) ;;
+      *) porw_fail "benchmark output directory resolves outside the repository" ;;
+    esac
+  fi
 }
 
 porw_finish() {
@@ -47,6 +71,8 @@ PORW_GIT_ROOT="$(git -C "$PORW_REPO_ROOT" rev-parse --show-toplevel 2>/dev/null)
   || porw_fail "gpu/triton is not inside an aigg-porw Git checkout"
 [[ "$(cd -- "$PORW_GIT_ROOT" && pwd -P)" == "$PORW_REPO_ROOT" ]] || porw_fail \
   "script path does not resolve to the current aigg-porw checkout root"
+
+porw_verify_output_dir
 
 PORW_DIRTY_STATUS="$(git -C "$PORW_REPO_ROOT" status --porcelain=v1 --untracked-files=normal)"
 [[ -z "$PORW_DIRTY_STATUS" ]] || porw_fail \
@@ -94,8 +120,8 @@ PY
 
 PORW_COMMIT="$(git -C "$PORW_REPO_ROOT" rev-parse HEAD)"
 PORW_UTC_STAMP="$(date -u +%Y%m%d-%H%M%S)"
-PORW_OUTPUT_DIR="$PORW_REPO_ROOT/benchmarks/gpu/generated"
 mkdir -p "$PORW_OUTPUT_DIR"
+porw_verify_output_dir
 PORW_OUTPUT_FILE="$(mktemp "$PORW_OUTPUT_DIR/gpu-bench-$PORW_UTC_STAMP-XXXXXXXX")"
 PORW_TRITON_CACHE="$(mktemp -d "${TMPDIR:-/tmp}/aigg-porw-triton-cache.XXXXXXXX")"
 

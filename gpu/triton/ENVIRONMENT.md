@@ -88,5 +88,7 @@ The benchmark runner records new outputs only under
 worktree before creating an artifact or cache, uses an isolated temporary
 Triton cache, and appends a terminal `success`/`failed` status plus exit code to
 every artifact it creates. A failure after evidence collection starts leaves
-the ignored partial artifact for diagnosis. Interpreter results are correctness
-evidence only and must never be reported as throughput measurements.
+the ignored partial artifact for diagnosis. The output directory may not be a
+symlink and its physical path must remain inside the repository. Interpreter
+results are correctness evidence only and must never be reported as throughput
+measurements.
