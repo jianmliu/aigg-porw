@@ -7,9 +7,11 @@ deadline, and boundary non-inclusion policy are outside its scope.
 """
 
 import json
+from copy import deepcopy
 from pathlib import Path
 
 import numpy as np
+import pytest
 from blake3 import blake3
 
 
@@ -98,6 +100,27 @@ def _merkle_root(leaves: list[bytes]) -> bytes:
     return level[0]
 
 
+def _merkle_proof(leaves: list[bytes], index: int) -> list[bytes]:
+    if not leaves or index < 0 or index >= len(leaves):
+        raise ValueError("Merkle proof index is outside the tree")
+    proof = []
+    level = list(leaves)
+    while len(level) > 1:
+        sibling_index = index - 1 if index % 2 else index + 1
+        proof.append(level[sibling_index] if sibling_index < len(level) else level[index])
+        level = [
+            _merkle_parent(
+                level[level_index],
+                level[level_index + 1]
+                if level_index + 1 < len(level)
+                else level[level_index],
+            )
+            for level_index in range(0, len(level), 2)
+        ]
+        index //= 2
+    return proof
+
+
 def _merkle_verify_counted(
     root: bytes, leaf: bytes, index: int, leaf_count: int, proof: list[bytes]
 ) -> bool:
@@ -120,6 +143,52 @@ def _merkle_verify_counted(
         width = (width + 1) // 2
         proof_index += 1
     return proof_index == len(proof) and accumulator == root
+
+
+def _verify_committed_opening(
+    *,
+    root: bytes,
+    leaf_count: int,
+    challenged_tile: int,
+    tile_index: int,
+    sketch: int,
+    index: int,
+    proof: list[bytes],
+) -> bool:
+    return tile_index == challenged_tile and _merkle_verify_counted(
+        root,
+        _partials_leaf(tile_index, sketch),
+        index,
+        leaf_count,
+        proof,
+    )
+
+
+def _verify_interior_non_inclusion(
+    *,
+    root: bytes,
+    leaf_count: int,
+    challenged_tile: int,
+    left: dict,
+    right: dict,
+    left_proof: list[bytes],
+    right_proof: list[bytes],
+) -> bool:
+    left_index = left["index"]
+    right_index = right["index"]
+    if not (0 <= left_index < leaf_count and 0 <= right_index < leaf_count):
+        return False
+    if left_index + 1 != right_index:
+        return False
+    if not left["tile_idx"] < challenged_tile < right["tile_idx"]:
+        return False
+    left_leaf = _partials_leaf(left["tile_idx"], left["s_tile"])
+    right_leaf = _partials_leaf(right["tile_idx"], right["s_tile"])
+    return _merkle_verify_counted(
+        root, left_leaf, left_index, leaf_count, left_proof
+    ) and _merkle_verify_counted(
+        root, right_leaf, right_index, leaf_count, right_proof
+    )
 
 
 def _fraud_verdict(
@@ -243,21 +312,127 @@ def test_partials_tree_committed_opening_and_interior_non_inclusion_match():
 
     opening = fixture["opening_committed_tile_3"]
     opening_proof = [_unhex(value) for value in opening["proof"]]
-    assert _merkle_verify_counted(root, leaves[1], opening["leaf_index"], 2, opening_proof)
+    opened_tile = fixture["coverage"][opening["leaf_index"]]
+    opened_sketch = fixture["committed_s_tiles"][opening["leaf_index"]]
+    assert opened_tile == 3
+    assert opening["expected"] == (
+        f"verifies; opened value {opened_sketch} != recomputed "
+        f"{fixture['honest_s_tile_for_tile_3']} => TileFraudProof verdict Fraud"
+    )
+    assert _verify_committed_opening(
+        root=root,
+        leaf_count=len(leaves),
+        challenged_tile=3,
+        tile_index=opened_tile,
+        sketch=opened_sketch,
+        index=opening["leaf_index"],
+        proof=opening_proof,
+    )
 
-    non_inclusion = fixture["non_inclusion_tile_2"]
+    non_inclusion_keys = [
+        key for key in fixture if key.startswith("non_inclusion_tile_")
+    ]
+    assert non_inclusion_keys == ["non_inclusion_tile_2"]
+    non_inclusion_key = non_inclusion_keys[0]
+    challenged_tile = int(non_inclusion_key.rsplit("_", 1)[1])
+    assert challenged_tile == 2
+    non_inclusion = fixture[non_inclusion_key]
     left = non_inclusion["left"]
     right = non_inclusion["right"]
-    assert left["index"] + 1 == right["index"]
-    assert left["tile_idx"] < 2 < right["tile_idx"]
-    assert _merkle_verify_counted(root, leaves[0], left["index"], 2, [leaves[1]])
-    assert _merkle_verify_counted(root, leaves[1], right["index"], 2, [leaves[0]])
+    assert non_inclusion["expected"] == "adjacent bracket verifies => proven not committed"
+    assert _verify_interior_non_inclusion(
+        root=root,
+        leaf_count=len(leaves),
+        challenged_tile=challenged_tile,
+        left=left,
+        right=right,
+        left_proof=_merkle_proof(leaves, left["index"]),
+        right_proof=_merkle_proof(leaves, right["index"]),
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "left_s_tile",
+        "right_s_tile",
+        "right_tile_idx",
+        "nonadjacent_positions",
+        "out_of_range_position",
+        "failed_bracketing",
+    ],
+)
+def test_interior_non_inclusion_rejects_tampered_witness_fields(mutation):
+    vector = _vector()
+    fixture = vector["tampered_commitment_scenario"]
+    non_inclusion = deepcopy(fixture["non_inclusion_tile_2"])
+    left = non_inclusion["left"]
+    right = non_inclusion["right"]
+    challenged_tile = 2
+    if mutation == "left_s_tile":
+        left["s_tile"] ^= 1
+    elif mutation == "right_s_tile":
+        right["s_tile"] ^= 1
+    elif mutation == "right_tile_idx":
+        right["tile_idx"] += 1
+    elif mutation == "nonadjacent_positions":
+        right["index"] = left["index"]
+    elif mutation == "out_of_range_position":
+        right["index"] += 1
+    elif mutation == "failed_bracketing":
+        challenged_tile = left["tile_idx"]
+
+    leaves = [_unhex(value) for value in fixture["partials_leaves"]]
+    root = _unhex(fixture["partials_root"])
+    original = fixture["non_inclusion_tile_2"]
+    assert not _verify_interior_non_inclusion(
+        root=root,
+        leaf_count=len(leaves),
+        challenged_tile=challenged_tile,
+        left=left,
+        right=right,
+        left_proof=_merkle_proof(leaves, original["left"]["index"]),
+        right_proof=_merkle_proof(leaves, original["right"]["index"]),
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["tile_idx", "s_tile", "leaf_index", "proof"],
+)
+def test_committed_opening_rejects_tampered_witness_fields(mutation):
+    vector = _vector()
+    fixture = vector["tampered_commitment_scenario"]
+    opening = fixture["opening_committed_tile_3"]
+    leaf_index = opening["leaf_index"]
+    tile_index = fixture["coverage"][leaf_index]
+    sketch = fixture["committed_s_tiles"][leaf_index]
+    proof = [_unhex(value) for value in opening["proof"]]
+    if mutation == "tile_idx":
+        tile_index += 1
+    elif mutation == "s_tile":
+        sketch ^= 1
+    elif mutation == "leaf_index":
+        leaf_index -= 1
+    elif mutation == "proof":
+        proof[0] = bytes([proof[0][0] ^ 1]) + proof[0][1:]
+
+    assert not _verify_committed_opening(
+        root=_unhex(fixture["partials_root"]),
+        leaf_count=len(fixture["partials_leaves"]),
+        challenged_tile=3,
+        tile_index=tile_index,
+        sketch=sketch,
+        index=leaf_index,
+        proof=proof,
+    )
 
 
 def test_fraud_and_no_fraud_algebraic_verdicts():
     vector = _vector()
     fixture = vector["tampered_commitment_scenario"]
     fraud = fixture["fraud_proof_tile_3"]
+    assert fraud["tile_bytes"] == "generate tile 3 from reference_buffer.formula"
     tile_bytes = vector["params"]["tile_bytes"]
     buffer = _reference_buffer(vector)
     tile = buffer[fraud["tile_idx"] * tile_bytes : (fraud["tile_idx"] + 1) * tile_bytes]
@@ -288,6 +463,54 @@ def test_fraud_and_no_fraud_algebraic_verdicts():
         partials_proof=[honest_leaves[0]],
         **shared,
     ) == "NoFraud"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "claimed_s_tile",
+        "partials_index",
+        "partials_proof",
+        "tile_idx",
+        "tile_bytes",
+        "weights_proof",
+    ],
+)
+def test_fraud_verdict_rejects_tampered_cryptographic_witness_fields(mutation):
+    vector = _vector()
+    fixture = vector["tampered_commitment_scenario"]
+    fraud = fixture["fraud_proof_tile_3"]
+    tile_bytes = vector["params"]["tile_bytes"]
+    buffer = _reference_buffer(vector)
+    tile = buffer[fraud["tile_idx"] * tile_bytes : (fraud["tile_idx"] + 1) * tile_bytes]
+    inputs = {
+        "partials_root": _unhex(fixture["partials_root"]),
+        "weights_root": _unhex(vector["weights_tree"]["root"]),
+        "challenge": _unhex(vector["slot_seed_derivation"]["global_challenge"]),
+        "device_id": _unhex(vector["slot_seed_derivation"]["device_id"]),
+        "tile_index": fraud["tile_idx"],
+        "claimed_sketch": fraud["claimed_s_tile"],
+        "partials_index": fraud["partials_index"],
+        "partials_proof": [_unhex(value) for value in fraud["partials_proof"]],
+        "tile": tile,
+        "weights_proof": [_unhex(value) for value in fraud["weights_proof"]],
+    }
+    if mutation == "claimed_s_tile":
+        inputs["claimed_sketch"] ^= 1
+    elif mutation == "partials_index":
+        inputs["partials_index"] -= 1
+    elif mutation == "partials_proof":
+        proof = inputs["partials_proof"][0]
+        inputs["partials_proof"][0] = bytes([proof[0] ^ 1]) + proof[1:]
+    elif mutation == "tile_idx":
+        inputs["tile_index"] -= 1
+    elif mutation == "tile_bytes":
+        inputs["tile"] = bytes([tile[0] ^ 1]) + tile[1:]
+    elif mutation == "weights_proof":
+        proof = inputs["weights_proof"][0]
+        inputs["weights_proof"][0] = bytes([proof[0] ^ 1]) + proof[1:]
+
+    assert _fraud_verdict(**inputs) == "Invalid"
 
 
 def test_two_word_msb_collision_is_deterministic_but_weights_leaves_differ():
