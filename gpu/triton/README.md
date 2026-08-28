@@ -13,26 +13,52 @@
     在权重 tile 加载点融合 sketch（`ENABLE_SKETCH` constexpr 可开关）；
   - `sketch_sweep_kernel`：独立扫描（S1，用于 dense/cuBLAS 层）。
 - `porw_sketch/reference.py` — `moe_align_block_size` 最小复刻与 GEMM 参考。
-- `tests/test_sketch.py` — 10 项验证（无 GPU 时自动走 Triton CPU 解释器）。
+- `tests/test_sketch.py` — 5 项纯 NumPy 性质测试与 6 项单独门控的 Triton
+  kernel 测试；纯测试不受 CUDA/Triton 可用性影响。
+- `tests/test_conformance.py` — 独立的 Python BLAKE3/NumPy 锁定向量验证；
+  不导入 Rust、Solidity 或 Triton 结果。
 - `bench_gpu.py` — GPU 开销基准（需真实 GPU，测融合开销 % 与扫描 GB/s）。
+- `requirements-test.txt` 与 `ENVIRONMENT.md` — CPython 3.12.13 的固定测试
+  环境及平台限制。
 
 ## 运行
 
 ```bash
-pip install numpy torch triton pytest   # CPU 环境即可
-python -m pytest tests/ -q              # TRITON_INTERPRET=1 自动启用
+gpu/triton/.venv/bin/python -m pytest gpu/triton/tests -q -rs
+TRITON_INTERPRET=1 gpu/triton/.venv/bin/python \
+  -m pytest gpu/triton/tests/test_sketch.py -q -rs
 ```
 
-## 已验证（CPU 解释器，与 GPU 后端语义一致）
+环境创建、固定版本及 GPU 基准命令见 [`ENVIRONMENT.md`](ENVIRONMENT.md)。
+`TRITON_INTERPRET=1` 必须显式设置；不会因为缺少 CUDA 而自动声称解释器已运行。
+
+## 当前验证状态
+
+- **当前 Darwin arm64 主机：**纯 NumPy 性质测试与锁定向量 conformance
+  已通过。Triton 无可安装的 Darwin arm64 发行版，因此解释器 kernel 测试是
+  environment-limited skip，不是通过。
+- **历史 native GPU：**导入的 A100 80GB PCIe 原始结果与字段限制保存在
+  [`benchmarks/gpu/historical/subspace-8d856900`](../../benchmarks/gpu/historical/subspace-8d856900/)
+  中；它不是当前 checkout 的复测。
+- **发布前门槛：**Task 9 Linux x86_64 CI 必须通过 Triton 解释器测试；native
+  GPU 仍需使用当前脚本复测，新输出只写入 `benchmarks/gpu/generated/`。
+
+## 纯参考测试已验证的性质
 
 1. sketch 实现：确定性、slot 敏感性、任意分块/求和顺序不变性，以及
    单个 word 的单比特变化会改变线性 sketch；这不是抗碰撞声明。
-2. 融合 kernel：GEMM 结果正确；覆盖到的 tile 的 sketch 与锁定向量及实现参考逐位一致；
-   冷专家不产生覆盖；不同 batch 组成下 sketch/覆盖不变（幂等存储语义）；
-   融合路径与独立扫描路径逐 tile 一致（dense 与 MoE 可共用验证器）。
-3. 攻击演示：tile 级常数系数方案可由 4 字节/tile 的摘要重现；已记录的
+2. 锁定向量：reference buffer/hash、系数、全部 sketch case、slot seed、
+   weights/partials Merkle 树、ticket chunk、audit beacon、committed opening、
+   interior non-inclusion、Fraud/NoFraud 代数结果逐项独立重算。向量不包含
+   boundary admission 等部署策略案例。
+3. 攻击演示：tile 级常数系数方案可由 4 字节/tile 的摘要重现；v2 的两个
+   word MSB 变化可确定性碰撞，但对应 BLAKE3 weights leaf 不同。已记录的
    64 泛函/最小二乘实验只说明这些具体实验未重现测试输出，不构成一般
    抗伪造或安全性结论。
+
+当 Triton kernel gate 在受支持环境通过时，它验证 GEMM、coverage、batch
+invariance，以及 fused/sweep 与 NumPy reference 的逐 tile 一致性；当前
+Darwin arm64 结果不能替代该 gate。
 
 ## 实现 v2（u32 优化版）
 
@@ -54,7 +80,7 @@ u32 线性 sketch 是代数一致性检查，不抗碰撞，也不证明字节�
 一致，并依赖部署层的准入和 challenge 假设。身份、签名、deadline、共识与
 经济后果均属于适配器范围。
 
-## 待 GPU 复测（bench_gpu.py，同一条 ssh 命令）
+## 待 native GPU 复测
 
 - 1 GB 配置下的融合开销与 sweep GB/s（预期 sweep 显著高于 v1 的
   947–1119 GB/s）；

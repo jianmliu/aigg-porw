@@ -2,27 +2,18 @@
 coverage semantics, and the compression-attack demo that motivates per-word
 slot-fresh coefficients."""
 
+import os
+import platform
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
-import torch as _torch
-
-# Triton kernels require CUDA; on CPU-only machines these tests must skip, not crash.
-pytestmark = pytest.mark.skipif(not _torch.cuda.is_available(), reason="Triton kernels need CUDA")
-_DEV = "cuda" if _torch.cuda.is_available() else "cpu"
-
-def _t(x):
-    """numpy -> torch on the kernel device (tests previously passed CPU tensors to Triton)."""
-    return _torch.from_numpy(x).to(_DEV)
-
-import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from porw_sketch import spec
-from porw_sketch.kernels import run_moe_gemm, run_sketch_sweep
 from porw_sketch.reference import covered_experts, moe_gemm_reference
 
 RNG = np.random.default_rng(7)
@@ -40,6 +31,45 @@ def random_weights() -> np.ndarray:
 
 def weight_bytes(b: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(b).view(np.uint8).reshape(-1)
+
+
+@pytest.fixture(scope="module")
+def kernel_runtime():
+    """Load Triton only for kernel tests and select the requested backend."""
+    interpreter = os.environ.get("TRITON_INTERPRET") == "1"
+    try:
+        import torch
+    except ImportError as error:
+        if interpreter:
+            pytest.fail(f"TRITON_INTERPRET=1 requires pinned PyTorch: {error}")
+        pytest.skip(f"Triton kernel tests require pinned PyTorch: {error}")
+
+    if not interpreter and not torch.cuda.is_available():
+        pytest.skip(
+            "Triton kernel tests require CUDA or explicit TRITON_INTERPRET=1"
+        )
+
+    try:
+        import triton  # noqa: F401 - validates the separately pinned runtime
+        from porw_sketch.kernels import run_moe_gemm, run_sketch_sweep
+    except ImportError as error:
+        if (
+            interpreter
+            and platform.system() == "Darwin"
+            and platform.machine() == "arm64"
+        ):
+            pytest.skip(
+                "TRITON_INTERPRET=1 requested, but Triton is unavailable for "
+                f"Darwin arm64: {error}"
+            )
+        pytest.fail(f"active Triton kernel backend is missing Triton: {error}")
+
+    device = "cpu" if interpreter else "cuda"
+    return SimpleNamespace(
+        tensor=lambda array: torch.from_numpy(array).to(device),
+        run_moe_gemm=run_moe_gemm,
+        run_sketch_sweep=run_sketch_sweep,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +148,9 @@ def test_per_word_coeff_scheme_resists_compression():
     # (256 bytes per 4096-byte tile) and forges via least-squares
     # reconstruction of the tile from them.
     F = RNG.integers(0, 4, size=(64, spec.TILE_WORDS)).astype(np.float64)
-    stored = F @ words.T.astype(np.float64)  # 64 values per tile
+    # ``einsum`` avoids a macOS Accelerate warning emitted by NumPy 2.0's
+    # matrix-multiply path for these otherwise finite values.
+    stored = np.einsum("ij,tj->it", F, words.astype(np.float64))
     recon, *_ = np.linalg.lstsq(F, stored, rcond=None)
     recon_words = np.clip(np.round(recon.T), 0, spec.M32).astype(np.uint64)
     for seed in SLOT_SEEDS:
@@ -141,16 +173,18 @@ def test_per_word_coeff_scheme_resists_compression():
 # ---------------------------------------------------------------------------
 
 
-def test_sweep_kernel_matches_reference():
+def test_sweep_kernel_matches_reference(kernel_runtime):
     b = random_weights()
     buf = weight_bytes(b)
     for seed in SLOT_SEEDS[:2]:
-        got = run_sketch_sweep(_t(buf.copy()), seed)
+        got = kernel_runtime.run_sketch_sweep(
+            kernel_runtime.tensor(buf.copy()), seed
+        )
         ref = spec.sketch_tiles(seed, buf)
         assert np.array_equal(got.astype(np.uint64), ref)
 
 
-def test_sweep_kernel_coverage_subset():
+def test_sweep_kernel_coverage_subset(kernel_runtime):
     """S1-over-coverage: sweeping only the tiles in a coverage set yields
     the same per-tile values as a full sweep, in tile_ids order."""
     b = random_weights()
@@ -159,24 +193,24 @@ def test_sweep_kernel_coverage_subset():
     full = spec.sketch_tiles(seed, buf)
     rng = np.random.default_rng(3)
     subset = np.sort(rng.choice(full.size, size=full.size // 3, replace=False))
-    got = run_sketch_sweep(
-        _t(buf.copy()), seed,
-        tile_ids=_t(subset.astype(np.int64)),
+    got = kernel_runtime.run_sketch_sweep(
+        kernel_runtime.tensor(buf.copy()), seed,
+        tile_ids=kernel_runtime.tensor(subset.astype(np.int64)),
     )
     assert np.array_equal(got.astype(np.uint64), full[subset])
 
 
 @pytest.fixture(scope="module")
-def moe_run():
+def moe_run(kernel_runtime):
     b = random_weights()
     a = RNG.standard_normal((M, K), dtype=np.float32).astype(np.float16)
     # Route to experts {0, 2, 3} only — expert 1 stays cold.
     topk_ids = RNG.choice([0, 2, 3], size=(M, TOP_K)).astype(np.int32)
     seed = SLOT_SEEDS[1]
-    c, partials, coverage = run_moe_gemm(
-        _t(a.copy()),
-        _t(b.copy()),
-        _t(topk_ids.copy()),
+    c, partials, coverage = kernel_runtime.run_moe_gemm(
+        kernel_runtime.tensor(a.copy()),
+        kernel_runtime.tensor(b.copy()),
+        kernel_runtime.tensor(topk_ids.copy()),
         seed,
     )
     return a, b, topk_ids, seed, c.cpu().numpy(), partials, coverage
@@ -203,7 +237,7 @@ def test_moe_kernel_sketch_matches_spec(moe_run):
             assert not coverage[sl].any(), f"cold expert {e} must stay uncovered"
 
 
-def test_moe_kernel_batch_invariance():
+def test_moe_kernel_batch_invariance(kernel_runtime):
     """Different batch compositions touching the same experts produce
     identical per-tile sketches (idempotent-store semantics)."""
     b = random_weights()
@@ -213,10 +247,10 @@ def test_moe_kernel_batch_invariance():
         a = RNG.standard_normal((m, K), dtype=np.float32).astype(np.float16)
         topk_ids = np.full((m, TOP_K), 0, dtype=np.int32)
         topk_ids[:, 1] = 2
-        _, partials, coverage = run_moe_gemm(
-            _t(a),
-            _t(b.copy()),
-            _t(topk_ids),
+        _, partials, coverage = kernel_runtime.run_moe_gemm(
+            kernel_runtime.tensor(a),
+            kernel_runtime.tensor(b.copy()),
+            kernel_runtime.tensor(topk_ids),
             seed,
         )
         outs.append((partials.copy(), coverage.copy()))
@@ -224,13 +258,13 @@ def test_moe_kernel_batch_invariance():
     assert np.array_equal(outs[0][1], outs[1][1])
 
 
-def test_fused_equals_sweep_on_covered_tiles(moe_run):
+def test_fused_equals_sweep_on_covered_tiles(moe_run, kernel_runtime):
     """Cross-check: the fused kernel and the standalone sweep kernel agree
     tile-for-tile — so dense layers (S1 sweep) and MoE layers (S2 fused)
     can share one verifier."""
     _, b, topk_ids, seed, _, partials, coverage = moe_run
-    sweep = run_sketch_sweep(
-        _t(weight_bytes(b).copy()), seed
+    sweep = kernel_runtime.run_sketch_sweep(
+        kernel_runtime.tensor(weight_bytes(b).copy()), seed
     )
     mask = coverage.astype(bool)
     assert np.array_equal(partials[mask], sweep[mask])
