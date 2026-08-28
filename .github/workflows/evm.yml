@@ -51,11 +51,27 @@ jobs:
           forge clean
           forge test -vv
 
+      - name: Test benchmark evidence publication safety
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest \
+            contracts/evm/scripts/test_report_anvil.py \
+            contracts/evm/scripts/test_publish_fresh_report.py \
+            -v
+
       - name: Validate fresh Anvil receipts against the committed baseline
         shell: bash
         run: |
           set -euo pipefail
-          contracts/evm/scripts/run-anvil-benchmark.sh --check-committed
+          fresh_report="$GITHUB_WORKSPACE/benchmarks/evm/generated/anvil-london-ci.json"
+          test ! -e "$fresh_report" && test ! -L "$fresh_report"
+          contracts/evm/scripts/run-anvil-benchmark.sh \
+            --check-committed \
+            --fresh-output "$fresh_report"
+          test -f "$fresh_report" && test ! -L "$fresh_report"
+          python3 -m json.tool "$fresh_report" >/dev/null
+          git check-ignore --quiet "$fresh_report"
           git diff --exit-code -- benchmarks/evm/anvil-london.json
           test -z "$(git status --porcelain --untracked-files=all -- benchmarks/evm/anvil-london.json)"
 
@@ -63,7 +79,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: porw-anvil-london-${{ github.sha }}
-          path: benchmarks/evm/anvil-london.json
+          path: benchmarks/evm/generated/anvil-london-ci.json
           if-no-files-found: error
           retention-days: 14
           compression-level: 0

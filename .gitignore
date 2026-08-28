@@ -3,4 +3,5 @@
 **/.pytest_cache/
 /gpu/triton/.venv/
 /benchmarks/gpu/generated/
+/benchmarks/evm/generated/
 /contracts/evm/broadcast/

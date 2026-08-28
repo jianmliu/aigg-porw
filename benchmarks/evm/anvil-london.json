@@ -1,5 +1,5 @@
 {
-  "block_timestamp": 1787914069,
+  "block_timestamp": 1787915361,
   "call": {
     "block_number": 2,
     "calldata": {
@@ -66,12 +66,16 @@
         "sha256": "52b9043d8711c4942b52e8266d79841913726c8abed16cc65c9b28addd212614"
       },
       {
+        "path": "contracts/evm/scripts/publish-fresh-report.py",
+        "sha256": "93f438727ec1f10eae248c203eef477ab58523ec41874cc67d61b59bee0de4a0"
+      },
+      {
         "path": "contracts/evm/scripts/report-anvil.py",
         "sha256": "9fd7b7b00f23f7789d9234f4b7a289350299b62b3134d85ef18c3b855aea6fda"
       },
       {
         "path": "contracts/evm/scripts/run-anvil-benchmark.sh",
-        "sha256": "3fe3f2461add201a759328cd1f51c41ec28b278e47809d1280918823f0c5f4f9"
+        "sha256": "771b2d65854fa92abcc42bfe179e8e22e60c10b0e188a909848f76944f28d894"
       },
       {
         "path": "contracts/evm/src/Blake3.sol",
@@ -90,7 +94,7 @@
         "sha256": "fb321155cfb731e2506df13c8c741d97647875998cd825212c6494a7292e00e7"
       }
     ],
-    "manifest_sha256": "c14ab8e199c7f466549f8356dc10966f85c65bc1251022e038d63b1dbaf1f338",
+    "manifest_sha256": "6c3fedb67fbd655042712dc6336e96d26b35cefa9478f91a48d41e60f8e32df9",
     "relevant_input_worktree_dirty": false
   },
   "verifier": {

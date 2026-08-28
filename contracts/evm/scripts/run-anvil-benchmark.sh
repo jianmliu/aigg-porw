@@ -2,10 +2,29 @@
 set -Eeuo pipefail
 
 MODE="publish"
-if [[ $# -eq 1 && "$1" == "--check-committed" ]]; then
-    MODE="check"
-elif [[ $# -ne 0 ]]; then
-    echo "usage: $0 [--check-committed]" >&2
+FRESH_OUTPUT=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --check-committed)
+            MODE="check"
+            shift
+            ;;
+        --fresh-output)
+            [[ $# -ge 2 ]] || {
+                echo "--fresh-output requires a path" >&2
+                exit 2
+            }
+            FRESH_OUTPUT=$2
+            shift 2
+            ;;
+        *)
+            echo "usage: $0 [--check-committed [--fresh-output ABSOLUTE_PATH]]" >&2
+            exit 2
+            ;;
+    esac
+done
+if [[ -n "$FRESH_OUTPUT" && "$MODE" != "check" ]]; then
+    echo "--fresh-output requires --check-committed" >&2
     exit 2
 fi
 
@@ -25,7 +44,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 EVM_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 REPO_ROOT="$(cd "$EVM_DIR/../.." && pwd -P)"
 BENCH_DIR="$REPO_ROOT/benchmarks/evm"
+FRESH_ROOT="$BENCH_DIR/generated"
 REPORTER="$SCRIPT_DIR/report-anvil.py"
+FRESH_PUBLISHER="$SCRIPT_DIR/publish-fresh-report.py"
 EXPECTATIONS="$SCRIPT_DIR/canonical-benchmark.json"
 VECTOR="$REPO_ROOT/spec-cache/conformance/porw/sketch-tile-v2.json"
 ARTIFACT="$EVM_DIR/out/PorwVerifier.sol/PorwVerifier.json"
@@ -40,6 +61,7 @@ RELEVANT_INPUTS=(
     "contracts/evm/lib/forge-std"
     "contracts/evm/script/AnvilBench.s.sol"
     "contracts/evm/scripts/canonical-benchmark.json"
+    "contracts/evm/scripts/publish-fresh-report.py"
     "contracts/evm/scripts/report-anvil.py"
     "contracts/evm/scripts/run-anvil-benchmark.sh"
     "contracts/evm/src/Blake3.sol"
@@ -60,10 +82,41 @@ RELEVANT_INPUTS=(
     echo "reporter, canonical expectations, or vector is missing or symlinked" >&2
     exit 1
 }
+[[ -f "$FRESH_PUBLISHER" && ! -L "$FRESH_PUBLISHER" ]] || {
+    echo "fresh benchmark publisher is missing or symlinked" >&2
+    exit 1
+}
 [[ ! -L "$FINAL_REPORT" ]] || {
     echo "refusing to overwrite symlink evidence" >&2
     exit 1
 }
+
+if [[ -n "$FRESH_OUTPUT" ]]; then
+    [[ "$FRESH_OUTPUT" == /* ]] || {
+        echo "fresh output must be an absolute path" >&2
+        exit 1
+    }
+    [[ ! -L "$FRESH_ROOT" ]] || {
+        echo "benchmarks/evm/generated must not be a symlink" >&2
+        exit 1
+    }
+    mkdir -p "$FRESH_ROOT"
+    [[ -d "$FRESH_ROOT" && ! -L "$FRESH_ROOT" ]] || {
+        echo "benchmarks/evm/generated must be a regular directory" >&2
+        exit 1
+    }
+    case "$FRESH_OUTPUT" in
+        "$FRESH_ROOT"/*) ;;
+        *)
+            echo "fresh output must be inside benchmarks/evm/generated" >&2
+            exit 1
+            ;;
+    esac
+    python3 "$FRESH_PUBLISHER" \
+        --allowed-root "$FRESH_ROOT" \
+        --target "$FRESH_OUTPUT" \
+        --validate-target-only
+fi
 
 TEMP_BASE="${TMPDIR:-/tmp}"
 TEMP_DIR="$(mktemp -d "$TEMP_BASE/aigg-porw-anvil.XXXXXXXX")"
@@ -343,6 +396,13 @@ if [[ "$MODE" == "check" ]]; then
         exit 1
     }
     python3 "$REPORTER" --compare "$FINAL_REPORT" "$TEMP_DIR/run-1/report.json"
+    if [[ -n "$FRESH_OUTPUT" ]]; then
+        python3 "$FRESH_PUBLISHER" \
+            --allowed-root "$FRESH_ROOT" \
+            --source "$TEMP_DIR/run-1/report.json" \
+            --target "$FRESH_OUTPUT"
+        echo "wrote fresh verified CI evidence: $FRESH_OUTPUT"
+    fi
     echo "fresh clean-head evidence matches committed deterministic fields: $FINAL_REPORT"
     exit 0
 fi

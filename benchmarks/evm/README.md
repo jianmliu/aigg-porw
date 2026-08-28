@@ -26,6 +26,24 @@ receipts without modifying the worktree:
 contracts/evm/scripts/run-anvil-benchmark.sh --check-committed
 ```
 
+CI also preserves the actual fresh report after that comparison, rather than
+uploading a second copy of the committed baseline:
+
+```sh
+fresh_report="$PWD/benchmarks/evm/generated/anvil-london-ci.json"
+contracts/evm/scripts/run-anvil-benchmark.sh \
+  --check-committed \
+  --fresh-output "$fresh_report"
+```
+
+`--fresh-output` is valid only with `--check-committed`, requires an absolute,
+previously unused non-symlink path under the ignored
+`benchmarks/evm/generated/` tree, and never overwrites
+`anvil-london.json`. The runner publishes the fresh JSON atomically only after
+two fresh runs agree, measurement inputs remain unchanged, and the deterministic
+fields match the committed baseline. A failed run or comparison publishes no
+fresh artifact.
+
 The runner checks the pinned Foundry build and Solidity settings, executes two
 fresh local Anvil chains, compares every deterministic report field except the
 transaction hashes and block timestamp, and atomically publishes evidence only

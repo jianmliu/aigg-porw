@@ -31,7 +31,8 @@ commit being tagged:
 3. Rust default, workspace, `scale`, and no-default-features gates pass;
 4. the canonical vector and provenance match `spec-lock.json` byte for byte;
 5. the full Solidity suite and the Foundry 1.7.1/London real-Anvil
-   `--check-committed` benchmark pass without deterministic drift; and
+   `--check-committed` benchmark pass without deterministic drift, and CI
+   uploads the resulting fresh report rather than the committed baseline; and
 6. the worktree and submodule are clean.
 
 The tag must not be created from a locally exceptional or skipped gate. Conformance
