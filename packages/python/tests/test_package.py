@@ -90,14 +90,57 @@ def _action_step(prefix: str, source: str | None = None) -> Mapping[str, Any]:
     return matching[0]
 
 
-def _active_invocation(run: str, executable: str, argument: str) -> bool:
-    logical = re.sub(r"\\\n\s*", " ", run)
-    suffix = rf"\s+{re.escape(argument)}" if argument else ""
-    pattern = rf"(?m)^\s*{re.escape(executable)}{suffix}(?:\s|$)"
-    return re.search(pattern, logical) is not None
+def _workflow_paths(directory: Path) -> list[Path]:
+    return sorted({*directory.glob("*.yml"), *directory.glob("*.yaml")})
+
+
+def _effective_commands(run: str) -> tuple[str, ...]:
+    commands: list[str] = []
+    continued = ""
+    for raw_line in run.splitlines():
+        stripped = raw_line.strip()
+        if not continued and (not stripped or stripped.startswith("#")):
+            continue
+        if stripped.endswith("\\"):
+            continued += stripped[:-1].rstrip() + " "
+            continue
+        command = re.sub(r"\s+", " ", continued + stripped).strip()
+        continued = ""
+        if command and not command.startswith("#"):
+            commands.append(command)
+    assert not continued, "run block has a dangling line continuation"
+    return tuple(commands)
+
+
+def _require_exact_commands(run: str, expected: tuple[str, ...]) -> None:
+    commands = _effective_commands(run)
+    assert commands
+    assert commands[0] == "set -euo pipefail"
+    assert commands.count("set -euo pipefail") == 1
+    assert not any(
+        command.startswith(("set +", "set -e +", "set -u +"))
+        or command in {"set +e", "set +u", "set +o pipefail"}
+        for command in commands[1:]
+    )
+    for required in expected:
+        assert commands.count(required) == 1, f"missing exact active command: {required}"
+
+    protected = "cargo|cp|git|python|python3|rustc|rustup|test|uv"
+    override = re.compile(
+        rf"^(?:alias\s+(?:{protected})=|function\s+(?:{protected})(?:\s|\()|"
+        rf"(?:{protected})\s*\(\s*\)\s*\{{)"
+    )
+    assert not any(override.search(command) for command in commands)
 
 
 def _validate_release_contract(source: str) -> None:
+    for step in _steps(source):
+        run = step.get("run")
+        if run is not None:
+            assert isinstance(run, str)
+            commands = _effective_commands(run)
+            assert commands and commands[0] == "set -euo pipefail"
+
     setup_python = _action_step("actions/setup-python@", source)
     assert setup_python["uses"] == f"actions/setup-python@{EXPECTED_SETUP_PYTHON_SHA}"
     python_inputs = setup_python.get("with")
@@ -115,39 +158,45 @@ def _validate_release_contract(source: str) -> None:
     package_run = package_gate.get("run")
     assert package_gate.get("working-directory") == "packages/python"
     assert isinstance(package_run, str)
-    for executable, argument in (
-        ("uv", "sync --frozen --extra dev"),
-        ("uv", "run --frozen ruff check ."),
-        ("uv", "run --frozen ruff format --check ."),
+    _require_exact_commands(
+        package_run,
         (
-            "uv",
-            "run --frozen mypy src tests scripts "
+            "uv sync --frozen --extra dev",
+            "uv run --frozen ruff check .",
+            "uv run --frozen ruff format --check .",
+            "uv run --frozen mypy src tests scripts "
+            + "../../scripts/check_python_source_tree.py "
             + "../../scripts/check_triton_interpreter_report.py",
+            "uv run --frozen pytest -q",
+            "UV_OFFLINE=1 uv build --offline --no-build-isolation",
         ),
-        ("uv", "run --frozen pytest -q"),
-        ("UV_OFFLINE=1", "uv build --offline --no-build-isolation"),
-    ):
-        assert _active_invocation(package_run, executable, argument)
+    )
 
     rust_gate = _named_step("Test the Rust workspace and feature boundaries", source)
     rust_run = rust_gate.get("run")
     assert isinstance(rust_run, str)
-    for argument in (
-        "test --workspace --locked",
-        "test -p aigg-porw-core --locked",
-        "test -p aigg-porw-core --features scale --locked",
-        "check -p aigg-porw-core --no-default-features --locked",
-    ):
-        assert _active_invocation(rust_run, "cargo", argument)
+    _require_exact_commands(
+        rust_run,
+        (
+            "cargo test --workspace --locked",
+            "cargo test -p aigg-porw-core --locked",
+            "cargo test -p aigg-porw-core --features scale --locked",
+            "cargo check -p aigg-porw-core --no-default-features --locked",
+        ),
+    )
 
     smoke = _named_step("Smoke-test the exact wheel outside the checkout", source)
     smoke_run = smoke.get("run")
     assert smoke.get("working-directory") == "packages/python"
     assert isinstance(smoke_run, str)
-    assert _active_invocation(
+    _require_exact_commands(
         smoke_run,
-        ".venv/bin/python",
-        "scripts/smoke_installed_wheel.py",
+        (
+            'cp -- ../../spec-cache/conformance/porw/sketch-tile-v2.json "$vector"',
+            ".venv/bin/python scripts/smoke_installed_wheel.py "
+            + '--uv "$(command -v uv)" --wheel "$wheel" --vector "$vector" '
+            + '--source-checkout "$GITHUB_WORKSPACE"',
+        ),
     )
     assert "${RUNNER_TEMP:?}" in smoke_run
     assert '--source-checkout "$GITHUB_WORKSPACE"' in smoke_run
@@ -156,18 +205,68 @@ def _validate_release_contract(source: str) -> None:
     triton = _named_step("Run Python and mandatory Triton interpreter conformance", source)
     triton_run = triton.get("run")
     assert isinstance(triton_run, str)
-    assert _active_invocation(triton_run, "python", "-m pytest")
-    assert _active_invocation(
+    _require_exact_commands(
         triton_run,
-        "python",
-        "-B scripts/check_triton_interpreter_report.py",
+        (
+            "python -m pytest gpu/triton/tests/test_sketch.py "
+            + "gpu/triton/tests/test_conformance.py "
+            + "gpu/triton/tests/test_kernel_validation.py "
+            + "gpu/triton/tests/test_benchmark_honesty.py "
+            + '-q -rs --junitxml="$report"',
+            'python -B scripts/check_triton_interpreter_report.py "$report"',
+        ),
     )
 
     source_gate = _named_step("Enforce the single Python proof implementation", source)
     source_run = source_gate.get("run")
     assert isinstance(source_run, str)
-    assert _active_invocation(source_run, "./scripts/test-python-source-tree.sh", "")
-    assert _active_invocation(source_run, "./scripts/check-python-source-tree.sh", "")
+    _require_exact_commands(
+        source_run,
+        ("./scripts/test-python-source-tree.sh", "./scripts/check-python-source-tree.sh"),
+    )
+
+    rust_install = _named_step("Install the pinned Rust toolchain", source)
+    rust_install_run = rust_install.get("run")
+    assert isinstance(rust_install_run, str)
+    _require_exact_commands(
+        rust_install_run,
+        (
+            "rustup toolchain install nightly-2025-05-31 --profile minimal "
+            + "--component rustfmt --component clippy",
+            "rustc --version --verbose",
+            "cargo --version --verbose",
+        ),
+    )
+
+    spec_lock = _named_step("Verify the canonical spec lock", source)
+    spec_lock_run = spec_lock.get("run")
+    assert isinstance(spec_lock_run, str)
+    _require_exact_commands(spec_lock_run, ("python3 - <<'PY'",))
+
+    linux = _named_step("Verify and install the Linux interpreter environment", source)
+    linux_run = linux.get("run")
+    assert isinstance(linux_run, str)
+    _require_exact_commands(
+        linux_run,
+        (
+            'test "$(uname -s)" = Linux',
+            'test "$(uname -m)" = x86_64',
+            "python - <<'PY'",
+            "python -m pip install --require-hashes "
+            + "-r gpu/triton/requirements-test-linux-x86_64.lock",
+        ),
+    )
+
+    cache = _named_step("Prove the spec cache stayed read-only", source)
+    cache_run = cache.get("run")
+    assert isinstance(cache_run, str)
+    _require_exact_commands(
+        cache_run,
+        (
+            "git diff --exit-code -- spec-cache",
+            'test -z "$(git status --porcelain --untracked-files=all -- spec-cache)"',
+        ),
+    )
 
 
 def _copy_archive_like_checkout(destination: Path) -> None:
@@ -257,7 +356,7 @@ def test_workflow_contract_is_structural_and_actions_are_full_sha_pinned() -> No
     source = WORKFLOW_PATH.read_text(encoding="utf-8")
     _validate_release_contract(source)
 
-    for workflow_path in sorted((REPO_ROOT / ".github/workflows").glob("*.yml")):
+    for workflow_path in _workflow_paths(REPO_ROOT / ".github/workflows"):
         loaded = _workflow(workflow_path.read_text(encoding="utf-8"))
         jobs = loaded.get("jobs")
         assert isinstance(jobs, Mapping)
@@ -275,6 +374,72 @@ def test_workflow_contract_is_structural_and_actions_are_full_sha_pinned() -> No
 
 def _remove_uv_version(source: str) -> str:
     return source.replace("          version: 0.11.16\n", "", 1)
+
+
+def _delete_package_fail_fast(source: str) -> str:
+    return source.replace(
+        "          set -euo pipefail\n          uv sync --frozen --extra dev\n",
+        "          uv sync --frozen --extra dev\n",
+        1,
+    )
+
+
+def _weaken_pytest_with_or_true(source: str) -> str:
+    return source.replace(
+        "          uv run --frozen pytest -q\n",
+        "          uv run --frozen pytest -q || true\n",
+        1,
+    )
+
+
+def _weaken_rust_with_semicolon_true(source: str) -> str:
+    return source.replace(
+        "          cargo test --workspace --locked\n",
+        "          cargo test --workspace --locked; true\n",
+        1,
+    )
+
+
+def _mask_source_gate_with_pipeline(source: str) -> str:
+    return source.replace(
+        "          ./scripts/check-python-source-tree.sh\n",
+        "          ./scripts/check-python-source-tree.sh | cat\n",
+        1,
+    )
+
+
+def _background_source_gate(source: str) -> str:
+    return source.replace(
+        "          ./scripts/test-python-source-tree.sh\n",
+        "          ./scripts/test-python-source-tree.sh &\n",
+        1,
+    )
+
+
+def _override_uv_function(source: str) -> str:
+    return source.replace(
+        "          set -euo pipefail\n          uv sync --frozen --extra dev\n",
+        "          set -euo pipefail\n          uv() { return 0; }\n"
+        "          uv sync --frozen --extra dev\n",
+        1,
+    )
+
+
+def _override_cargo_alias(source: str) -> str:
+    return source.replace(
+        "          set -euo pipefail\n          cargo test --workspace --locked\n",
+        "          set -euo pipefail\n          alias cargo=true\n"
+        "          cargo test --workspace --locked\n",
+        1,
+    )
+
+
+def _inject_command_substitution(source: str) -> str:
+    return source.replace(
+        "          uv run --frozen pytest -q\n",
+        '          uv run --frozen pytest -q "$(true)"\n',
+        1,
+    )
 
 
 def _comment_smoke_invocation(source: str) -> str:
@@ -305,6 +470,14 @@ def _misnest_uv_inputs(source: str) -> str:
     "mutation",
     [
         _remove_uv_version,
+        _delete_package_fail_fast,
+        _weaken_pytest_with_or_true,
+        _weaken_rust_with_semicolon_true,
+        _mask_source_gate_with_pipeline,
+        _background_source_gate,
+        _override_uv_function,
+        _override_cargo_alias,
+        _inject_command_substitution,
         _comment_smoke_invocation,
         _comment_zero_skip_invocation,
         _misnest_uv_inputs,
@@ -318,6 +491,22 @@ def test_release_contract_rejects_omissions_comments_and_wrong_nesting(
     assert mutated != source
     with pytest.raises((AssertionError, yaml.YAMLError)):
         _validate_release_contract(mutated)
+
+
+def test_workflow_discovery_includes_yaml_extension(tmp_path: Path) -> None:
+    source_directory = REPO_ROOT / ".github/workflows"
+    workflow_directory = tmp_path / "workflows"
+    workflow_directory.mkdir()
+    for source in _workflow_paths(source_directory):
+        shutil.copy2(source, workflow_directory / source.name)
+    original = workflow_directory / "conformance.yml"
+    renamed = workflow_directory / "conformance.yaml"
+    original.rename(renamed)
+
+    discovered = _workflow_paths(workflow_directory)
+    assert renamed in discovered
+    assert original not in discovered
+    _validate_release_contract(renamed.read_text(encoding="utf-8"))
 
 
 def test_exact_workflow_smoke_block_succeeds_in_archive_checkout(

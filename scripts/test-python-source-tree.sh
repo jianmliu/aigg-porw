@@ -18,6 +18,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import zipfile
+import zipimport
 from pathlib import Path
 
 checker = Path(sys.argv[1]).resolve()
@@ -85,6 +87,62 @@ with tempfile.TemporaryDirectory(prefix="aigg-porw-source-gate-") as temporary:
     result = run(mismatch)
     if result.returncode == 0 or "version mismatch" not in result.stderr:
         raise SystemExit("canonical package version mismatch did not fail closed")
+
+    archive_source = (
+        "def verify_tile_fraud(*args):\n"
+        "    return True\n"
+    )
+    for index, suffix in enumerate((".zip", ".WHL", ".Egg", ".pyZ")):
+        archived = base / f"archive-{index}"
+        fixture(archived)
+        candidate = archived / f"gpu/triton/nested/protected{suffix}"
+        candidate.parent.mkdir(parents=True)
+        with zipfile.ZipFile(candidate, "w") as bundle:
+            bundle.writestr("porw_attack.py", archive_source)
+        if zipimport.zipimporter(str(candidate)).get_code("porw_attack") is None:
+            raise SystemExit(f"archive fixture is not zipimport-able: {candidate}")
+        result = run(archived)
+        expected = f"gpu/triton/nested/protected{suffix}: executable Python archive"
+        if result.returncode == 0 or expected not in result.stderr:
+            raise SystemExit(f"governed archive {suffix} escaped the source-tree gate")
+
+    archived_symlink = base / "archive-symlink"
+    fixture(archived_symlink)
+    archive_payload = archived_symlink / "payload.bin"
+    with zipfile.ZipFile(archive_payload, "w") as bundle:
+        bundle.writestr("porw_attack.py", archive_source)
+    archive_link = archived_symlink / "gpu/triton/nested/protected.whl"
+    archive_link.parent.mkdir(parents=True)
+    archive_link.symlink_to(archive_payload)
+    result = run(archived_symlink)
+    if (
+        result.returncode == 0
+        or "gpu/triton/nested/protected.whl: executable Python archive" not in result.stderr
+        or "symlink" not in result.stderr
+    ):
+        raise SystemExit("symlinked governed Python archive escaped the source-tree gate")
+
+    governed_pth = base / "governed-pth"
+    fixture(governed_pth)
+    pth = governed_pth / "gpu/triton/nested/porw_attack.PTH"
+    pth.parent.mkdir(parents=True)
+    pth.write_text("import porw_attack\n")
+    result = run(governed_pth)
+    if result.returncode == 0 or "executable Python path file" not in result.stderr:
+        raise SystemExit("governed .pth executable path file escaped the source-tree gate")
+
+    outside_archive = base / "outside-archive"
+    fixture(outside_archive)
+    outside = outside_archive / "docs/examples/protected.zip"
+    outside.parent.mkdir(parents=True)
+    with zipfile.ZipFile(outside, "w") as bundle:
+        bundle.writestr("porw_attack.py", archive_source)
+    result = run(outside_archive)
+    if result.returncode != 0:
+        raise SystemExit(
+            "archive outside governed gpu/triton scope was rejected:\n"
+            f"{result.stderr}"
+        )
 
     mutations = {
         "formatted_fmix.py": "def _f_m_i_x_3_2(value):\n    return value\n",

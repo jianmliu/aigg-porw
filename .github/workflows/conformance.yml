@@ -110,7 +110,7 @@ jobs:
           uv sync --frozen --extra dev
           uv run --frozen ruff check .
           uv run --frozen ruff format --check .
-          uv run --frozen mypy src tests scripts ../../scripts/check_triton_interpreter_report.py
+          uv run --frozen mypy src tests scripts ../../scripts/check_python_source_tree.py ../../scripts/check_triton_interpreter_report.py
           uv run --frozen pytest -q
           UV_OFFLINE=1 uv build --offline --no-build-isolation
 

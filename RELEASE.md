@@ -55,7 +55,7 @@ From the repository root:
 (cd packages/python && uv sync --frozen --extra dev)
 (cd packages/python && uv run --frozen ruff check .)
 (cd packages/python && uv run --frozen ruff format --check .)
-(cd packages/python && uv run --frozen mypy src tests scripts ../../scripts/check_triton_interpreter_report.py)
+(cd packages/python && uv run --frozen mypy src tests scripts ../../scripts/check_python_source_tree.py ../../scripts/check_triton_interpreter_report.py)
 (cd packages/python && uv run --frozen pytest -q)
 (cd packages/python && UV_OFFLINE=1 uv build --offline --no-build-isolation)
 ./scripts/test-python-source-tree.sh
@@ -77,6 +77,11 @@ contracts/evm/scripts/run-anvil-benchmark.sh --check-committed
 git diff --check
 git status --short --branch
 ```
+
+Both source-tree commands enforce the pre-import executable-container boundary:
+regular files and symlinks below `gpu/triton` with case-insensitive `.zip`,
+`.whl`, `.egg`, `.pyz`, or `.pth` suffixes are forbidden. Archives elsewhere
+are outside this narrowly governed integration-tree invariant.
 
 The Darwin command can reproduce CPU conformance, but its current 11 Triton
 skips cannot discharge the Linux Triton interpreter gate. Only the required

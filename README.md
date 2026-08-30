@@ -91,7 +91,7 @@ Cargo dependencies, CPython 3.12.13 with a platform-specific hash lock, Solidity
 (cd packages/python && uv sync --frozen --extra dev)
 (cd packages/python && uv run --frozen ruff check .)
 (cd packages/python && uv run --frozen ruff format --check .)
-(cd packages/python && uv run --frozen mypy src tests scripts ../../scripts/check_triton_interpreter_report.py)
+(cd packages/python && uv run --frozen mypy src tests scripts ../../scripts/check_python_source_tree.py ../../scripts/check_triton_interpreter_report.py)
 (cd packages/python && uv run --frozen pytest -q)
 (cd packages/python && UV_OFFLINE=1 uv build --offline --no-build-isolation)
 ./scripts/test-python-source-tree.sh
@@ -111,6 +111,11 @@ gpu/triton/.venv/bin/python -m pytest \
 (cd contracts/evm && forge clean && forge test -vv)
 contracts/evm/scripts/run-anvil-benchmark.sh --check-committed
 ```
+
+The source-tree gate fails closed before import if the governed `gpu/triton`
+integration tree contains a regular file or symlink whose suffix, compared
+case-insensitively, is `.zip`, `.whl`, `.egg`, `.pyz`, or `.pth`. Archives
+outside that governed integration tree are not part of this invariant.
 
 On Darwin arm64, Triton is unavailable and the local Python run cannot satisfy
 the mandatory interpreter gate; the current host-applicable run reports 11
