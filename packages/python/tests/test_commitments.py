@@ -2,11 +2,13 @@
 
 import json
 from pathlib import Path
-from typing import cast
+from typing import Never, cast
 
 import pytest
 from blake3 import blake3
 
+import aigg_porw.commitments as commitment_module
+import aigg_porw.merkle as merkle_module
 from aigg_porw import (
     TILE_BYTES,
     CommittedOpening,
@@ -181,6 +183,10 @@ class _IntSubclass(int):
     pass
 
 
+class _BytesSubclass(bytes):
+    pass
+
+
 def test_numeric_protocol_fields_require_exact_integers() -> None:
     leaf = blake3(b"leaf").digest()
     for invalid in (True, _IntSubclass(0), 0.0):
@@ -287,3 +293,96 @@ def test_witness_values_are_immutable_and_exact_types_are_required() -> None:
         challenged_tile=2,
         witness=(witness.left, witness.right),  # type: ignore[arg-type]
     )
+
+
+def _forbid_hashing(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    calls: list[int] = []
+
+    def forbidden_blake3(*args: object, **kwargs: object) -> Never:
+        calls.append(1)
+        raise AssertionError("hashing occurred before recursive input validation")
+
+    monkeypatch.setattr(commitment_module, "blake3", forbidden_blake3)
+    monkeypatch.setattr(merkle_module, "blake3", forbidden_blake3)
+    return calls
+
+
+@pytest.mark.parametrize(
+    "invalid_node",
+    ["node", bytearray(32), memoryview(bytes(32)), _BytesSubclass(32)],
+)
+def test_committed_opening_rejects_nested_non_exact_bytes_before_hashing(
+    monkeypatch: pytest.MonkeyPatch, invalid_node: object
+) -> None:
+    calls = _forbid_hashing(monkeypatch)
+    opening = CommittedOpening(3, 7, 1, (invalid_node,))  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="^proof node must be exact bytes$"):
+        verify_committed_opening(root=bytes(32), leaf_count=2, challenged_tile=3, opening=opening)
+    assert calls == []
+
+
+def test_non_inclusion_prevalidates_later_neighbor_before_any_hashing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _forbid_hashing(monkeypatch)
+    witness = InteriorNonInclusionWitness(
+        left=NeighborWitness(1, 11, 0, (bytes(32),)),
+        right=NeighborWitness(3, 33, 1, ("late-node",)),  # type: ignore[arg-type]
+    )
+    with pytest.raises(TypeError, match="^proof node must be exact bytes$"):
+        verify_interior_non_inclusion(
+            root=bytes(32), leaf_count=2, challenged_tile=2, witness=witness
+        )
+    assert calls == []
+
+
+def test_non_inclusion_scans_nested_bytes_even_when_earlier_numeric_field_is_bad(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _forbid_hashing(monkeypatch)
+    witness = InteriorNonInclusionWitness(
+        left=NeighborWitness(-1, 11, 0, (bytes(32),)),
+        right=NeighborWitness(3, 33, 1, ("late-node",)),  # type: ignore[arg-type]
+    )
+    with pytest.raises(TypeError, match="^proof node must be exact bytes$"):
+        verify_interior_non_inclusion(
+            root=bytes(32), leaf_count=2, challenged_tile=2, witness=witness
+        )
+    assert calls == []
+
+
+def test_high_level_malformed_exact_bytes_fail_closed_before_hashing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _forbid_hashing(monkeypatch)
+    opening = CommittedOpening(3, 7, 1, (bytes(31),))
+    assert not verify_committed_opening(
+        root=bytes(32), leaf_count=2, challenged_tile=3, opening=opening
+    )
+    witness = InteriorNonInclusionWitness(
+        left=NeighborWitness(1, 11, 0, (bytes(32),)),
+        right=NeighborWitness(3, 33, 1, (bytes(31),)),
+    )
+    assert not verify_interior_non_inclusion(
+        root=bytes(32), leaf_count=2, challenged_tile=2, witness=witness
+    )
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "invalid_root",
+    ["root", bytearray(32), memoryview(bytes(32)), _BytesSubclass(32)],
+)
+def test_high_level_roots_require_exact_bytes_before_hashing(
+    monkeypatch: pytest.MonkeyPatch, invalid_root: object
+) -> None:
+    calls = _forbid_hashing(monkeypatch)
+    opening = CommittedOpening(3, 7, 0, ())
+    with pytest.raises(TypeError, match="^root must be exact bytes$"):
+        verify_committed_opening(
+            root=invalid_root,  # type: ignore[arg-type]
+            leaf_count=1,
+            challenged_tile=3,
+            opening=opening,
+        )
+    assert calls == []

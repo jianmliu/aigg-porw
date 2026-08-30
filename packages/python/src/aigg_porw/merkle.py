@@ -1,5 +1,7 @@
 """Canonical counted-Merkle verification for PoRW commitments."""
 
+from typing import TypeGuard
+
 from blake3 import blake3
 
 HASH_BYTES = 32
@@ -13,8 +15,35 @@ def _require_exact_bytes(value: object, name: str) -> bytes:
     return value
 
 
-def _is_u64(value: object) -> bool:
+def _is_u64(value: object) -> TypeGuard[int]:
     return type(value) is int and 0 <= value < U64_LIMIT
+
+
+def _validate_proof_nodes(proof: object) -> TypeGuard[tuple[bytes, ...]]:
+    """Validate all bounded proof node byte values without hashing."""
+    if type(proof) is not tuple:
+        return False
+    if len(proof) > MAX_PROOF_NODES:
+        return False
+
+    widths_are_valid = True
+    for node in proof:
+        _require_exact_bytes(node, "proof node")
+        widths_are_valid = widths_are_valid and len(node) == HASH_BYTES
+    return widths_are_valid
+
+
+def _validate_counted_proof(index: object, leaf_count: object, proof: object) -> bool:
+    """Validate an entire counted proof without performing any hashing."""
+    if not _validate_proof_nodes(proof):
+        return False
+    if not _is_u64(index) or not _is_u64(leaf_count):
+        return False
+    if leaf_count == 0 or index >= leaf_count:
+        return False
+
+    expected_nodes = (leaf_count - 1).bit_length()
+    return expected_nodes <= MAX_PROOF_NODES and len(proof) == expected_nodes
 
 
 def merkle_parent(left: bytes, right: bytes) -> bytes:
@@ -47,20 +76,8 @@ def verify_counted_merkle(
     leaf_bytes = _require_exact_bytes(leaf, "leaf")
     if len(root_bytes) != HASH_BYTES or len(leaf_bytes) != HASH_BYTES:
         return False
-    if not _is_u64(index) or not _is_u64(leaf_count):
+    if not _validate_counted_proof(index, leaf_count, proof):
         return False
-    if leaf_count == 0 or index >= leaf_count:
-        return False
-    if type(proof) is not tuple:
-        return False
-
-    expected_nodes = (leaf_count - 1).bit_length()
-    if expected_nodes > MAX_PROOF_NODES or len(proof) != expected_nodes:
-        return False
-    for node in proof:
-        _require_exact_bytes(node, "proof node")
-        if len(node) != HASH_BYTES:
-            return False
 
     accumulator = leaf_bytes
     position = index

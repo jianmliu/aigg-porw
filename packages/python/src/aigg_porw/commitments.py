@@ -4,7 +4,12 @@ from dataclasses import dataclass
 
 from blake3 import blake3
 
-from .merkle import _require_exact_bytes, verify_counted_merkle
+from .merkle import (
+    _require_exact_bytes,
+    _validate_counted_proof,
+    _validate_proof_nodes,
+    verify_counted_merkle,
+)
 from .scheme import TILE_BYTES
 
 U32_LIMIT = 1 << 32
@@ -82,12 +87,12 @@ def _valid_common_context(root: bytes, leaf_count: object, challenged_tile: obje
     )
 
 
-def _valid_leaf_witness(witness: CommittedOpening | NeighborWitness) -> bool:
+def _valid_leaf_witness(witness: CommittedOpening | NeighborWitness, leaf_count: int) -> bool:
     return (
         _is_uint(witness.tile_index, U64_LIMIT)
         and _is_uint(witness.sketch, U32_LIMIT)
         and _is_uint(witness.index, U64_LIMIT)
-        and type(witness.proof) is tuple
+        and _validate_counted_proof(witness.index, leaf_count, witness.proof)
     )
 
 
@@ -97,7 +102,11 @@ def verify_committed_opening(
     """Verify that the challenged tile is present in ``partials_root``."""
     if not _valid_common_context(root, leaf_count, challenged_tile):
         return False
-    if type(opening) is not CommittedOpening or not _valid_leaf_witness(opening):
+    if type(opening) is not CommittedOpening:
+        return False
+    if not _validate_proof_nodes(opening.proof):
+        return False
+    if not _valid_leaf_witness(opening, leaf_count):
         return False
     if opening.tile_index != challenged_tile:
         return False
@@ -126,7 +135,11 @@ def verify_interior_non_inclusion(
     right = witness.right
     if type(left) is not NeighborWitness or type(right) is not NeighborWitness:
         return False
-    if not _valid_leaf_witness(left) or not _valid_leaf_witness(right):
+    left_proof_is_valid = _validate_proof_nodes(left.proof)
+    right_proof_is_valid = _validate_proof_nodes(right.proof)
+    if not left_proof_is_valid or not right_proof_is_valid:
+        return False
+    if not _valid_leaf_witness(left, leaf_count) or not _valid_leaf_witness(right, leaf_count):
         return False
     if left.index >= leaf_count or right.index >= leaf_count:
         return False
