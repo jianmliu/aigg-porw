@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling==1.32.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aigg-porw"
+version = "0.2.0.dev1+research"
+description = "Research implementation of the AIGG Proof of Retained Weights v2 scheme"
+readme = { file = "README.md", content-type = "text/markdown" }
+license-files = ["LICENSE-NOTICE.md"]
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "blake3>=1.0,<2",
+  "numpy>=2.3,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "hatchling==1.32.0",
+  "mypy>=1.14,<2",
+  "pytest>=8,<10",
+  "ruff>=0.9,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aigg_porw"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
