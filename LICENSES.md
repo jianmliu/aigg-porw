@@ -38,6 +38,7 @@ on Darwin.
 | `pathspec==1.1.1` | Hatchling/mypy transitive | `MPL-2.0` (license classifier and `LICENSE`) |
 | `pluggy==1.6.0` | Hatchling/pytest transitive | `MIT` (`License` metadata and classifier) |
 | `pygments==2.21.0` | Pytest transitive | `BSD-2-Clause` (`License-Expression`) |
+| `pyyaml==6.0.3` | Dev release-contract parser, direct | `MIT` (`License` metadata, classifier, and `LICENSE`) |
 | `tomlkit==0.15.1` | Hatchling transitive | `MIT` (`License` metadata and classifier) |
 | `trove-classifiers==2026.6.1.19` | Hatchling transitive | Apache Software License (classifier and `LICENSE`) |
 | `typing-extensions==4.16.0` | Mypy transitive | `PSF-2.0` (`License-Expression`) |

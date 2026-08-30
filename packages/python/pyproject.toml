@@ -19,6 +19,7 @@ dev = [
   "hatchling==1.32.0",
   "mypy>=1.14,<2",
   "pytest>=8,<10",
+  "pyyaml>=6,<7",
   "ruff>=0.9,<1",
 ]
 

@@ -110,7 +110,7 @@ jobs:
           uv sync --frozen --extra dev
           uv run --frozen ruff check .
           uv run --frozen ruff format --check .
-          uv run --frozen mypy src tests scripts
+          uv run --frozen mypy src tests scripts ../../scripts/check_triton_interpreter_report.py
           uv run --frozen pytest -q
           UV_OFFLINE=1 uv build --offline --no-build-isolation
 
@@ -119,14 +119,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          runner_temp="${RUNNER_TEMP:?}"
+          test -d "$runner_temp" && test ! -L "$runner_temp"
+          smoke_directory="$(mktemp -d "$runner_temp/aigg-porw-wheel-smoke.XXXXXXXX")"
+          cleanup() {
+            case "$smoke_directory/" in
+              "$runner_temp/"*) find "$smoke_directory" -depth -delete ;;
+              *) echo "unsafe smoke directory: $smoke_directory" >&2; return 1 ;;
+            esac
+          }
+          trap cleanup EXIT
           wheel="$(find dist -maxdepth 1 -type f -name 'aigg_porw-0.2.0.dev1+research-*.whl' -print)"
           test -n "$wheel"
           test "$(printf '%s\n' "$wheel" | wc -l)" -eq 1
+          vector="$smoke_directory/sketch-tile-v2.json"
+          cp -- ../../spec-cache/conformance/porw/sketch-tile-v2.json "$vector"
+          test -f "$vector" && test ! -L "$vector"
+          test -n "${GITHUB_WORKSPACE:?}"
           .venv/bin/python scripts/smoke_installed_wheel.py \
             --uv "$(command -v uv)" \
             --wheel "$wheel" \
-            --vector ../../spec-cache/conformance/porw/sketch-tile-v2.json \
-            --source-checkout ../..
+            --vector "$vector" \
+            --source-checkout "$GITHUB_WORKSPACE"
 
       - name: Enforce the single Python proof implementation
         shell: bash
@@ -170,39 +184,7 @@ jobs:
             gpu/triton/tests/test_kernel_validation.py \
             gpu/triton/tests/test_benchmark_honesty.py \
             -q -rs --junitxml="$report"
-          python - "$report" <<'PY'
-          import sys
-          import xml.etree.ElementTree as ET
-
-          root = ET.parse(sys.argv[1]).getroot()
-          suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite"))
-          tests = sum(int(suite.attrib.get("tests", 0)) for suite in suites)
-          skipped = sum(int(suite.attrib.get("skipped", 0)) for suite in suites)
-          failures = sum(int(suite.attrib.get("failures", 0)) for suite in suites)
-          errors = sum(int(suite.attrib.get("errors", 0)) for suite in suites)
-          names = {case.attrib.get("name", "") for case in root.iter("testcase")}
-          required_kernels = {
-              "test_sweep_kernel_matches_reference",
-              "test_sweep_kernel_coverage_subset",
-              "test_sweep_wrapper_rejects_invalid_tile_ids_before_launch",
-              "test_sweep_internal_full_coverage_skips_caller_validation",
-              "test_sweep_empty_external_coverage_returns_uint32_without_launch",
-              "test_moe_kernel_gemm_correct",
-              "test_moe_kernel_sketch_matches_spec",
-              "test_moe_kernel_batch_invariance",
-              "test_fused_equals_sweep_on_covered_tiles",
-              "test_prepared_moe_launch_matches_reference_and_reuses_outputs",
-              "test_prepared_sweep_launch_matches_reference_and_reuses_output",
-          }
-          missing = sorted(required_kernels - names)
-          if tests == 0 or skipped or failures or errors or missing:
-              raise SystemExit(
-                  "interpreter gate failed: "
-                  f"tests={tests}, skipped={skipped}, failures={failures}, "
-                  f"errors={errors}, missing_kernel_tests={missing}"
-              )
-          print(f"interpreter gate accepted {tests} tests with zero skips")
-          PY
+          python -B scripts/check_triton_interpreter_report.py "$report"
 
       - name: Prove the spec cache stayed read-only
         if: always()

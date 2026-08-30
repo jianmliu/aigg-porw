@@ -55,7 +55,7 @@ From the repository root:
 (cd packages/python && uv sync --frozen --extra dev)
 (cd packages/python && uv run --frozen ruff check .)
 (cd packages/python && uv run --frozen ruff format --check .)
-(cd packages/python && uv run --frozen mypy src tests scripts)
+(cd packages/python && uv run --frozen mypy src tests scripts ../../scripts/check_triton_interpreter_report.py)
 (cd packages/python && uv run --frozen pytest -q)
 (cd packages/python && UV_OFFLINE=1 uv build --offline --no-build-isolation)
 ./scripts/test-python-source-tree.sh
