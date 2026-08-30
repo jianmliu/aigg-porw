@@ -23,6 +23,13 @@ from .scheme import (
     sketch_tiles,
     tile_coeffs,
 )
+from .verification import (
+    FraudOutcome,
+    PorwContext,
+    PorwVerificationResult,
+    TileFraudProof,
+    verify_tile_fraud,
+)
 
 __all__ = [
     "FMIX_M1",
@@ -34,8 +41,12 @@ __all__ = [
     "TILE_WORDS",
     "WORD_BYTES",
     "CommittedOpening",
+    "FraudOutcome",
     "InteriorNonInclusionWitness",
     "NeighborWitness",
+    "PorwContext",
+    "PorwVerificationResult",
+    "TileFraudProof",
     "fmix32",
     "merkle_parent",
     "partials_leaf",
@@ -44,5 +55,6 @@ __all__ = [
     "verify_committed_opening",
     "verify_counted_merkle",
     "verify_interior_non_inclusion",
+    "verify_tile_fraud",
     "weights_leaf",
 ]
