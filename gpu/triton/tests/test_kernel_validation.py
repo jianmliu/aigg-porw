@@ -2,6 +2,7 @@
 
 import ast
 import importlib
+import importlib.util
 import os
 import subprocess
 import sys
@@ -21,6 +22,7 @@ from porw_sketch.validation import (
 
 KERNELS_PATH = Path(__file__).resolve().parents[1] / "porw_sketch" / "kernels.py"
 CANONICAL_K = TILE_BYTES // 2
+TRITON_AVAILABLE = importlib.util.find_spec("triton") is not None
 
 
 @pytest.fixture
@@ -30,6 +32,8 @@ def kernel_module(monkeypatch):
     existing = sys.modules.get(module_name)
     if existing is not None:
         return existing
+    if TRITON_AVAILABLE:
+        return importlib.import_module(module_name)
 
     fake_language = ModuleType("triton.language")
     fake_language.constexpr = object()
@@ -42,6 +46,12 @@ def kernel_module(monkeypatch):
     module = importlib.import_module(module_name)
     monkeypatch.setitem(sys.modules, module_name, module)
     return module
+
+
+@pytest.mark.skipif(not TRITON_AVAILABLE, reason="Triton is unavailable")
+def test_installed_triton_kernel_module_retains_native_launchers(kernel_module):
+    assert hasattr(kernel_module.moe_gemm_sketch_kernel, "__getitem__")
+    assert hasattr(kernel_module.sketch_sweep_kernel, "__getitem__")
 
 
 def fused_inputs():

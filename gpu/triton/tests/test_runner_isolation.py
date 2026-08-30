@@ -90,9 +90,15 @@ def test_checkout_probe_ignores_hostile_pythonpath_cwd_and_user_site(
         cwd=isolated_repo,
         check=True,
     )
+    tool_path = tmp_path / "tool-path"
+    tool_path.mkdir()
+    for tool in ("bash", "dirname", "git"):
+        executable = shutil.which(tool)
+        assert executable is not None
+        (tool_path / tool).symlink_to(executable)
     runner_environment = dict(
         environment,
-        PATH="/usr/bin:/bin",
+        PATH=str(tool_path),
         PORW_PYTHON=sys.executable,
         TRITON_INTERPRET="0",
     )
