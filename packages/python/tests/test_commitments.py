@@ -187,6 +187,14 @@ class _BytesSubclass(bytes):
     pass
 
 
+class _CommittedOpeningSubclass(CommittedOpening):
+    pass
+
+
+class _InteriorWitnessSubclass(InteriorNonInclusionWitness):
+    pass
+
+
 def test_numeric_protocol_fields_require_exact_integers() -> None:
     leaf = blake3(b"leaf").digest()
     for invalid in (True, _IntSubclass(0), 0.0):
@@ -385,4 +393,121 @@ def test_high_level_roots_require_exact_bytes_before_hashing(
             challenged_tile=3,
             opening=opening,
         )
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "context_change",
+    [
+        {"leaf_count": -1},
+        {"leaf_count": 0},
+        {"leaf_count": U64_LIMIT},
+        {"challenged_tile": -1},
+        {"challenged_tile": U64_LIMIT},
+        {"challenged_tile": True},
+    ],
+)
+def test_committed_opening_scans_nested_bytes_before_bad_context_numbers(
+    monkeypatch: pytest.MonkeyPatch, context_change: dict[str, object]
+) -> None:
+    calls = _forbid_hashing(monkeypatch)
+    context: dict[str, object] = {
+        "root": bytes(32),
+        "leaf_count": 2,
+        "challenged_tile": 3,
+        "opening": CommittedOpening(3, 7, 1, ("late-node",)),  # type: ignore[arg-type]
+    }
+    context.update(context_change)
+    with pytest.raises(TypeError, match="^proof node must be exact bytes$"):
+        verify_committed_opening(**context)  # type: ignore[arg-type]
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("context_change", "invalid_side"),
+    [
+        ({"leaf_count": -1}, "left"),
+        ({"leaf_count": 0}, "right"),
+        ({"challenged_tile": -1}, "left"),
+        ({"challenged_tile": U64_LIMIT}, "right"),
+        ({"challenged_tile": True}, "right"),
+    ],
+)
+def test_non_inclusion_scans_both_nested_proofs_before_bad_context_numbers(
+    monkeypatch: pytest.MonkeyPatch,
+    context_change: dict[str, object],
+    invalid_side: str,
+) -> None:
+    calls = _forbid_hashing(monkeypatch)
+    left_proof: tuple[bytes, ...] | tuple[str, ...] = (bytes(32),)
+    right_proof: tuple[bytes, ...] | tuple[str, ...] = (bytes(32),)
+    if invalid_side == "left":
+        left_proof = ("late-left",)
+    else:
+        right_proof = ("late-right",)
+    witness = InteriorNonInclusionWitness(
+        NeighborWitness(1, 11, 0, left_proof),  # type: ignore[arg-type]
+        NeighborWitness(3, 33, 1, right_proof),  # type: ignore[arg-type]
+    )
+    context: dict[str, object] = {
+        "root": bytes(32),
+        "leaf_count": 2,
+        "challenged_tile": 2,
+        "witness": witness,
+    }
+    context.update(context_change)
+    with pytest.raises(TypeError, match="^proof node must be exact bytes$"):
+        verify_interior_non_inclusion(**context)  # type: ignore[arg-type]
+    assert calls == []
+
+
+def test_exact_bytes_with_bad_widths_and_numbers_fail_closed_without_hashing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _forbid_hashing(monkeypatch)
+    assert not verify_committed_opening(
+        root=bytes(31),
+        leaf_count=-1,
+        challenged_tile=-1,
+        opening=CommittedOpening(3, 7, 1, (bytes(31),)),
+    )
+    assert not verify_interior_non_inclusion(
+        root=bytes(31),
+        leaf_count=-1,
+        challenged_tile=-1,
+        witness=InteriorNonInclusionWitness(
+            NeighborWitness(1, 11, 0, (bytes(31),)),
+            NeighborWitness(3, 33, 1, (bytes(31),)),
+        ),
+    )
+    assert calls == []
+
+
+def test_wrong_high_level_witness_classes_fail_without_attribute_access_or_hashing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _forbid_hashing(monkeypatch)
+    for wrong_opening in (object(), _CommittedOpeningSubclass(3, 7, 0, ())):
+        assert not verify_committed_opening(
+            root=bytes(32),
+            leaf_count=-1,
+            challenged_tile=-1,
+            opening=wrong_opening,  # type: ignore[arg-type]
+        )
+    for wrong_witness in (
+        object(),
+        _InteriorWitnessSubclass(NeighborWitness(1, 11, 0, ()), NeighborWitness(3, 33, 1, ())),
+    ):
+        assert not verify_interior_non_inclusion(
+            root=bytes(32),
+            leaf_count=-1,
+            challenged_tile=-1,
+            witness=wrong_witness,  # type: ignore[arg-type]
+        )
+    assert not verify_interior_non_inclusion(
+        root=bytes(32),
+        leaf_count=2,
+        challenged_tile=2,
+        witness=InteriorNonInclusionWitness(object(), object()),  # type: ignore[arg-type]
+    )
     assert calls == []

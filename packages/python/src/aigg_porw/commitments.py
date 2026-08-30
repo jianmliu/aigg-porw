@@ -100,11 +100,12 @@ def verify_committed_opening(
     *, root: bytes, leaf_count: int, challenged_tile: int, opening: CommittedOpening
 ) -> bool:
     """Verify that the challenged tile is present in ``partials_root``."""
-    if not _valid_common_context(root, leaf_count, challenged_tile):
-        return False
+    _require_exact_bytes(root, "root")
     if type(opening) is not CommittedOpening:
         return False
     if not _validate_proof_nodes(opening.proof):
+        return False
+    if not _valid_common_context(root, leaf_count, challenged_tile):
         return False
     if not _valid_leaf_witness(opening, leaf_count):
         return False
@@ -127,17 +128,20 @@ def verify_interior_non_inclusion(
     witness: InteriorNonInclusionWitness,
 ) -> bool:
     """Verify adjacent committed leaves strictly bracketing a missing tile."""
-    if not _valid_common_context(root, leaf_count, challenged_tile):
-        return False
+    _require_exact_bytes(root, "root")
     if type(witness) is not InteriorNonInclusionWitness:
         return False
     left = witness.left
     right = witness.right
-    if type(left) is not NeighborWitness or type(right) is not NeighborWitness:
+    left_is_neighbor = type(left) is NeighborWitness
+    right_is_neighbor = type(right) is NeighborWitness
+    left_proof_is_valid = _validate_proof_nodes(left.proof) if left_is_neighbor else False
+    right_proof_is_valid = _validate_proof_nodes(right.proof) if right_is_neighbor else False
+    if not left_is_neighbor or not right_is_neighbor:
         return False
-    left_proof_is_valid = _validate_proof_nodes(left.proof)
-    right_proof_is_valid = _validate_proof_nodes(right.proof)
     if not left_proof_is_valid or not right_proof_is_valid:
+        return False
+    if not _valid_common_context(root, leaf_count, challenged_tile):
         return False
     if not _valid_leaf_witness(left, leaf_count) or not _valid_leaf_witness(right, leaf_count):
         return False
