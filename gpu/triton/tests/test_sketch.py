@@ -4,15 +4,10 @@ slot-fresh coefficients."""
 
 import os
 import platform
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 from porw_sketch import reference, spec
 from porw_sketch.reference import covered_experts, moe_gemm_reference
 
@@ -33,6 +28,16 @@ def weight_bytes(b: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(b).view(np.uint8).reshape(-1)
 
 
+def _broken_per_tile_coefficient_sketch(
+    slot_seed: int, buffer: np.ndarray
+) -> np.ndarray:
+    """Test-only attack oracle for the intentionally broken predecessor."""
+    words = buffer.view("<u4").astype(np.uint64).reshape(-1, spec.TILE_WORDS)
+    tile_indices = np.arange(words.shape[0], dtype=np.uint64)
+    repeated_coefficient = spec.fmix32(spec.fmix32(np.uint64(slot_seed) ^ tile_indices))
+    return (repeated_coefficient * (words.sum(axis=1) & spec.M32)) & spec.M32
+
+
 @pytest.fixture(scope="module")
 def kernel_runtime():
     """Load Triton only for kernel tests and select the requested backend."""
@@ -45,9 +50,7 @@ def kernel_runtime():
         pytest.skip(f"Triton kernel tests require pinned PyTorch: {error}")
 
     if not interpreter and not torch.cuda.is_available():
-        pytest.skip(
-            "Triton kernel tests require CUDA or explicit TRITON_INTERPRET=1"
-        )
+        pytest.skip("Triton kernel tests require CUDA or explicit TRITON_INTERPRET=1")
 
     try:
         import triton  # noqa: F401 - validates the separately pinned runtime
@@ -103,9 +106,7 @@ def test_spec_partition_independence():
     buf = weight_bytes(random_weights())
     ref = spec.sketch_tiles(SLOT_SEEDS[1], buf)
     words = buf.view("<u4").astype(np.uint64).reshape(-1, spec.TILE_WORDS)
-    coeffs = spec.tile_coeffs(
-        SLOT_SEEDS[1], np.arange(words.shape[0], dtype=np.uint64)
-    )
+    coeffs = spec.tile_coeffs(SLOT_SEEDS[1], np.arange(words.shape[0], dtype=np.uint64))
     perm = RNG.permutation(spec.TILE_WORDS)
     chunks = np.array_split(perm, 13)
     acc = np.zeros(words.shape[0], dtype=np.uint64)
@@ -139,7 +140,7 @@ def test_per_tile_coeff_scheme_is_broken():
     stolen_summary = words.sum(axis=1) & spec.M32  # 4 bytes/tile
     n_tiles = words.shape[0]
     for seed in range(100):
-        honest = spec.sketch_tiles_broken_per_tile_coeff(seed, buf)
+        honest = _broken_per_tile_coefficient_sketch(seed, buf)
         r_tile = spec.fmix32(
             spec.fmix32(np.uint64(seed) ^ np.arange(n_tiles, dtype=np.uint64))
         )
@@ -180,12 +181,18 @@ def test_per_word_coeff_scheme_resists_compression():
 
 
 def test_coverage_tile_ids_validation_accepts_strict_ascending_int64():
-    assert reference.validate_coverage_tile_ids(
-        np.array([0, 2, 4], dtype=np.int64), total_tiles=5
-    ) is None
-    assert reference.validate_coverage_tile_ids(
-        np.array([], dtype=np.int64), total_tiles=5
-    ) is None
+    assert (
+        reference.validate_coverage_tile_ids(
+            np.array([0, 2, 4], dtype=np.int64), total_tiles=5
+        )
+        is None
+    )
+    assert (
+        reference.validate_coverage_tile_ids(
+            np.array([], dtype=np.int64), total_tiles=5
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -216,9 +223,12 @@ def test_coverage_tensor_validation_checks_original_storage_and_metadata():
     import torch
 
     valid = torch.tensor([0, 1], dtype=torch.int64)
-    assert reference.validate_coverage_tile_tensor(
-        valid, total_tiles=2, expected_device=valid.device
-    ) is None
+    assert (
+        reference.validate_coverage_tile_tensor(
+            valid, total_tiles=2, expected_device=valid.device
+        )
+        is None
+    )
 
     non_contiguous = torch.tensor([0, 99, 1, 99], dtype=torch.int64)[::2]
     assert non_contiguous.tolist() == [0, 1]
@@ -247,9 +257,7 @@ def test_sweep_kernel_matches_reference(kernel_runtime):
     b = random_weights()
     buf = weight_bytes(b)
     for seed in SLOT_SEEDS[:2]:
-        got = kernel_runtime.run_sketch_sweep(
-            kernel_runtime.tensor(buf.copy()), seed
-        )
+        got = kernel_runtime.run_sketch_sweep(kernel_runtime.tensor(buf.copy()), seed)
         ref = spec.sketch_tiles(seed, buf)
         assert np.array_equal(got.astype(np.uint64), ref)
 
@@ -264,7 +272,8 @@ def test_sweep_kernel_coverage_subset(kernel_runtime):
     rng = np.random.default_rng(3)
     subset = np.sort(rng.choice(full.size, size=full.size // 3, replace=False))
     got = kernel_runtime.run_sketch_sweep(
-        kernel_runtime.tensor(buf.copy()), seed,
+        kernel_runtime.tensor(buf.copy()),
+        seed,
         tile_ids=kernel_runtime.tensor(subset.astype(np.int64)),
     )
     assert np.array_equal(got.astype(np.uint64), full[subset])
@@ -288,9 +297,7 @@ def test_sweep_wrapper_rejects_invalid_tile_ids_before_launch(kernel_runtime):
                 tile_ids=kernel_runtime.tensor(tile_ids),
             )
 
-    device_resident = kernel_runtime.tensor(
-        np.array([0, 99, 1, 99], dtype=np.int64)
-    )
+    device_resident = kernel_runtime.tensor(np.array([0, 99, 1, 99], dtype=np.int64))
     non_contiguous = device_resident[::2]
     assert non_contiguous.cpu().tolist() == [0, 1]
     assert not non_contiguous.is_contiguous()
@@ -308,9 +315,7 @@ def test_sweep_internal_full_coverage_skips_caller_validation(
     def unexpected_validation(*args, **kwargs):
         raise AssertionError("internal arange must not perform a D2H validation")
 
-    monkeypatch.setattr(
-        reference, "validate_coverage_tile_ids", unexpected_validation
-    )
+    monkeypatch.setattr(reference, "validate_coverage_tile_ids", unexpected_validation)
     monkeypatch.setattr(
         reference,
         "validate_coverage_tile_tensor",
@@ -329,13 +334,9 @@ def test_sweep_internal_full_coverage_skips_caller_validation(
 def test_sweep_empty_external_coverage_returns_uint32_without_launch(
     kernel_runtime,
 ):
-    buffer = kernel_runtime.tensor(
-        np.zeros(spec.TILE_BYTES * 2, dtype=np.uint8)
-    )
+    buffer = kernel_runtime.tensor(np.zeros(spec.TILE_BYTES * 2, dtype=np.uint8))
     empty = kernel_runtime.tensor(np.array([], dtype=np.int64))
-    got = kernel_runtime.run_sketch_sweep(
-        buffer, SLOT_SEEDS[0], tile_ids=empty
-    )
+    got = kernel_runtime.run_sketch_sweep(buffer, SLOT_SEEDS[0], tile_ids=empty)
     assert got.dtype == np.uint32
     assert got.shape == (0,)
 
@@ -370,9 +371,9 @@ def test_moe_kernel_sketch_matches_spec(moe_run):
         sl = slice(e * N, (e + 1) * N)
         if e in hot:
             assert coverage[sl].all(), f"expert {e} should be covered"
-            assert np.array_equal(
-                partials[sl].astype(np.uint64), ref_tiles[sl]
-            ), f"expert {e} sketch mismatch"
+            assert np.array_equal(partials[sl].astype(np.uint64), ref_tiles[sl]), (
+                f"expert {e} sketch mismatch"
+            )
         else:
             assert not coverage[sl].any(), f"cold expert {e} must stay uncovered"
 
@@ -402,7 +403,7 @@ def test_fused_equals_sweep_on_covered_tiles(moe_run, kernel_runtime):
     """Cross-check: the fused kernel and the standalone sweep kernel agree
     tile-for-tile — so dense layers (S1 sweep) and MoE layers (S2 fused)
     can share one verifier."""
-    _, b, topk_ids, seed, _, partials, coverage = moe_run
+    _, b, _, seed, _, partials, coverage = moe_run
     sweep = kernel_runtime.run_sketch_sweep(
         kernel_runtime.tensor(weight_bytes(b).copy()), seed
     )
@@ -421,15 +422,13 @@ def test_prepared_moe_launch_matches_reference_and_reuses_outputs(kernel_runtime
         SLOT_SEEDS[1],
     )
     output_ids = tuple(
-        id(tensor)
-        for tensor in (prepared.c, prepared.partials, prepared.coverage)
+        id(tensor) for tensor in (prepared.c, prepared.partials, prepared.coverage)
     )
     kernel_runtime.launch_prepared_moe(prepared, enable_sketch=False)
     kernel_runtime.launch_prepared_moe(prepared, enable_sketch=True)
 
     assert output_ids == tuple(
-        id(tensor)
-        for tensor in (prepared.c, prepared.partials, prepared.coverage)
+        id(tensor) for tensor in (prepared.c, prepared.partials, prepared.coverage)
     )
     np.testing.assert_allclose(
         prepared.c.cpu().numpy().astype(np.float32),
@@ -454,5 +453,7 @@ def test_prepared_sweep_launch_matches_reference_and_reuses_output(kernel_runtim
     kernel_runtime.launch_prepared_sweep(prepared)
 
     assert id(prepared.out) == output_id
-    assert np.array_equal(first.astype(np.uint64), spec.sketch_tiles(SLOT_SEEDS[2], buf))
+    assert np.array_equal(
+        first.astype(np.uint64), spec.sketch_tiles(SLOT_SEEDS[2], buf)
+    )
     assert np.array_equal(prepared.out.cpu().numpy().view(np.uint32), first)

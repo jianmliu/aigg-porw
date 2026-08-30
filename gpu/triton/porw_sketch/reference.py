@@ -1,4 +1,4 @@
-"""Host-side helpers and numpy references for the PoC."""
+"""GPU-specific host helpers; canonical proof mathematics is in ``aigg_porw``."""
 
 import numpy as np
 
@@ -27,9 +27,7 @@ def validate_coverage_tile_ids(tile_ids: np.ndarray, total_tiles: int) -> None:
         raise ValueError("tile_ids must be strictly ascending and unique")
 
 
-def validate_coverage_tile_tensor(
-    tile_ids, total_tiles: int, expected_device
-) -> None:
+def validate_coverage_tile_tensor(tile_ids, total_tiles: int, expected_device) -> None:
     """Validate caller-owned tensor metadata before any host-side copy."""
     import torch
 
@@ -66,9 +64,7 @@ def moe_align(topk_ids: np.ndarray, num_experts: int, block_m: int):
         sorted_ids.append(padded)
         expert_ids.extend([e] * (padded.size // block_m))
     sorted_token_ids = (
-        np.concatenate(sorted_ids)
-        if sorted_ids
-        else np.zeros(0, dtype=np.int32)
+        np.concatenate(sorted_ids) if sorted_ids else np.zeros(0, dtype=np.int32)
     )
     return (
         sorted_token_ids.astype(np.int32),
@@ -79,9 +75,9 @@ def moe_align(topk_ids: np.ndarray, num_experts: int, block_m: int):
 
 def moe_gemm_reference(a: np.ndarray, b: np.ndarray, topk_ids: np.ndarray):
     """out[i] = a[i // top_k] @ b[expert(i)].T for flat slot index i."""
-    M, K = a.shape
+    M, _ = a.shape
     top_k = topk_ids.shape[1]
-    E, N, _ = b.shape
+    _, N, _ = b.shape
     out = np.zeros((M * top_k, N), dtype=np.float32)
     flat = topk_ids.reshape(-1)
     a32, b32 = a.astype(np.float32), b.astype(np.float32)
@@ -91,4 +87,4 @@ def moe_gemm_reference(a: np.ndarray, b: np.ndarray, topk_ids: np.ndarray):
 
 
 def covered_experts(topk_ids: np.ndarray) -> set[int]:
-    return set(int(e) for e in np.unique(topk_ids.reshape(-1)))
+    return {int(e) for e in np.unique(topk_ids.reshape(-1))}

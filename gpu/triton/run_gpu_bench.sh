@@ -4,6 +4,8 @@ set -euo pipefail
 
 PORW_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PORW_REPO_ROOT="$(cd -- "$PORW_SCRIPT_DIR/../.." && pwd -P)"
+PORW_PACKAGE_SRC="$PORW_REPO_ROOT/packages/python/src"
+PORW_TRITON_SRC="$PORW_REPO_ROOT/gpu/triton"
 PORW_PYTHON_BIN="${PORW_PYTHON:-}"
 PORW_OUTPUT_DIR="$PORW_REPO_ROOT/benchmarks/gpu/generated"
 PORW_OUTPUT_FILE=""
@@ -71,6 +73,12 @@ PORW_GIT_ROOT="$(git -C "$PORW_REPO_ROOT" rev-parse --show-toplevel 2>/dev/null)
   || porw_fail "gpu/triton is not inside an aigg-porw Git checkout"
 [[ "$(cd -- "$PORW_GIT_ROOT" && pwd -P)" == "$PORW_REPO_ROOT" ]] || porw_fail \
   "script path does not resolve to the current aigg-porw checkout root"
+[[ -f "$PORW_PACKAGE_SRC/aigg_porw/__init__.py" ]] || porw_fail \
+  "canonical aigg_porw checkout package is missing: $PORW_PACKAGE_SRC/aigg_porw"
+[[ -d "$PORW_TRITON_SRC/porw_sketch" ]] || porw_fail \
+  "Triton checkout package is missing: $PORW_TRITON_SRC/porw_sketch"
+
+export PYTHONPATH="$PORW_PACKAGE_SRC:$PORW_TRITON_SRC${PYTHONPATH:+:$PYTHONPATH}"
 
 porw_verify_output_dir
 
