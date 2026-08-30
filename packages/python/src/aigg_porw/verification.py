@@ -20,12 +20,21 @@ from .scheme import M32, SCHEME_ID, TILE_BYTES, tile_coeffs
 
 @dataclass(frozen=True, slots=True)
 class PorwContext:
-    """Protocol subject to which one verification result is bound."""
+    """Authenticated external state to which one verification is bound.
+
+    ``partials_leaf_count`` is the nonzero coverage-leaf count corresponding
+    to Rust's validated ``coverage_bytes / TILE_BYTES``. ``model_n_tiles`` is
+    the independently authenticated shape of the weights tree. Neither value,
+    nor either commitment root, is derived from the reporter's proof.
+    """
 
     scheme_id: str
     weights_root: bytes
     challenge: bytes
     device_id: bytes
+    partials_root: bytes
+    partials_leaf_count: int
+    model_n_tiles: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,9 +45,6 @@ class TileFraudProof:
     weights_root: bytes
     challenge: bytes
     device_id: bytes
-    model_n_tiles: int
-    partials_root: bytes
-    partials_leaf_count: int
     opening: CommittedOpening
     tile_bytes: bytes
     weights_proof: tuple[bytes, ...]
@@ -88,10 +94,10 @@ def _prevalidate_bytes(context: PorwContext, proof: TileFraudProof) -> bool:
     context_weights_root = _require_exact_bytes(context.weights_root, "weights_root")
     context_challenge = _require_exact_bytes(context.challenge, "challenge")
     context_device_id = _require_exact_bytes(context.device_id, "device_id")
+    context_partials_root = _require_exact_bytes(context.partials_root, "partials_root")
     proof_weights_root = _require_exact_bytes(proof.weights_root, "weights_root")
     proof_challenge = _require_exact_bytes(proof.challenge, "challenge")
     proof_device_id = _require_exact_bytes(proof.device_id, "device_id")
-    partials_root = _require_exact_bytes(proof.partials_root, "partials_root")
     tile_bytes = _require_exact_bytes(proof.tile_bytes, "tile_bytes")
 
     opening_proof_is_valid = _validate_proof_nodes(proof.opening.proof)
@@ -103,10 +109,10 @@ def _prevalidate_bytes(context: PorwContext, proof: TileFraudProof) -> bool:
                 context_weights_root,
                 context_challenge,
                 context_device_id,
+                context_partials_root,
                 proof_weights_root,
                 proof_challenge,
                 proof_device_id,
-                partials_root,
             )
         )
         and len(tile_bytes) == TILE_BYTES
@@ -114,13 +120,13 @@ def _prevalidate_bytes(context: PorwContext, proof: TileFraudProof) -> bool:
     return widths_are_valid and opening_proof_is_valid and weights_proof_is_valid
 
 
-def _valid_numeric_domains(proof: TileFraudProof) -> bool:
+def _valid_numeric_domains(context: PorwContext, proof: TileFraudProof) -> bool:
     opening = proof.opening
     return (
-        _is_uint(proof.model_n_tiles, U64_LIMIT)
-        and proof.model_n_tiles != 0
-        and _is_uint(proof.partials_leaf_count, U64_LIMIT)
-        and proof.partials_leaf_count != 0
+        _is_uint(context.model_n_tiles, U64_LIMIT)
+        and context.model_n_tiles != 0
+        and _is_uint(context.partials_leaf_count, U64_LIMIT)
+        and context.partials_leaf_count != 0
         and _is_uint(opening.tile_index, U64_LIMIT)
         and _is_uint(opening.sketch, U32_LIMIT)
         and _is_uint(opening.index, U64_LIMIT)
@@ -160,7 +166,7 @@ def verify_tile_fraud(
     proof_scheme = _require_exact_string(proof.scheme_id, "scheme_id")
     if not _prevalidate_bytes(context, proof):
         return _invalid(context, proof)
-    if not _valid_numeric_domains(proof):
+    if not _valid_numeric_domains(context, proof):
         return _invalid(context, proof)
 
     if (
@@ -175,8 +181,8 @@ def verify_tile_fraud(
 
     opening = proof.opening
     if not verify_committed_opening(
-        root=proof.partials_root,
-        leaf_count=proof.partials_leaf_count,
+        root=context.partials_root,
+        leaf_count=context.partials_leaf_count,
         challenged_tile=opening.tile_index,
         opening=opening,
     ):
@@ -186,7 +192,7 @@ def verify_tile_fraud(
         proof.weights_root,
         weights_leaf(opening.tile_index, proof.tile_bytes),
         opening.tile_index,
-        proof.model_n_tiles,
+        context.model_n_tiles,
         proof.weights_proof,
     ):
         return _invalid(context, proof)

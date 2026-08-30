@@ -88,10 +88,8 @@ def _canonical_proof(*, honest: bool = False) -> TileFraudProof:
         assert isinstance(coverage, list)
         assert isinstance(committed, list)
         left_leaf = partials_leaf(int(coverage[0]), int(committed[0]))
-        partials_root = _root((left_leaf, partials_leaf(tile_index, claimed_sketch)))
         partials_proof = (left_leaf,)
     else:
-        partials_root = _unhex(fixture["partials_root"])
         partials_proof = tuple(
             _unhex(value) for value in cast(list[object], fraud["partials_proof"])
         )
@@ -101,9 +99,6 @@ def _canonical_proof(*, honest: bool = False) -> TileFraudProof:
         weights_root=_unhex(weights["root"]),
         challenge=_unhex(seed["global_challenge"]),
         device_id=_unhex(seed["device_id"]),
-        model_n_tiles=4,
-        partials_root=partials_root,
-        partials_leaf_count=2,
         opening=CommittedOpening(
             tile_index=tile_index,
             sketch=claimed_sketch,
@@ -115,30 +110,111 @@ def _canonical_proof(*, honest: bool = False) -> TileFraudProof:
     )
 
 
-def _context(proof: TileFraudProof) -> PorwContext:
+def _context(*, honest: bool = False) -> PorwContext:
+    vector = _vector()
+    fixture = vector["tampered_commitment_scenario"]
+    seed = vector["slot_seed_derivation"]
+    weights = vector["weights_tree"]
+    assert isinstance(fixture, dict)
+    assert isinstance(seed, dict)
+    assert isinstance(weights, dict)
+    if honest:
+        coverage = fixture["coverage"]
+        committed = fixture["committed_s_tiles"]
+        assert isinstance(coverage, list)
+        assert isinstance(committed, list)
+        left_leaf = partials_leaf(int(coverage[0]), int(committed[0]))
+        partials_root = _root(
+            (left_leaf, partials_leaf(3, int(fixture["honest_s_tile_for_tile_3"])))
+        )
+    else:
+        partials_root = _unhex(fixture["partials_root"])
     return PorwContext(
-        scheme_id=proof.scheme_id,
-        weights_root=proof.weights_root,
-        challenge=proof.challenge,
-        device_id=proof.device_id,
+        scheme_id=SCHEME_ID,
+        weights_root=_unhex(weights["root"]),
+        challenge=_unhex(seed["global_challenge"]),
+        device_id=_unhex(seed["device_id"]),
+        partials_root=partials_root,
+        partials_leaf_count=2,
+        model_n_tiles=4,
     )
 
 
 def test_locked_tampered_and_honest_scenarios_return_exact_outcomes() -> None:
     fraud = _canonical_proof()
-    fraud_result = verify_tile_fraud(_context(fraud), fraud)
+    fraud_result = verify_tile_fraud(_context(), fraud)
     assert fraud_result.outcome is FraudOutcome.FRAUD
     assert fraud_result.tile_index == 3
 
     honest = _canonical_proof(honest=True)
-    honest_result = verify_tile_fraud(_context(honest), honest)
+    honest_result = verify_tile_fraud(_context(honest=True), honest)
     assert honest_result.outcome is FraudOutcome.NO_FRAUD
     assert honest_result.tile_index == 3
 
 
+def test_context_authenticates_the_exact_rust_verifier_external_state() -> None:
+    assert tuple(field.name for field in fields(PorwContext)) == (
+        "scheme_id",
+        "weights_root",
+        "challenge",
+        "device_id",
+        "partials_root",
+        "partials_leaf_count",
+        "model_n_tiles",
+    )
+    assert tuple(field.name for field in fields(TileFraudProof)) == (
+        "scheme_id",
+        "weights_root",
+        "challenge",
+        "device_id",
+        "opening",
+        "tile_bytes",
+        "weights_proof",
+    )
+    context_signature = inspect.signature(PorwContext)
+    for field_name in ("partials_root", "partials_leaf_count", "model_n_tiles"):
+        assert context_signature.parameters[field_name].default is inspect.Parameter.empty
+
+
+def test_locked_context_matches_rust_vector_state_and_seed_derivation() -> None:
+    vector = _vector()
+    fixture = vector["tampered_commitment_scenario"]
+    seed = vector["slot_seed_derivation"]
+    assert isinstance(fixture, dict)
+    assert isinstance(seed, dict)
+    context = _context()
+    assert context.partials_root == _unhex(fixture["partials_root"])
+    assert context.partials_leaf_count == len(cast(list[object], fixture["coverage"])) == 2
+    assert context.model_n_tiles == 4
+    derived_seed = int.from_bytes(
+        blake3(context.challenge + context.device_id).digest()[:4], "little"
+    )
+    assert derived_seed == seed["slot_seed"] == 1970174283
+
+
+@pytest.mark.parametrize("claimed_sketch", [3046283020, 3046283020 ^ 1])
+def test_attacker_selected_one_leaf_partials_tree_cannot_choose_outcome(
+    claimed_sketch: int,
+) -> None:
+    proof = _canonical_proof()
+    context = _context()
+    attacker_leaf = partials_leaf(proof.opening.tile_index, claimed_sketch)
+    assert attacker_leaf != context.partials_root
+    attacker_proof = replace(
+        proof,
+        opening=CommittedOpening(
+            tile_index=proof.opening.tile_index,
+            sketch=claimed_sketch,
+            index=0,
+            proof=(),
+        ),
+    )
+    assert verify_tile_fraud(context, attacker_proof).outcome is FraudOutcome.INVALID
+
+
 def test_result_preserves_protocol_context_and_never_creates_entitlement() -> None:
     proof = _canonical_proof()
-    context = _context(proof)
+    context = _context()
     result = verify_tile_fraud(context, proof)
     assert result.context == context
     assert result.creates_financial_entitlement is False
@@ -160,11 +236,14 @@ def test_result_preserves_protocol_context_and_never_creates_entitlement() -> No
         {"weights_root": bytes([1]) + bytes(31)},
         {"challenge": bytes([2]) + bytes(31)},
         {"device_id": bytes([3]) + bytes(31)},
+        {"partials_root": bytes(32)},
+        {"partials_leaf_count": 1},
+        {"model_n_tiles": 3},
     ],
 )
 def test_context_binding_mismatches_are_invalid(change: dict[str, object]) -> None:
     proof = _canonical_proof()
-    context = _context(proof)
+    context = _context()
     result = verify_tile_fraud(replace(context, **change), proof)  # type: ignore[arg-type]
     assert result.outcome is FraudOutcome.INVALID
     assert result.context == replace(context, **change)  # type: ignore[arg-type]
@@ -181,7 +260,7 @@ def test_context_binding_mismatches_are_invalid(change: dict[str, object]) -> No
 )
 def test_proof_binding_mismatches_are_invalid(change: dict[str, object]) -> None:
     proof = _canonical_proof()
-    context = _context(proof)
+    context = _context()
     candidate = replace(proof, **cast(Any, change))
     result = verify_tile_fraud(context, candidate)
     assert result.outcome is FraudOutcome.INVALID
@@ -197,13 +276,11 @@ def test_proof_binding_mismatches_are_invalid(change: dict[str, object]) -> None
         "tile_index",
         "tile_bytes",
         "weights_proof",
-        "model_n_tiles",
-        "partials_leaf_count",
-        "partials_root",
     ],
 )
 def test_tampered_witness_fields_are_invalid(mutation: str) -> None:
     proof = _canonical_proof()
+    context = _context()
     if mutation == "claimed_sketch":
         proof = replace(proof, opening=replace(proof.opening, sketch=proof.opening.sketch ^ 1))
     elif mutation == "partials_index":
@@ -223,13 +300,7 @@ def test_tampered_witness_fields_are_invalid(mutation: str) -> None:
         proof = replace(
             proof, weights_proof=(bytes([node[0] ^ 1]) + node[1:], *proof.weights_proof[1:])
         )
-    elif mutation == "model_n_tiles":
-        proof = replace(proof, model_n_tiles=3)
-    elif mutation == "partials_leaf_count":
-        proof = replace(proof, partials_leaf_count=1)
-    elif mutation == "partials_root":
-        proof = replace(proof, partials_root=bytes(32))
-    assert verify_tile_fraud(_context(proof), proof).outcome is FraudOutcome.INVALID
+    assert verify_tile_fraud(context, proof).outcome is FraudOutcome.INVALID
 
 
 @pytest.mark.parametrize(
@@ -244,17 +315,18 @@ def test_tampered_witness_fields_are_invalid(mutation: str) -> None:
     ],
 )
 def test_correct_native_malformed_counts_are_invalid(field: str, value: int) -> None:
-    proof = replace(_canonical_proof(), **cast(Any, {field: value}))
-    assert verify_tile_fraud(_context(proof), proof).outcome is FraudOutcome.INVALID
+    proof = _canonical_proof()
+    context = replace(_context(), **cast(Any, {field: value}))
+    assert verify_tile_fraud(context, proof).outcome is FraudOutcome.INVALID
 
 
 def test_correct_native_malformed_widths_and_nested_numbers_are_invalid() -> None:
     proof = _canonical_proof()
-    malformed = (
+    context = _context()
+    malformed_proofs = (
         replace(proof, weights_root=bytes(31)),
         replace(proof, challenge=bytes(31)),
         replace(proof, device_id=bytes(33)),
-        replace(proof, partials_root=bytes(31)),
         replace(proof, tile_bytes=proof.tile_bytes[:-1]),
         replace(proof, weights_proof=(bytes(31), *proof.weights_proof[1:])),
         replace(proof, opening=replace(proof.opening, tile_index=-1)),
@@ -262,8 +334,16 @@ def test_correct_native_malformed_widths_and_nested_numbers_are_invalid() -> Non
         replace(proof, opening=replace(proof.opening, sketch=U32_LIMIT)),
         replace(proof, opening=replace(proof.opening, index=True)),
     )
-    for candidate in malformed:
-        assert verify_tile_fraud(_context(candidate), candidate).outcome is FraudOutcome.INVALID
+    for candidate in malformed_proofs:
+        assert verify_tile_fraud(context, candidate).outcome is FraudOutcome.INVALID
+    malformed_contexts = (
+        replace(context, weights_root=bytes(31)),
+        replace(context, challenge=bytes(31)),
+        replace(context, device_id=bytes(33)),
+        replace(context, partials_root=bytes(31)),
+    )
+    for context_candidate in malformed_contexts:
+        assert verify_tile_fraud(context_candidate, proof).outcome is FraudOutcome.INVALID
 
 
 class _BytesSubclass(bytes):
@@ -288,18 +368,21 @@ class _OpeningSubclass(CommittedOpening):
 
 def test_exact_protocol_classes_and_integers_fail_closed() -> None:
     proof = _canonical_proof()
-    context = _context(proof)
+    context = _context()
     context_subclass = _ContextSubclass(
-        context.scheme_id, context.weights_root, context.challenge, context.device_id
+        context.scheme_id,
+        context.weights_root,
+        context.challenge,
+        context.device_id,
+        context.partials_root,
+        context.partials_leaf_count,
+        context.model_n_tiles,
     )
     proof_subclass = _ProofSubclass(
         proof.scheme_id,
         proof.weights_root,
         proof.challenge,
         proof.device_id,
-        proof.model_n_tiles,
-        proof.partials_root,
-        proof.partials_leaf_count,
         proof.opening,
         proof.tile_bytes,
         proof.weights_proof,
@@ -317,7 +400,14 @@ def test_exact_protocol_classes_and_integers_fail_closed() -> None:
         is FraudOutcome.INVALID
     )
     assert (
-        verify_tile_fraud(context, replace(proof, model_n_tiles=_IntSubclass(4))).outcome
+        verify_tile_fraud(
+            replace(context, model_n_tiles=_IntSubclass(4)),
+            proof,
+        ).outcome
+        is FraudOutcome.INVALID
+    )
+    assert (
+        verify_tile_fraud(replace(context, partials_leaf_count=True), proof).outcome
         is FraudOutcome.INVALID
     )
 
@@ -328,7 +418,6 @@ def test_exact_protocol_classes_and_integers_fail_closed() -> None:
         ("weights_root", "root", "weights_root must be exact bytes"),
         ("challenge", bytearray(32), "challenge must be exact bytes"),
         ("device_id", memoryview(bytes(32)), "device_id must be exact bytes"),
-        ("partials_root", _BytesSubclass(32), "partials_root must be exact bytes"),
         ("tile_bytes", "tile", "tile_bytes must be exact bytes"),
     ],
 )
@@ -339,7 +428,7 @@ def test_programmer_bytes_misuse_raises_before_hashing(
     candidate = replace(proof, **cast(Any, {field: value}))
     calls = _forbid_hashing(monkeypatch)
     with pytest.raises(TypeError, match=f"^{message}$"):
-        verify_tile_fraud(_context(proof), candidate)
+        verify_tile_fraud(_context(), candidate)
     assert calls == []
 
 
@@ -349,13 +438,14 @@ def test_programmer_bytes_misuse_raises_before_hashing(
         ("weights_root", bytearray(32), "weights_root must be exact bytes"),
         ("challenge", memoryview(bytes(32)), "challenge must be exact bytes"),
         ("device_id", _BytesSubclass(32), "device_id must be exact bytes"),
+        ("partials_root", "partials", "partials_root must be exact bytes"),
     ],
 )
 def test_context_bytes_misuse_raises_before_hashing(
     monkeypatch: pytest.MonkeyPatch, field: str, value: object, message: str
 ) -> None:
     proof = _canonical_proof()
-    context = replace(_context(proof), **cast(Any, {field: value}))
+    context = replace(_context(), **cast(Any, {field: value}))
     calls = _forbid_hashing(monkeypatch)
     with pytest.raises(TypeError, match=f"^{message}$"):
         verify_tile_fraud(context, proof)
@@ -375,11 +465,20 @@ def _forbid_hashing(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     return calls
 
 
-def test_late_nested_bytes_misuse_wins_over_earlier_binding_error(
+@pytest.mark.parametrize(
+    "context_change",
+    [
+        {"scheme_id": "wrong"},
+        {"partials_leaf_count": -1},
+        {"model_n_tiles": 0},
+    ],
+)
+def test_late_nested_bytes_misuse_wins_over_earlier_context_error(
     monkeypatch: pytest.MonkeyPatch,
+    context_change: dict[str, object],
 ) -> None:
     proof = _canonical_proof()
-    bad_context = replace(_context(proof), scheme_id="wrong")
+    bad_context = replace(_context(), **cast(Any, context_change))
     bad_proof = (*proof.weights_proof[:-1], "late-node")
     candidate = replace(proof, weights_proof=cast(tuple[bytes, ...], bad_proof))
     calls = _forbid_hashing(monkeypatch)
@@ -398,13 +497,13 @@ def test_byte_subclasses_in_nested_proofs_raise_before_hashing(
     )
     calls = _forbid_hashing(monkeypatch)
     with pytest.raises(TypeError, match="^proof node must be exact bytes$"):
-        verify_tile_fraud(_context(proof), candidate)
+        verify_tile_fraud(_context(), candidate)
     assert calls == []
 
 
 def test_context_proof_and_result_are_frozen_and_slotted() -> None:
     proof = _canonical_proof()
-    context = _context(proof)
+    context = _context()
     result = verify_tile_fraud(context, proof)
     for value in (context, proof, result):
         assert not hasattr(value, "__dict__")
