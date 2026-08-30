@@ -1,12 +1,17 @@
-"""Enforce the single-canonical-implementation boundary for PoRW Python.
+"""Enforce an explicit AST binding invariant for PoRW Python source.
 
-Outside ``packages/python/src/aigg_porw``, protected public proof algorithms
-may only be bound by an absolute import from ``aigg_porw``. Governed files may
-not define them, rebind their callable objects (even under another name),
-write them through attributes or literal ``globals()``/``locals()`` keys, or
-register a callable under a protected literal name. Dynamic code creation is
-forbidden under ``gpu/triton``. A plain non-callable literal used as a test
-fixture may share a protected name because it cannot become a verifier.
+Outside ``packages/python/src/aigg_porw``, this checker rejects protected
+public algorithm spellings when they are defined, rebound through the
+enumerated import/attribute/getattr/module-dict forms, dynamically written, or
+registered as callables. Absolute named compatibility re-exports from a real
+``aigg_porw`` module remain permitted. Under the explicitly governed
+``gpu/triton`` tree, calls to ``exec``, ``eval``, and ``compile`` are also
+rejected in their direct, ``builtins``-qualified, and simple-alias forms.
+
+This is a syntactic invariant, not semantic proof against an equivalent
+algorithm written under an unrelated name or against arbitrary dynamic
+metaprogramming. AST literals may use a protected fixture name because they
+cannot bind a callable.
 """
 
 from __future__ import annotations
@@ -45,6 +50,7 @@ PROTECTED_NAMES = {
     "fraudverdict",  # legacy local verifier name
 }
 DYNAMIC_CREATORS = {"compile", "eval", "exec"}
+GOVERNED_DYNAMIC_PATHS = (Path("gpu/triton"),)
 
 
 def normalized(name: str) -> str:
@@ -125,13 +131,60 @@ def protected_namespace_key(target: ast.expr) -> str | None:
 
 
 def is_harmless_literal(value: ast.expr) -> bool:
-    return isinstance(value, ast.Constant) and type(value.value) in {
-        bytes,
-        float,
-        int,
-        str,
-        type(None),
-    }
+    if any(isinstance(node, ast.Call) for node in ast.walk(value)):
+        return False
+    try:
+        ast.literal_eval(value)
+    except (MemoryError, RecursionError, TypeError, ValueError):
+        return False
+    return True
+
+
+def is_canonical_module_reference(
+    value: ast.expr,
+    canonical_module_bindings: set[str],
+) -> bool:
+    root = value
+    while isinstance(root, ast.Attribute):
+        root = root.value
+    return isinstance(root, ast.Name) and root.id in canonical_module_bindings
+
+
+def protected_module_dict_access(
+    value: ast.expr,
+    canonical_module_bindings: set[str],
+) -> str | None:
+    if not isinstance(value, ast.Subscript):
+        return None
+    namespace = value.value
+    if (
+        not isinstance(namespace, ast.Attribute)
+        or namespace.attr != "__dict__"
+        or not is_canonical_module_reference(namespace.value, canonical_module_bindings)
+    ):
+        return None
+    if isinstance(value.slice, ast.Constant) and type(value.slice.value) is str:
+        key = value.slice.value
+        return key if is_protected(key) else None
+    return None
+
+
+def protected_getattr_access(
+    value: ast.expr,
+    canonical_module_bindings: set[str],
+) -> str | None:
+    if (
+        not isinstance(value, ast.Call)
+        or not isinstance(value.func, ast.Name)
+        or value.func.id != "getattr"
+        or len(value.args) < 2
+        or not is_canonical_module_reference(value.args[0], canonical_module_bindings)
+        or not isinstance(value.args[1], ast.Constant)
+        or type(value.args[1].value) is not str
+    ):
+        return None
+    attribute = value.args[1].value
+    return attribute if is_protected(attribute) else None
 
 
 def referenced_binding(
@@ -141,12 +194,18 @@ def referenced_binding(
 ) -> str | None:
     if isinstance(value, ast.Name) and value.id in canonical_algorithm_bindings:
         return value.id
-    if isinstance(value, ast.Attribute) and is_protected(value.attr):
-        root = value.value
-        while isinstance(root, ast.Attribute):
-            root = root.value
-        if isinstance(root, ast.Name) and root.id in canonical_module_bindings:
-            return value.attr
+    if (
+        isinstance(value, ast.Attribute)
+        and is_protected(value.attr)
+        and is_canonical_module_reference(value.value, canonical_module_bindings)
+    ):
+        return value.attr
+    getattr_access = protected_getattr_access(value, canonical_module_bindings)
+    if getattr_access is not None:
+        return getattr_access
+    module_dict_access = protected_module_dict_access(value, canonical_module_bindings)
+    if module_dict_access is not None:
+        return module_dict_access
     if isinstance(value, ast.Lambda):
         for nested in ast.walk(value.body):
             if (
@@ -154,7 +213,13 @@ def referenced_binding(
                 and nested.id in canonical_algorithm_bindings
             ):
                 return nested.id
-            if isinstance(nested, ast.Attribute) and is_protected(nested.attr):
+            if (
+                isinstance(nested, ast.Attribute)
+                and is_protected(nested.attr)
+                and is_canonical_module_reference(
+                    nested.value, canonical_module_bindings
+                )
+            ):
                 return nested.attr
     if isinstance(value, ast.Call):
         nested_values = [*value.args, *(keyword.value for keyword in value.keywords)]
@@ -169,6 +234,23 @@ def referenced_binding(
             )
             if rebound is not None:
                 return rebound
+    return None
+
+
+def dynamic_creator_reference(
+    value: ast.expr,
+    dynamic_creator_bindings: set[str],
+    builtins_module_bindings: set[str],
+) -> str | None:
+    if isinstance(value, ast.Name) and value.id in dynamic_creator_bindings:
+        return value.id
+    if (
+        isinstance(value, ast.Attribute)
+        and value.attr in DYNAMIC_CREATORS
+        and isinstance(value.value, ast.Name)
+        and value.value.id in builtins_module_bindings
+    ):
+        return value.attr
     return None
 
 
@@ -203,7 +285,7 @@ def canonical_module_exists(module: str, package_root: Path) -> bool:
 def inspect_file(
     path: Path,
     root: Path,
-    governed_gpu: Path,
+    governed_dynamic_paths: tuple[Path, ...],
     package_root: Path,
 ) -> list[str]:
     relative = path.relative_to(root)
@@ -215,9 +297,13 @@ def inspect_file(
     violations: list[str] = []
     canonical_algorithm_bindings: set[str] = set()
     canonical_module_bindings: set[str] = set()
+    builtins_module_bindings: set[str] = set()
+    dynamic_creator_bindings = set(DYNAMIC_CREATORS)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
+                if alias.name == "builtins":
+                    builtins_module_bindings.add(alias.asname or "builtins")
                 if canonical_module_exists(alias.name, package_root):
                     canonical_module_bindings.add(
                         alias.asname or alias.name.split(".", 1)[0]
@@ -238,6 +324,12 @@ def inspect_file(
             )
             for alias in node.names:
                 bound = alias.asname or alias.name
+                if (
+                    node.level == 0
+                    and node.module == "builtins"
+                    and alias.name in DYNAMIC_CREATORS
+                ):
+                    dynamic_creator_bindings.add(bound)
                 protected = is_protected(bound) or is_protected(alias.name)
                 if protected and not absolute_canonical:
                     violations.append(
@@ -245,6 +337,37 @@ def inspect_file(
                     )
                 if absolute_canonical and protected:
                     canonical_algorithm_bindings.add(bound)
+                elif absolute_canonical and alias.name == "*":
+                    violations.append(
+                        f"{relative}:{node.lineno}: canonical star import is forbidden"
+                    )
+                elif absolute_canonical and canonical_module_exists(
+                    f"{node.module}.{alias.name}", package_root
+                ):
+                    canonical_module_bindings.add(bound)
+
+    assignments = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr))
+    ]
+    changed = True
+    while changed:
+        changed = False
+        for node in assignments:
+            creator = dynamic_creator_reference(
+                assigned_value(node),
+                dynamic_creator_bindings,
+                builtins_module_bindings,
+            )
+            if creator is None:
+                continue
+            for target in assignment_targets(node):
+                if isinstance(target, ast.Name) and target.id not in (
+                    dynamic_creator_bindings
+                ):
+                    dynamic_creator_bindings.add(target.id)
+                    changed = True
 
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -288,13 +411,21 @@ def inspect_file(
                         f"{relative}:{node.lineno}: canonical algorithm rebound from {rebound}"
                     )
         elif isinstance(node, ast.Call):
+            dynamic_creator = dynamic_creator_reference(
+                node.func,
+                dynamic_creator_bindings,
+                builtins_module_bindings,
+            )
             if (
-                beneath(path.resolve(), governed_gpu)
-                and isinstance(node.func, ast.Name)
-                and node.func.id in DYNAMIC_CREATORS
+                any(
+                    beneath(path.resolve(), governed_path)
+                    for governed_path in governed_dynamic_paths
+                )
+                and dynamic_creator is not None
             ):
                 violations.append(
-                    f"{relative}:{node.lineno}: dynamic code creation via {node.func.id}"
+                    f"{relative}:{node.lineno}: dynamic code creation via "
+                    f"{dynamic_creator}"
                 )
             if (
                 isinstance(node.func, ast.Name)
@@ -360,7 +491,9 @@ def main() -> None:
         )
 
     violations: list[str] = []
-    governed_gpu = (root / "gpu/triton").resolve()
+    governed_dynamic_paths = tuple(
+        (root / relative).resolve() for relative in GOVERNED_DYNAMIC_PATHS
+    )
     for directory, child_directories, filenames in os.walk(root, followlinks=False):
         directory_path = Path(directory)
         for child in child_directories:
@@ -392,11 +525,18 @@ def main() -> None:
                     f"{path.relative_to(root)}: Python source resolves outside checkout"
                 )
                 continue
-            violations.extend(inspect_file(path, root, governed_gpu, package_root))
+            violations.extend(
+                inspect_file(
+                    path,
+                    root,
+                    governed_dynamic_paths,
+                    package_root,
+                )
+            )
 
     if violations:
         print(
-            "python source-tree gate: canonical algorithm binding invariant violated",
+            "python source-tree gate: explicit AST binding invariant violated",
             file=sys.stderr,
         )
         for violation in sorted(set(violations)):
@@ -404,8 +544,8 @@ def main() -> None:
         raise SystemExit(1)
 
     print(
-        "python source-tree gate: canonical algorithm bindings are unique and "
-        f"explicit at version {EXPECTED_VERSION}"
+        "python source-tree gate: explicit PoRW AST binding invariant holds "
+        f"at version {EXPECTED_VERSION}; dynamic-call scope: gpu/triton"
     )
 
 

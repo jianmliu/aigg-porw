@@ -31,19 +31,30 @@ def fixture(root: Path, *, version: str = "0.2.0.dev1+research") -> None:
         "def fmix32(value):\n    return value\n"
         "def tile_coeffs(seed, index):\n    return (seed, index)\n"
     )
+    (package / "verification.py").write_text(
+        "def verify_tile_fraud(*args):\n    return True\n"
+    )
     (root / "packages/python/pyproject.toml").write_text(
         "[project]\nname = 'aigg-porw'\n" f"version = '{version}'\n"
     )
 
 
-def run(root: Path) -> subprocess.CompletedProcess[str]:
+def run(
+    root: Path,
+    *,
+    extra_environment: dict[str, str] | None = None,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     environment = dict(os.environ, PORW_SOURCE_TREE_PYTHON=sys.executable)
+    if extra_environment is not None:
+        environment.update(extra_environment)
     return subprocess.run(
         [str(checker), str(root)],
         check=False,
         capture_output=True,
         text=True,
         env=environment,
+        cwd=cwd,
     )
 
 
@@ -95,6 +106,7 @@ with tempfile.TemporaryDirectory(prefix="aigg-porw-source-gate-") as temporary:
         ),
         "annotated_callable.py": "weights_leaf: object = lambda *args: b''\n",
         "factory_callable.py": "weights_leaf = make_verifier()\n",
+        "literal_eval_call.py": "weights_leaf = set()\n",
         "closure_alias.py": (
             "from aigg_porw import verify_tile_fraud\n"
             "disguised_check = lambda *args: verify_tile_fraud(*args)\n"
@@ -103,6 +115,19 @@ with tempfile.TemporaryDirectory(prefix="aigg-porw-source-gate-") as temporary:
             "from aigg_porw import verify_tile_fraud\n"
             "disguised_checks = (verify_tile_fraud,)\n"
         ),
+        "getattr_alias.py": (
+            "import aigg_porw\n"
+            "disguised_check = getattr(aigg_porw, 'verify_tile_fraud')\n"
+        ),
+        "from_module_alias.py": (
+            "from aigg_porw import verification as module\n"
+            "disguised_check = module.verify_tile_fraud\n"
+        ),
+        "dict_access.py": (
+            "import aigg_porw\n"
+            "disguised_check = aigg_porw.__dict__['verify_tile_fraud']\n"
+        ),
+        "star_import.py": "from aigg_porw.verification import *\n",
         "globals_write.py": "globals()['verify_tile_fraud'] = lambda *args: True\n",
         "locals_write.py": "locals()['weights_leaf'] = lambda *args: b''\n",
         "attribute_write.py": "registry.verify_tile_fraud = lambda *args: True\n",
@@ -124,6 +149,16 @@ with tempfile.TemporaryDirectory(prefix="aigg-porw-source-gate-") as temporary:
         "dynamic_exec.py": "exec(compile(source, '<dynamic>', 'exec'))\n",
         "dynamic_eval.py": "value = eval(source)\n",
         "dynamic_compile.py": "code = compile(source, '<dynamic>', 'exec')\n",
+        "dynamic_builtins.py": (
+            "import builtins\n"
+            "builtins.exec(source)\n"
+        ),
+        "dynamic_alias.py": "runner = exec\nrunner(source)\n",
+        "dynamic_builtins_alias.py": (
+            "import builtins as runtime\n"
+            "runner = runtime.compile\n"
+            "runner(source, '<dynamic>', 'exec')\n"
+        ),
     }
     for index, (name, source) in enumerate(mutations.items()):
         mutated = base / f"mutation-{index}"
@@ -142,10 +177,115 @@ with tempfile.TemporaryDirectory(prefix="aigg-porw-source-gate-") as temporary:
     fixture(harmless)
     harmless_candidate = harmless / "gpu/tests/fixture.py"
     harmless_candidate.parent.mkdir(parents=True)
-    harmless_candidate.write_text("weights_leaf: str = 'locked-vector fixture'\n")
+    harmless_candidate.write_text(
+        "weights_leaf = True\n"
+        "partials_leaf = False\n"
+        "merkle_parent = None\n"
+        "fmix32 = -7\n"
+        "tile_coeffs = b'locked-vector fixture'\n"
+        "sketch_tiles = 'locked-vector fixture'\n"
+        "verify_counted_merkle = (1, -2, 'x')\n"
+        "verify_committed_opening = [1, False, None]\n"
+        "verify_interior_non_inclusion = {'key': 1}\n"
+        "verify_tile_fraud = {1, 2}\n"
+    )
     result = run(harmless)
     if result.returncode != 0:
         raise SystemExit(f"harmless literal fixture was rejected:\n{result.stderr}")
+
+    comprehension = base / "comprehension"
+    fixture(comprehension)
+    comprehension_candidate = comprehension / "gpu/tests/fixture.py"
+    comprehension_candidate.parent.mkdir(parents=True)
+    comprehension_candidate.write_text(
+        "weights_leaf = [item for item in locked_values]\n"
+    )
+    result = run(comprehension)
+    if result.returncode == 0 or "binding invariant violated" not in result.stderr:
+        raise SystemExit("callable-capable comprehension escaped the source-tree gate")
+
+    hostile = base / "hostile-launcher"
+    fixture(hostile)
+    hostile_candidate = hostile / "gpu/tests/duplicate.py"
+    hostile_candidate.parent.mkdir(parents=True)
+    hostile_candidate.write_text("def fmix32(value):\n    return value\n")
+    hostile_path = base / "hostile-pythonpath"
+    hostile_path.mkdir()
+    (hostile_path / "sitecustomize.py").write_text(
+        "import os\nos._exit(0)\n"
+    )
+    hostile_cwd = base / "hostile-cwd"
+    hostile_cwd.mkdir()
+    (hostile_cwd / "check_python_source_tree.py").write_text(
+        "raise SystemExit(0)\n"
+    )
+    for module in ("ast", "pathlib", "tomllib"):
+        (hostile_cwd / f"{module}.py").write_text(
+            f"raise RuntimeError('cwd shadowed {module}')\n"
+        )
+    hostile_user_base = base / "hostile-user-base"
+    hostile_user_site = (
+        hostile_user_base
+        / "lib"
+        / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        / "site-packages"
+    )
+    hostile_user_site.mkdir(parents=True)
+    (hostile_user_site / "sitecustomize.py").write_text(
+        "import os\nos._exit(0)\n"
+    )
+    hostile_environment = {
+        "PYTHONPATH": str(hostile_path),
+        "PYTHONUSERBASE": str(hostile_user_base),
+        "PYTHONNOUSERSITE": "0",
+    }
+    result = run(
+        hostile,
+        extra_environment=hostile_environment,
+        cwd=hostile_cwd,
+    )
+    expected_error = (
+        "python source-tree gate: explicit AST binding invariant violated"
+    )
+    if (
+        result.returncode == 0
+        or expected_error not in result.stderr
+        or "gpu/tests/duplicate.py:1: definition fmix32" not in result.stderr
+    ):
+        raise SystemExit(
+            "hostile sitecustomize/cwd bypassed deterministic source scanning: "
+            f"rc={result.returncode}, stdout={result.stdout!r}, "
+            f"stderr={result.stderr!r}"
+        )
+
+    hostile_imports = base / "hostile-imports"
+    hostile_imports.mkdir()
+    (hostile_imports / "sitecustomize.py").write_text(
+        "import builtins\n"
+        "import os\n"
+        "def hostile_import(*args, **kwargs):\n"
+        "    os._exit(0)\n"
+        "builtins.__import__ = hostile_import\n"
+    )
+    for module in ("ast", "pathlib", "tomllib"):
+        (hostile_imports / f"{module}.py").write_text(
+            f"raise RuntimeError('shadowed {module}')\n"
+        )
+    result = run(
+        hostile,
+        extra_environment={"PYTHONPATH": str(hostile_imports)},
+        cwd=hostile_cwd,
+    )
+    if (
+        result.returncode == 0
+        or expected_error not in result.stderr
+        or "gpu/tests/duplicate.py:1: definition fmix32" not in result.stderr
+    ):
+        raise SystemExit(
+            "hostile module shadows bypassed deterministic source scanning: "
+            f"rc={result.returncode}, stdout={result.stdout!r}, "
+            f"stderr={result.stderr!r}"
+        )
 
     symlinked = base / "symlinked-package"
     fixture(symlinked)
