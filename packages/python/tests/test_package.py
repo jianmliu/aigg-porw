@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -10,7 +11,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import pytest
 import yaml  # type: ignore[import-untyped]
@@ -21,6 +22,10 @@ WORKFLOW_PATH = REPO_ROOT / ".github/workflows/conformance.yml"
 EXPECTED_UV_VERSION = "0.11.16"
 EXPECTED_SETUP_PYTHON_SHA = "e797f83bcb11b83ae66e0230d6156d7c80228e7c"
 EXPECTED_SETUP_UV_SHA = "c771a70e6277c0a99b617c7a806ffedaca235ff9"
+PINNED_WORKFLOW_DIGESTS = {
+    "conformance.yml": "66dc16beefc01467ca14447abf51d951f043689bec1ff18119c424f3d3e8caf0",
+    "evm.yml": "7e13150fff5040f8f6b2c53a2433b010528b4ff153921d6a3b3503da0ee6d31e",
+}
 PINNED_RELEASE_RUN_DIGESTS = {
     "Install the pinned Rust toolchain": (
         "748c4b9b19ddba50fe7a5c4a6d575d65798177d940c1eddb67cf00f9c7785781"
@@ -65,6 +70,34 @@ REQUIRED_KERNELS = {
 }
 
 
+class _UniqueKeySafeLoader(yaml.SafeLoader):  # type: ignore[misc]
+    yaml_implicit_resolvers: ClassVar[dict[Any, Any]] = {
+        key: [(tag, expression) for tag, expression in resolvers if tag != "tag:yaml.org,2002:bool"]
+        for key, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+    }
+
+    def construct_mapping(self, node: Any, deep: bool = False) -> dict[Any, Any]:
+        self.flatten_mapping(node)
+        mapping: dict[Any, Any] = {}
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                duplicate = key in mapping
+            except TypeError as error:
+                raise yaml.YAMLError(f"unhashable YAML mapping key: {key!r}") from error
+            if duplicate:
+                raise yaml.YAMLError(f"duplicate YAML mapping key: {key!r}")
+            mapping[key] = self.construct_object(value_node, deep=deep)
+        return mapping
+
+
+_UniqueKeySafeLoader.add_implicit_resolver(
+    "tag:yaml.org,2002:bool",
+    re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"),
+    list("tTfF"),
+)
+
+
 def _run(
     command: list[str],
     *,
@@ -87,9 +120,29 @@ def _run(
 
 
 def _workflow(source: str | None = None) -> Mapping[str, Any]:
-    loaded = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8") if source is None else source)
+    loaded = yaml.load(
+        WORKFLOW_PATH.read_text(encoding="utf-8") if source is None else source,
+        Loader=_UniqueKeySafeLoader,
+    )
     assert isinstance(loaded, Mapping)
     return cast(Mapping[str, Any], loaded)
+
+
+def _canonical_workflow_digest(workflow: Mapping[str, Any]) -> str:
+    canonical = json.dumps(
+        workflow,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _require_pinned_workflow(filename: str, source: str) -> None:
+    assert filename in PINNED_WORKFLOW_DIGESTS
+    workflow = _workflow(source)
+    assert set(workflow) >= {"name", "on", "permissions", "jobs"}
+    assert _canonical_workflow_digest(workflow) == PINNED_WORKFLOW_DIGESTS[filename]
 
 
 def _steps(source: str | None = None) -> list[Mapping[str, Any]]:
@@ -163,6 +216,7 @@ def _require_pinned_run(name: str, run: str) -> None:
 
 
 def _validate_release_contract(source: str) -> None:
+    _require_pinned_workflow("conformance.yml", source)
     run_steps: dict[str, str] = {}
     for step in _steps(source):
         run = step.get("run")
@@ -323,7 +377,13 @@ def test_workflow_contract_is_structural_and_actions_are_full_sha_pinned() -> No
     source = WORKFLOW_PATH.read_text(encoding="utf-8")
     _validate_release_contract(source)
 
-    for workflow_path in _workflow_paths(REPO_ROOT / ".github/workflows"):
+    workflow_paths = _workflow_paths(REPO_ROOT / ".github/workflows")
+    assert {path.name for path in workflow_paths} == set(PINNED_WORKFLOW_DIGESTS)
+    for workflow_path in workflow_paths:
+        _require_pinned_workflow(
+            workflow_path.name,
+            workflow_path.read_text(encoding="utf-8"),
+        )
         loaded = _workflow(workflow_path.read_text(encoding="utf-8"))
         jobs = loaded.get("jobs")
         assert isinstance(jobs, Mapping)
@@ -337,6 +397,11 @@ def test_workflow_contract_is_structural_and_actions_are_full_sha_pinned() -> No
                 if uses is not None:
                     assert isinstance(uses, str)
                     assert re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", uses)
+
+    conditional_steps = [
+        (step.get("name"), step.get("if")) for step in _steps(source) if "if" in step
+    ]
+    assert conditional_steps == [("Prove the spec cache stayed read-only", "always()")]
 
 
 def _remove_uv_version(source: str) -> str:
@@ -472,6 +537,108 @@ def _misnest_uv_inputs(source: str) -> str:
     )
 
 
+def _package_continue_on_error(source: str) -> str:
+    return source.replace(
+        "        working-directory: packages/python\n        shell: bash\n",
+        "        working-directory: packages/python\n"
+        "        continue-on-error: true\n"
+        "        shell: bash\n",
+        1,
+    )
+
+
+def _triton_if_false(source: str) -> str:
+    marker = "      - name: Run Python and mandatory Triton interpreter conformance\n"
+    return source.replace(marker, marker + "        if: false\n", 1)
+
+
+def _weaken_source_step_shell(source: str) -> str:
+    marker = "      - name: Enforce tracked Python integration-source boundaries\n"
+    return source.replace(
+        marker + "        shell: bash\n",
+        marker + "        shell: bash {0} || true\n",
+        1,
+    )
+
+
+def _package_step_env(source: str, name: str) -> str:
+    marker = (
+        "      - name: Test, type-check, and build the locked Python package\n"
+        "        working-directory: packages/python\n"
+    )
+    return source.replace(
+        marker,
+        marker + f"        env:\n          {name}: /tmp/porw-override\n",
+        1,
+    )
+
+
+def _package_bash_env(source: str) -> str:
+    return _package_step_env(source, "BASH_ENV")
+
+
+def _package_pythonpath(source: str) -> str:
+    return _package_step_env(source, "PYTHONPATH")
+
+
+def _package_path(source: str) -> str:
+    return _package_step_env(source, "PATH")
+
+
+def _job_env_override(source: str) -> str:
+    return source.replace(
+        "      CARGO_TERM_COLOR: always\n",
+        "      CARGO_TERM_COLOR: always\n      BASH_ENV: /tmp/porw-override\n",
+        1,
+    )
+
+
+def _job_defaults_override(source: str) -> str:
+    return source.replace(
+        "    timeout-minutes: 45\n",
+        "    timeout-minutes: 45\n    defaults:\n      run:\n        shell: bash {0}\n",
+        1,
+    )
+
+
+def _job_strategy_override(source: str) -> str:
+    return source.replace(
+        "    timeout-minutes: 45\n",
+        "    timeout-minutes: 45\n    strategy:\n      fail-fast: false\n",
+        1,
+    )
+
+
+def _top_level_env_override(source: str) -> str:
+    return source.replace(
+        "jobs:\n",
+        "env:\n  PYTHONPATH: /tmp/porw-override\n\njobs:\n",
+        1,
+    )
+
+
+def _top_level_defaults_override(source: str) -> str:
+    return source.replace(
+        "jobs:\n",
+        "defaults:\n  run:\n    shell: bash {0}\n\njobs:\n",
+        1,
+    )
+
+
+def _package_timeout_override(source: str) -> str:
+    marker = "      - name: Test, type-check, and build the locked Python package\n"
+    return source.replace(marker, marker + "        timeout-minutes: 1\n", 1)
+
+
+def _duplicate_package_shell_key(source: str) -> str:
+    marker = (
+        "      - name: Test, type-check, and build the locked Python package\n"
+        "        working-directory: packages/python\n"
+        "        shell: bash\n"
+    )
+    return source.replace(marker, marker + "        shell: bash\n", 1)
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -494,6 +661,34 @@ def _misnest_uv_inputs(source: str) -> str:
     ],
 )
 def test_release_contract_rejects_omissions_comments_and_wrong_nesting(
+    mutation: Callable[[str], str],
+) -> None:
+    source = WORKFLOW_PATH.read_text(encoding="utf-8")
+    mutated = mutation(source)
+    assert mutated != source
+    with pytest.raises((AssertionError, yaml.YAMLError)):
+        _validate_release_contract(mutated)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        _package_continue_on_error,
+        _triton_if_false,
+        _weaken_source_step_shell,
+        _package_bash_env,
+        _package_pythonpath,
+        _package_path,
+        _job_env_override,
+        _job_defaults_override,
+        _job_strategy_override,
+        _top_level_env_override,
+        _top_level_defaults_override,
+        _package_timeout_override,
+        _duplicate_package_shell_key,
+    ],
+)
+def test_release_contract_rejects_workflow_semantics_outside_run_blocks(
     mutation: Callable[[str], str],
 ) -> None:
     source = WORKFLOW_PATH.read_text(encoding="utf-8")
@@ -550,6 +745,14 @@ def test_workflow_discovery_includes_yaml_extension(tmp_path: Path) -> None:
     assert renamed in discovered
     assert original not in discovered
     _validate_release_contract(renamed.read_text(encoding="utf-8"))
+    with pytest.raises(AssertionError):
+        _require_pinned_workflow(renamed.name, renamed.read_text(encoding="utf-8"))
+
+
+def test_whole_workflow_digest_ignores_yaml_comments() -> None:
+    source = WORKFLOW_PATH.read_text(encoding="utf-8")
+    commented = "# reviewed non-semantic comment\n" + source
+    _validate_release_contract(commented)
 
 
 def test_exact_workflow_smoke_block_succeeds_in_archive_checkout(
