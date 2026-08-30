@@ -24,7 +24,7 @@ requires-dist = [
     { name = "blake3", specifier = ">=1.0,<2" },
     { name = "hatchling", marker = "extra == 'dev'", specifier = "==1.32.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14,<2" },
-    { name = "numpy", specifier = ">=2.3,<3" },
+    { name = "numpy", specifier = ">=2.0,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8,<10" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9,<1" },
 ]

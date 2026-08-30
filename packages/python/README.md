@@ -36,6 +36,11 @@ uv sync --frozen --extra dev
 UV_OFFLINE=1 uv build --no-build-isolation
 ```
 
+The declared NumPy runtime range is `>=2.0,<3`. The separately pinned GPU
+validation environment uses NumPy `2.0.2`; its isolated checkout probe imports
+this package and reproduces the locked sketch vector without relying on an
+ambient `PYTHONPATH` or user site.
+
 ## Version mapping
 
 The Python distribution uses the valid PEP 440 version

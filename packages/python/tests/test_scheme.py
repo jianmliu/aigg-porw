@@ -161,18 +161,20 @@ def test_sketch_batches_bound_temporaries_and_preserve_absolute_indices(
     n_tiles = batch_cap + 2
     buffer = _reference_buffer(n_tiles)
     expected = _scalar_sketch_tiles(0xDEADBEEF, buffer)
-    coefficient_calls: list[tuple[int, int, int]] = []
-    original_tile_coeffs = scheme_module.tile_coeffs
+    assert scheme_module._SKETCH_BATCH_TILES == batch_cap
+    batch_calls: list[tuple[int, int]] = []
+    original_batch = scheme_module._sketch_tile_batch
 
-    def recording_tile_coeffs(slot_seed: int, tile_idx: np.ndarray | int) -> np.ndarray:
-        if type(tile_idx) is np.ndarray:
-            coefficient_calls.append((tile_idx.size, int(tile_idx[0]), int(tile_idx[-1])))
-        return original_tile_coeffs(slot_seed, tile_idx)
+    def recording_batch(
+        slot_seed: int,
+        batch_buffer: np.ndarray,
+        first_tile_index: int,
+    ) -> np.ndarray:
+        batch_calls.append((batch_buffer.size // TILE_BYTES, first_tile_index))
+        return original_batch(slot_seed, batch_buffer, first_tile_index)
 
-    monkeypatch.setattr(scheme_module, "tile_coeffs", recording_tile_coeffs)
-
+    monkeypatch.setattr(scheme_module, "_sketch_tile_batch", recording_batch)
     actual = sketch_tiles(0xDEADBEEF, buffer)
 
-    assert coefficient_calls == [(batch_cap, 0, batch_cap - 1), (2, batch_cap, n_tiles - 1)]
-    assert all(call_size <= batch_cap for call_size, _, _ in coefficient_calls)
+    assert batch_calls == [(batch_cap, 0), (2, batch_cap)]
     assert np.array_equal(actual, expected)

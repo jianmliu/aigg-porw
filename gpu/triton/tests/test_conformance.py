@@ -187,6 +187,34 @@ def test_vector_identity_and_provenance_raw_bytes_are_locked() -> None:
         "fbb301486fb47da28fbfdad96a062abb3ad88615e0e3a1044ff0e0dbd3d1fc50"
     )
 
+    seed_fixture = _mapping(vector["slot_seed_derivation"])
+    challenge = _unhex(seed_fixture["global_challenge"])
+    device_id = _unhex(seed_fixture["device_id"])
+    slot_seed = int.from_bytes(blake3(challenge + device_id).digest()[:4], "little")
+    assert slot_seed == seed_fixture["slot_seed"]
+
+    weights_root = _unhex(_mapping(vector["weights_tree"])["root"])
+    partials_root = _unhex(
+        _mapping(vector["tampered_commitment_scenario"])["partials_root"]
+    )
+    ticket_input = weights_root + partials_root + slot_seed.to_bytes(4, "little")
+    ticket_chunks = _mapping(vector["ticket_chunks"])
+    assert (
+        _hex(blake3(ticket_input).digest(length=32, seek=0)) == ticket_chunks["index_0"]
+    )
+    assert (
+        _hex(blake3(ticket_input).digest(length=32, seek=32))
+        == ticket_chunks["index_1"]
+    )
+
+    beacon_fixture = _mapping(vector["audit_beacon"])
+    beacon_input = (
+        b"porw-cross-audit-v1"
+        + _unhex(beacon_fixture["entropy"])
+        + int(beacon_fixture["epoch"]).to_bytes(8, "little")
+    )
+    assert _hex(blake3(beacon_input).digest()) == beacon_fixture["beacon"]
+
 
 def test_reference_buffer_coefficients_and_all_sketches_match_vector() -> None:
     vector = _vector()
