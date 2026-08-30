@@ -17,6 +17,11 @@ FMIX_M1 = 0x85EBCA6B
 FMIX_M2 = 0xC2B2AE35
 M32 = 0xFFFFFFFF
 
+# Private memory policy: each batch covers at most 1 MiB of input. The uint64
+# words, coefficients, and multiplication result therefore remain bounded;
+# only the one-u64-per-tile output scales with the full input.
+_SKETCH_BATCH_TILES = 256
+
 
 def _require_u32(value: int, name: str) -> None:
     if type(value) is not int:
@@ -70,6 +75,20 @@ def tile_coeffs(slot_seed: int, tile_idx: np.ndarray | int) -> np.ndarray:
     return fmix32(r_tile[..., None] + (word_indices * GOLDEN32 & M32)) | 1
 
 
+def _sketch_tile_batch(slot_seed: int, buf: np.ndarray, first_tile_index: int) -> np.ndarray:
+    n_tiles = buf.size // TILE_BYTES
+    if n_tiles > _SKETCH_BATCH_TILES:
+        raise ValueError("internal sketch batch exceeds the private tile cap")
+
+    # Every view and conversion is scoped to this bounded batch. Absolute tile
+    # indices are retained across batches because they are part of the v2
+    # coefficient preimage.
+    words = buf.view("<u4").reshape(n_tiles, TILE_WORDS).astype(np.uint64)
+    tile_indices = np.arange(first_tile_index, first_tile_index + n_tiles, dtype=np.uint64)
+    coefficients = tile_coeffs(slot_seed, tile_indices)
+    return (coefficients * words).sum(axis=1) & M32
+
+
 def sketch_tiles(slot_seed: int, buf: np.ndarray) -> np.ndarray:
     """Return one canonical u32-valued sketch per 4096-byte tile.
 
@@ -87,7 +106,15 @@ def sketch_tiles(slot_seed: int, buf: np.ndarray) -> np.ndarray:
     if buf.size % TILE_BYTES != 0:
         raise ValueError("buf length must be a multiple of TILE_BYTES")
 
-    words = buf.view("<u4").astype(np.uint64).reshape(-1, TILE_WORDS)
-    n_tiles = words.shape[0]
-    coefficients = tile_coeffs(slot_seed, np.arange(n_tiles, dtype=np.uint64))
-    return (coefficients * words).sum(axis=1) & M32
+    n_tiles = buf.size // TILE_BYTES
+    sketches = np.empty(n_tiles, dtype=np.uint64)
+    for first_tile_index in range(0, n_tiles, _SKETCH_BATCH_TILES):
+        last_tile_index = min(first_tile_index + _SKETCH_BATCH_TILES, n_tiles)
+        first_byte = first_tile_index * TILE_BYTES
+        last_byte = last_tile_index * TILE_BYTES
+        sketches[first_tile_index:last_tile_index] = _sketch_tile_batch(
+            slot_seed,
+            buf[first_byte:last_byte],
+            first_tile_index,
+        )
+    return sketches

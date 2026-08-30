@@ -18,6 +18,7 @@ from aigg_porw import (
     sketch_tiles,
     tile_coeffs,
 )
+from aigg_porw import scheme as scheme_module
 
 VECTOR_PATH = (
     Path(__file__).resolve().parents[3]
@@ -38,6 +39,17 @@ def _reference_buffer(n_tiles: int) -> np.ndarray:
         (((index * 2654435761) & 0xFFFFFFFFFFFFFFFF) >> 7) & 0xFF for index in range(length)
     )
     return np.frombuffer(buffer, dtype=np.uint8)
+
+
+def _scalar_sketch_tiles(slot_seed: int, buffer: np.ndarray) -> np.ndarray:
+    n_tiles = buffer.size // TILE_BYTES
+    values = np.empty(n_tiles, dtype=np.uint64)
+    for tile_index in range(n_tiles):
+        start = tile_index * TILE_BYTES
+        words = buffer[start : start + TILE_BYTES].view("<u4").astype(np.uint64)
+        coefficients = tile_coeffs(slot_seed, tile_index)
+        values[tile_index] = (coefficients * words).sum() & M32
+    return values
 
 
 def test_scheme_constants_and_sketches_match_locked_vector() -> None:
@@ -140,3 +152,27 @@ def test_sketch_buffer_requires_exact_contiguous_one_dimensional_uint8_array() -
     for buffer, error, message in invalid_values:
         with pytest.raises(error, match=message):
             sketch_tiles(1, buffer)  # type: ignore[arg-type]
+
+
+def test_sketch_batches_bound_temporaries_and_preserve_absolute_indices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch_cap = 256
+    n_tiles = batch_cap + 2
+    buffer = _reference_buffer(n_tiles)
+    expected = _scalar_sketch_tiles(0xDEADBEEF, buffer)
+    coefficient_calls: list[tuple[int, int, int]] = []
+    original_tile_coeffs = scheme_module.tile_coeffs
+
+    def recording_tile_coeffs(slot_seed: int, tile_idx: np.ndarray | int) -> np.ndarray:
+        if type(tile_idx) is np.ndarray:
+            coefficient_calls.append((tile_idx.size, int(tile_idx[0]), int(tile_idx[-1])))
+        return original_tile_coeffs(slot_seed, tile_idx)
+
+    monkeypatch.setattr(scheme_module, "tile_coeffs", recording_tile_coeffs)
+
+    actual = sketch_tiles(0xDEADBEEF, buffer)
+
+    assert coefficient_calls == [(batch_cap, 0, batch_cap - 1), (2, batch_cap, n_tiles - 1)]
+    assert all(call_size <= batch_cap for call_size, _, _ in coefficient_calls)
+    assert np.array_equal(actual, expected)
