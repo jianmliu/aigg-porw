@@ -1,7 +1,8 @@
-"""Fail-closed, context-bound PoRW v2 tile-fraud verification."""
+"""Fail-closed PoRW v2 verification with ephemeral, non-credential results."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
+from typing import ClassVar, Literal, Never, Self, SupportsIndex
 
 import numpy as np
 from blake3 import blake3
@@ -58,14 +59,54 @@ class FraudOutcome(Enum):
     NO_FRAUD = "no_fraud"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class PorwVerificationResult:
-    """A verdict bound to its exact protocol context, with no economic effect."""
+    """An ephemeral in-process diagnostic returned only by the verifier.
+
+    This value is deliberately not a serializable credential. Callers cannot
+    construct it directly; they must invoke :func:`verify_tile_fraud` locally.
+    Python object identity is not an attestation and this class makes no claim
+    against hostile code executing in the same interpreter.
+    """
 
     context: PorwContext
     tile_index: int
     outcome: FraudOutcome
-    creates_financial_entitlement: bool = field(default=False, init=False)
+    creates_financial_entitlement: ClassVar[Literal[False]] = False
+
+    def __new__(cls, *args: object, **kwargs: object) -> Self:
+        del args, kwargs
+        raise TypeError(
+            "PorwVerificationResult cannot be constructed directly; call verify_tile_fraud"
+        )
+
+    def __reduce_ex__(self, protocol: SupportsIndex) -> Never:
+        del protocol
+        raise TypeError("PorwVerificationResult is an ephemeral diagnostic, not a credential")
+
+    def __reduce__(self) -> Never:
+        raise TypeError("PorwVerificationResult is an ephemeral diagnostic, not a credential")
+
+    def __copy__(self) -> Never:
+        raise TypeError("PorwVerificationResult is an ephemeral diagnostic, not a credential")
+
+    def __deepcopy__(self, memo: dict[int, object]) -> Never:
+        del memo
+        raise TypeError("PorwVerificationResult is an ephemeral diagnostic, not a credential")
+
+
+def _seal_verification_result(
+    *,
+    context: PorwContext,
+    tile_index: int,
+    outcome: FraudOutcome,
+) -> PorwVerificationResult:
+    """Create the result through the verifier's sole module-private path."""
+    result: PorwVerificationResult = object.__new__(PorwVerificationResult)
+    object.__setattr__(result, "context", context)
+    object.__setattr__(result, "tile_index", tile_index)
+    object.__setattr__(result, "outcome", outcome)
+    return result
 
 
 def _invalid(context: PorwContext, proof: object) -> PorwVerificationResult:
@@ -76,7 +117,7 @@ def _invalid(context: PorwContext, proof: object) -> PorwVerificationResult:
         and _is_uint(proof.opening.tile_index, U64_LIMIT)
     ):
         tile_index = proof.opening.tile_index
-    return PorwVerificationResult(
+    return _seal_verification_result(
         context=context,
         tile_index=tile_index,
         outcome=FraudOutcome.INVALID,
@@ -153,7 +194,9 @@ def verify_tile_fraud(
     Exact native byte objects are required because bytes are hash preimages;
     passing another byte-like class is programmer misuse and raises
     :class:`TypeError` before hashing. Structurally malformed protocol evidence
-    made from the correct native classes fails closed with ``INVALID``.
+    made from the correct native classes fails closed with ``INVALID``. Use
+    the returned result only in the current in-process control flow; never
+    accept a stored or caller-supplied result as evidence.
     """
     if not isinstance(context, PorwContext):
         raise TypeError("context must be an exact PorwContext")
@@ -203,7 +246,7 @@ def verify_tile_fraud(
     )
     actual_sketch = _recompute_tile_sketch(slot_seed, opening.tile_index, proof.tile_bytes)
     outcome = FraudOutcome.NO_FRAUD if actual_sketch == opening.sketch else FraudOutcome.FRAUD
-    return PorwVerificationResult(
+    return _seal_verification_result(
         context=context,
         tile_index=opening.tile_index,
         outcome=outcome,

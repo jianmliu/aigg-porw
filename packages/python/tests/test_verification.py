@@ -1,7 +1,9 @@
 """Context-bound tile-fraud verification against the locked PoRW v2 vector."""
 
+import copy
 import inspect
 import json
+import pickle
 from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any, Never, cast
@@ -9,6 +11,7 @@ from typing import Any, Never, cast
 import pytest
 from blake3 import blake3
 
+import aigg_porw
 import aigg_porw.commitments as commitment_module
 import aigg_porw.merkle as merkle_module
 import aigg_porw.verification as verification_module
@@ -212,21 +215,78 @@ def test_attacker_selected_one_leaf_partials_tree_cannot_choose_outcome(
     assert verify_tile_fraud(context, attacker_proof).outcome is FraudOutcome.INVALID
 
 
-def test_result_preserves_protocol_context_and_never_creates_entitlement() -> None:
+def test_result_preserves_protocol_context_and_normal_value_ergonomics() -> None:
     proof = _canonical_proof()
     context = _context()
     result = verify_tile_fraud(context, proof)
     assert result.context == context
+    assert result.tile_index == proof.opening.tile_index
+    assert result.outcome is FraudOutcome.FRAUD
+    assert verify_tile_fraud(context, proof) == result
     assert result.creates_financial_entitlement is False
-    with pytest.raises(TypeError, match="creates_financial_entitlement"):
-        PorwVerificationResult(  # type: ignore[call-arg]
+
+
+def test_result_cannot_be_constructed_or_replaced_by_a_caller() -> None:
+    proof = _canonical_proof()
+    context = _context()
+    result = verify_tile_fraud(context, proof)
+    with pytest.raises(TypeError, match="cannot be constructed directly"):
+        PorwVerificationResult(
             context=context,
             tile_index=3,
-            outcome=FraudOutcome.FRAUD,
-            creates_financial_entitlement=True,
+            outcome=FraudOutcome.NO_FRAUD,
         )
+    with pytest.raises(TypeError, match="cannot be constructed directly"):
+        PorwVerificationResult()
+    with pytest.raises(TypeError, match="cannot be constructed directly"):
+        replace(result, outcome=FraudOutcome.NO_FRAUD)
     with pytest.raises((AttributeError, TypeError)):
-        result.creates_financial_entitlement = True  # type: ignore[misc]
+        cast(Any, result).outcome = FraudOutcome.NO_FRAUD
+
+
+def test_result_factory_and_construction_mechanism_are_not_public_api() -> None:
+    assert "_seal_verification_result" not in aigg_porw.__all__
+    assert not hasattr(aigg_porw, "_seal_verification_result")
+
+
+def test_entitlement_is_unstored_constant_false_even_under_object_setattr() -> None:
+    result = verify_tile_fraud(_context(), _canonical_proof())
+    assert result.creates_financial_entitlement is False
+    assert "creates_financial_entitlement" not in PorwVerificationResult.__slots__
+    assert "creates_financial_entitlement" not in {
+        field.name for field in fields(PorwVerificationResult)
+    }
+    with pytest.raises((AttributeError, TypeError)):
+        object.__setattr__(result, "creates_financial_entitlement", True)
+    assert result.creates_financial_entitlement is False
+    with pytest.raises((AttributeError, TypeError)):
+        cast(Any, result).creates_financial_entitlement = True
+
+
+class _ForgedResultPayload:
+    def __init__(self, context: PorwContext) -> None:
+        self.context = context
+
+    def __reduce__(self) -> tuple[object, tuple[object, ...]]:
+        return (
+            PorwVerificationResult,
+            (self.context, 3, FraudOutcome.NO_FRAUD),
+        )
+
+
+def test_result_cannot_be_serialized_copied_or_deserialized_as_a_credential() -> None:
+    context = _context()
+    result = verify_tile_fraud(context, _canonical_proof())
+    for operation in (
+        lambda: pickle.dumps(result),
+        lambda: copy.copy(result),
+        lambda: copy.deepcopy(result),
+    ):
+        with pytest.raises(TypeError, match="ephemeral diagnostic"):
+            operation()
+    forged_payload = pickle.dumps(_ForgedResultPayload(context))
+    with pytest.raises(TypeError, match="cannot be constructed directly"):
+        pickle.loads(forged_payload)
 
 
 @pytest.mark.parametrize(

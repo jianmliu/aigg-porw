@@ -1,4 +1,10 @@
-"""Public API for the canonical PoRW sketch-tile v2 reference scheme."""
+"""Public PoRW v2 API.
+
+Verification results are ephemeral diagnostics returned by a local
+``verify_tile_fraud`` call. They are never caller-supplied credentials or
+cryptographic attestations and must not cross process, storage, or network
+boundaries.
+"""
 
 from .commitments import (
     CommittedOpening,

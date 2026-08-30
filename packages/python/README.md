@@ -1,13 +1,29 @@
 # aigg-porw Python package
 
 Private research implementation of the canonical AIGG Proof of Retained
-Weights sketch-tile v2 mathematics. The package currently exposes only the
-pure NumPy reference scheme: its constants, Murmur3 finalizer, per-word tile
-coefficients, and deterministic tile sketches.
+Weights sketch-tile v2 mathematics. The package exposes the pure NumPy
+reference scheme, counted-Merkle commitment checks, and context-bound
+tile-fraud verification.
 
 The sketch is an algebraic consistency check. It does not by itself prove byte
 equality, model residency, inference execution, Worker eligibility, capacity,
 or financial entitlement.
+
+## Verification-result boundary
+
+`PorwVerificationResult` is an ephemeral diagnostic value, not a credential,
+receipt, attestation, or capability. It cannot be constructed, copied,
+serialized, or deserialized through the public API. A consumer—including the
+GCT demo—must accept authenticated `PorwContext` plus `TileFraudProof`, call
+`verify_tile_fraud(context, proof)` locally, and use that returned value only
+in the same in-process control flow. Results received from a caller, storage,
+or a network must never be accepted or reconstructed.
+
+These Python object restrictions prevent ordinary API misuse; they do not
+protect against hostile code executing inside the same interpreter. Never
+treat Python object identity, class membership, or a verification result as
+cryptographic attestation. The verifier's result never creates financial
+entitlement.
 
 ## Reproducible local build
 
