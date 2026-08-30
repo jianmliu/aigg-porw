@@ -78,10 +78,13 @@ git diff --check
 git status --short --branch
 ```
 
-Both source-tree commands enforce the pre-import executable-container boundary:
-regular files and symlinks below `gpu/triton` with case-insensitive `.zip`,
-`.whl`, `.egg`, `.pyz`, or `.pth` suffixes are forbidden. Archives elsewhere
-are outside this narrowly governed integration-tree invariant.
+Both source-tree commands enforce a syntactic pre-import boundary for tracked
+integration sources, not semantic uniqueness. Regular files and symlinks below
+`gpu/triton` with case-insensitive `.zip`, `.whl`, `.egg`, `.pyz`, or `.pth`
+suffixes are forbidden even below `build`, `dist`, and `target`. The only
+dependency-environment exclusion is the exact regular `gpu/triton/.venv`; it
+is outside tracked integration source, and the release runners isolate import
+paths. Archives elsewhere are outside this narrowly governed invariant.
 
 The Darwin command can reproduce CPU conformance, but its current 11 Triton
 skips cannot discharge the Linux Triton interpreter gate. Only the required

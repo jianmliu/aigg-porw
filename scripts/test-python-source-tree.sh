@@ -131,6 +131,89 @@ with tempfile.TemporaryDirectory(prefix="aigg-porw-source-gate-") as temporary:
     if result.returncode == 0 or "executable Python path file" not in result.stderr:
         raise SystemExit("governed .pth executable path file escaped the source-tree gate")
 
+    build_archive = base / "build-archive"
+    fixture(build_archive)
+    candidate = build_archive / "gpu/triton/build/nested/protected.ZIP"
+    candidate.parent.mkdir(parents=True)
+    with zipfile.ZipFile(candidate, "w") as bundle:
+        bundle.writestr("porw_attack.py", archive_source)
+    if zipimport.zipimporter(str(candidate)).get_code("porw_attack") is None:
+        raise SystemExit(f"build archive fixture is not zipimport-able: {candidate}")
+    result = run(build_archive)
+    if (
+        result.returncode == 0
+        or "gpu/triton/build/nested/protected.ZIP: executable Python archive"
+        not in result.stderr
+    ):
+        raise SystemExit("build-nested executable archive escaped the pre-import gate")
+
+    target_pth = base / "target-pth"
+    fixture(target_pth)
+    pth_directory = target_pth / "gpu/triton/target/dist"
+    pth_directory.mkdir(parents=True)
+    marker = target_pth / "pth-executed"
+    pth = pth_directory / "porw_attack.pth"
+    pth.write_text(
+        "import pathlib; pathlib.Path(" + repr(str(marker)) + ").write_text('loaded')\n"
+    )
+    proof = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            "import site, sys; site.addsitedir(sys.argv[1])",
+            str(pth_directory),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if proof.returncode != 0 or marker.read_text() != "loaded":
+        raise SystemExit("target/dist .pth fixture did not prove executable")
+    result = run(target_pth)
+    if (
+        result.returncode == 0
+        or "gpu/triton/target/dist/porw_attack.pth: executable Python path file"
+        not in result.stderr
+    ):
+        raise SystemExit("target/dist executable .pth escaped the pre-import gate")
+
+    dependency_environment = base / "dependency-environment"
+    fixture(dependency_environment)
+    dependency_pth = dependency_environment / "gpu/triton/.venv/lib/distutils-precedence.pth"
+    dependency_pth.parent.mkdir(parents=True)
+    dependency_pth.write_text("import _distutils_hack\n")
+    result = run(dependency_environment)
+    if result.returncode != 0:
+        raise SystemExit(f"exact dependency .venv exclusion was rejected:\n{result.stderr}")
+
+    escaped_environment = base / "escaped-environment"
+    fixture(escaped_environment)
+    external_environment = escaped_environment / "external-venv"
+    external_environment.mkdir()
+    (external_environment / "distutils-precedence.pth").write_text("import _distutils_hack\n")
+    (escaped_environment / "gpu/triton").mkdir(parents=True)
+    (escaped_environment / "gpu/triton/.venv").symlink_to(external_environment)
+    result = run(escaped_environment)
+    if (
+        result.returncode == 0
+        or "dependency environment exclusion must not be a symlink" not in result.stderr
+    ):
+        raise SystemExit("symlinked dependency environment exclusion did not fail closed")
+
+    broken_environment = base / "broken-environment"
+    fixture(broken_environment)
+    (broken_environment / "gpu/triton").mkdir(parents=True)
+    (broken_environment / "gpu/triton/.venv").symlink_to(
+        broken_environment / "missing-external-venv"
+    )
+    result = run(broken_environment)
+    if (
+        result.returncode == 0
+        or "dependency environment exclusion must not be a symlink" not in result.stderr
+    ):
+        raise SystemExit("broken dependency environment symlink did not fail closed")
+
     outside_archive = base / "outside-archive"
     fixture(outside_archive)
     outside = outside_archive / "docs/examples/protected.zip"

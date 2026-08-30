@@ -112,10 +112,13 @@ gpu/triton/.venv/bin/python -m pytest \
 contracts/evm/scripts/run-anvil-benchmark.sh --check-committed
 ```
 
-The source-tree gate fails closed before import if the governed `gpu/triton`
-integration tree contains a regular file or symlink whose suffix, compared
-case-insensitively, is `.zip`, `.whl`, `.egg`, `.pyz`, or `.pth`. Archives
-outside that governed integration tree are not part of this invariant.
+The source-tree gate is a syntactic boundary for tracked integration sources,
+not proof of semantic uniqueness. Before importing governed `gpu/triton`
+sources it rejects regular files and symlinks with case-insensitive `.zip`,
+`.whl`, `.egg`, `.pyz`, or `.pth` suffixes, including below `build`, `dist`,
+and `target`. Only the exact regular `gpu/triton/.venv` dependency environment
+is excluded; it is not tracked integration source, and release runners isolate
+their import paths. Archives outside `gpu/triton` are outside this invariant.
 
 On Darwin arm64, Triton is unavailable and the local Python run cannot satisfy
 the mandatory interpreter gate; the current host-applicable run reports 11

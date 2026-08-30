@@ -7,12 +7,19 @@ registered as callables. Absolute named compatibility re-exports from a real
 ``aigg_porw`` module remain permitted. Under the explicitly governed
 ``gpu/triton`` tree, calls to ``exec``, ``eval``, and ``compile`` are also
 rejected in their direct, ``builtins``-qualified, and simple-alias forms.
-Before any checkout module can be imported, regular files and symlinks with
-case-insensitive executable archive suffixes ``.zip``, ``.whl``, ``.egg``, or
-``.pyz`` are rejected anywhere under that governed tree (apart from the same
-explicit cache/build/environment directories excluded from source scanning).
-``.pth`` executable path files are rejected in the same scope. Archives
-outside ``gpu/triton`` are outside this integration-source invariant.
+Before any tracked checkout integration module can be imported, regular files
+and symlinks with case-insensitive executable archive suffixes ``.zip``,
+``.whl``, ``.egg``, or ``.pyz`` are rejected throughout that governed tree;
+``.pth`` executable path files are rejected in the same scope. This hazardous
+container pass includes AST performance exclusions such as ``build``, ``dist``,
+and ``target``. Only the exact regular dependency-environment root
+``gpu/triton/.venv`` is excluded. Its contents are dependency material outside
+the tracked-source binding boundary, and release runners isolate their
+import paths. Archives outside ``gpu/triton`` are outside this invariant.
+The separate AST ``.py`` scan skips exactly ``.git``, ``.mypy_cache``,
+``.pytest_cache``, ``.ruff_cache``, ``.venv``, ``__pycache__``, ``build``,
+``dist``, and ``target`` directories for performance; those names do not
+exempt hazardous containers from the pre-import pass.
 
 This is a syntactic invariant, not semantic proof against an equivalent
 algorithm written under an unrelated name or against arbitrary dynamic
@@ -29,7 +36,7 @@ import tomllib
 from pathlib import Path
 
 EXPECTED_VERSION = "0.2.0.dev1+research"
-SKIPPED_DIRECTORIES = {
+AST_SKIPPED_DIRECTORIES = {
     ".git",
     ".mypy_cache",
     ".pytest_cache",
@@ -56,6 +63,7 @@ PROTECTED_NAMES = {
 }
 DYNAMIC_CREATORS = {"compile", "eval", "exec"}
 GOVERNED_DYNAMIC_PATHS = (Path("gpu/triton"),)
+DEPENDENCY_ENVIRONMENT_EXCLUSIONS = (Path("gpu/triton/.venv"),)
 EXECUTABLE_ARCHIVE_SUFFIXES = frozenset({".egg", ".pyz", ".whl", ".zip"})
 EXECUTABLE_PATH_SUFFIXES = frozenset({".pth"})
 
@@ -94,21 +102,36 @@ def require_regular_tree(path: Path, root: Path, description: str) -> Path:
 
 
 def reject_governed_executable_containers(root: Path) -> None:
-    """Reject zipimport and site-path payloads before scanning Python source."""
+    """Reject zipimport, path payloads, and path escapes before AST scanning."""
     violations: list[str] = []
     for governed_relative in GOVERNED_DYNAMIC_PATHS:
         governed = root / governed_relative
         if not governed.exists():
             continue
+        require_regular_tree(governed, root, "governed integration tree")
+        excluded_directories = {
+            root / relative
+            for relative in DEPENDENCY_ENVIRONMENT_EXCLUSIONS
+            if relative.is_relative_to(governed_relative)
+        }
+        for excluded in sorted(excluded_directories):
+            if excluded.is_symlink():
+                violations.append(
+                    f"{excluded.relative_to(root)}: dependency environment exclusion "
+                    "must not be a symlink or path escape"
+                )
+            elif excluded.exists() and not excluded.is_dir():
+                violations.append(
+                    f"{excluded.relative_to(root)}: dependency environment exclusion "
+                    "must be a regular directory"
+                )
         for directory, child_directories, filenames in os.walk(
             governed,
             followlinks=False,
         ):
             directory_path = Path(directory)
-            entries = [
-                *(directory_path / name for name in child_directories),
-                *(directory_path / name for name in filenames),
-            ]
+            child_paths = [directory_path / name for name in child_directories]
+            entries = [*child_paths, *(directory_path / name for name in filenames)]
             for candidate in sorted(entries):
                 suffix = candidate.suffix.casefold()
                 if suffix not in EXECUTABLE_ARCHIVE_SUFFIXES | EXECUTABLE_PATH_SUFFIXES:
@@ -123,11 +146,19 @@ def reject_governed_executable_containers(root: Path) -> None:
                     f"{relative}: {description} ({entry_kind}, {suffix}) is forbidden "
                     f"under governed integration tree {governed_relative}"
                 )
-            child_directories[:] = sorted(
-                name
-                for name in child_directories
-                if name not in SKIPPED_DIRECTORIES and not (directory_path / name).is_symlink()
-            )
+            traversable: list[str] = []
+            for name in sorted(child_directories):
+                candidate = directory_path / name
+                if candidate in excluded_directories:
+                    continue
+                if candidate.is_symlink():
+                    violations.append(
+                        f"{candidate.relative_to(root)}: symlinked directory is forbidden "
+                        "under the pre-import governed integration tree"
+                    )
+                    continue
+                traversable.append(name)
+            child_directories[:] = traversable
     if violations:
         print(
             "python source-tree gate: governed executable-container invariant violated",
@@ -531,7 +562,7 @@ def main() -> None:
         child_directories[:] = sorted(
             name
             for name in child_directories
-            if name not in SKIPPED_DIRECTORIES and not (directory_path / name).is_symlink()
+            if name not in AST_SKIPPED_DIRECTORIES and not (directory_path / name).is_symlink()
         )
         if beneath(directory_path.resolve(), package_root):
             child_directories[:] = []
@@ -571,7 +602,8 @@ def main() -> None:
     print(
         "python source-tree gate: explicit PoRW AST binding invariant holds "
         f"at version {EXPECTED_VERSION}; dynamic-call and executable-container "
-        "scope: gpu/triton; archives: .egg/.pyz/.whl/.zip; path files: .pth"
+        "scope: gpu/triton; archives: .egg/.pyz/.whl/.zip; path files: .pth; "
+        "dependency environment excluded exactly: gpu/triton/.venv"
     )
 
 

@@ -142,7 +142,7 @@ jobs:
             --vector "$vector" \
             --source-checkout "$GITHUB_WORKSPACE"
 
-      - name: Enforce the single Python proof implementation
+      - name: Enforce tracked Python integration-source boundaries
         shell: bash
         run: |
           set -euo pipefail

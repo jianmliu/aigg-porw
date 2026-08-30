@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -20,6 +21,35 @@ WORKFLOW_PATH = REPO_ROOT / ".github/workflows/conformance.yml"
 EXPECTED_UV_VERSION = "0.11.16"
 EXPECTED_SETUP_PYTHON_SHA = "e797f83bcb11b83ae66e0230d6156d7c80228e7c"
 EXPECTED_SETUP_UV_SHA = "c771a70e6277c0a99b617c7a806ffedaca235ff9"
+PINNED_RELEASE_RUN_DIGESTS = {
+    "Install the pinned Rust toolchain": (
+        "748c4b9b19ddba50fe7a5c4a6d575d65798177d940c1eddb67cf00f9c7785781"
+    ),
+    "Verify the canonical spec lock": (
+        "7cf810653fdbc03974e5ab99534b7f22a9c822f2fe53d11fdc029b0d62eb98e2"
+    ),
+    "Test the Rust workspace and feature boundaries": (
+        "ff7191b82fe2948e030109ab59afc3781e7e45234d9ac8eb1b8a71bfee264f7e"
+    ),
+    "Test, type-check, and build the locked Python package": (
+        "090d56644ea598261ac3d47d27f501b4adcc98760f2abeae613c3ce48afdf3d8"
+    ),
+    "Smoke-test the exact wheel outside the checkout": (
+        "7c3794d7550270206c02a2cad2df69c4069d55d28ea90d2cc0530c736d8f02e0"
+    ),
+    "Enforce tracked Python integration-source boundaries": (
+        "a631a48f192d4adad249a61422d0e6c7bc3fd809c4d7ad74976d0619767bb040"
+    ),
+    "Verify and install the Linux interpreter environment": (
+        "7da9c9e985d3726bc9fa43387c6138d4c3736b780dbef99f900ea5036bda27fe"
+    ),
+    "Run Python and mandatory Triton interpreter conformance": (
+        "d0f92cd7b05661d80cb9525ddbc1a2dd498b7aacbb32fe617f3e1094f9e2388c"
+    ),
+    "Prove the spec cache stayed read-only": (
+        "b9a325eba1727013addf238c73731d8cf9dd0c8a2d841ddc5a6f31c1518605a0"
+    ),
+}
 REQUIRED_KERNELS = {
     "test_sweep_kernel_matches_reference",
     "test_sweep_kernel_coverage_subset",
@@ -112,34 +142,39 @@ def _effective_commands(run: str) -> tuple[str, ...]:
     return tuple(commands)
 
 
-def _require_exact_commands(run: str, expected: tuple[str, ...]) -> None:
+def _normalized_run_block(run: str) -> str:
+    lines = []
+    for raw_line in run.replace("\r\n", "\n").replace("\r", "\n").splitlines():
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+            continue
+        lines.append(raw_line.rstrip())
+    return "\n".join(lines)
+
+
+def _require_pinned_run(name: str, run: str) -> None:
     commands = _effective_commands(run)
     assert commands
     assert commands[0] == "set -euo pipefail"
-    assert commands.count("set -euo pipefail") == 1
-    assert not any(
-        command.startswith(("set +", "set -e +", "set -u +"))
-        or command in {"set +e", "set +u", "set +o pipefail"}
-        for command in commands[1:]
+    normalized_run = _normalized_run_block(run).encode()
+    actual_digest = hashlib.sha256(normalized_run).hexdigest()
+    assert actual_digest == PINNED_RELEASE_RUN_DIGESTS[name], (
+        f"normalized run block changed for {name!r}: {actual_digest}"
     )
-    for required in expected:
-        assert commands.count(required) == 1, f"missing exact active command: {required}"
-
-    protected = "cargo|cp|git|python|python3|rustc|rustup|test|uv"
-    override = re.compile(
-        rf"^(?:alias\s+(?:{protected})=|function\s+(?:{protected})(?:\s|\()|"
-        rf"(?:{protected})\s*\(\s*\)\s*\{{)"
-    )
-    assert not any(override.search(command) for command in commands)
 
 
 def _validate_release_contract(source: str) -> None:
+    run_steps: dict[str, str] = {}
     for step in _steps(source):
         run = step.get("run")
         if run is not None:
             assert isinstance(run, str)
-            commands = _effective_commands(run)
-            assert commands and commands[0] == "set -euo pipefail"
+            name = step.get("name")
+            assert isinstance(name, str)
+            assert name not in run_steps
+            run_steps[name] = run
+    assert set(run_steps) == set(PINNED_RELEASE_RUN_DIGESTS)
+    for name, run in run_steps.items():
+        _require_pinned_run(name, run)
 
     setup_python = _action_step("actions/setup-python@", source)
     assert setup_python["uses"] == f"actions/setup-python@{EXPECTED_SETUP_PYTHON_SHA}"
@@ -158,46 +193,15 @@ def _validate_release_contract(source: str) -> None:
     package_run = package_gate.get("run")
     assert package_gate.get("working-directory") == "packages/python"
     assert isinstance(package_run, str)
-    _require_exact_commands(
-        package_run,
-        (
-            "uv sync --frozen --extra dev",
-            "uv run --frozen ruff check .",
-            "uv run --frozen ruff format --check .",
-            "uv run --frozen mypy src tests scripts "
-            + "../../scripts/check_python_source_tree.py "
-            + "../../scripts/check_triton_interpreter_report.py",
-            "uv run --frozen pytest -q",
-            "UV_OFFLINE=1 uv build --offline --no-build-isolation",
-        ),
-    )
 
     rust_gate = _named_step("Test the Rust workspace and feature boundaries", source)
     rust_run = rust_gate.get("run")
     assert isinstance(rust_run, str)
-    _require_exact_commands(
-        rust_run,
-        (
-            "cargo test --workspace --locked",
-            "cargo test -p aigg-porw-core --locked",
-            "cargo test -p aigg-porw-core --features scale --locked",
-            "cargo check -p aigg-porw-core --no-default-features --locked",
-        ),
-    )
 
     smoke = _named_step("Smoke-test the exact wheel outside the checkout", source)
     smoke_run = smoke.get("run")
     assert smoke.get("working-directory") == "packages/python"
     assert isinstance(smoke_run, str)
-    _require_exact_commands(
-        smoke_run,
-        (
-            'cp -- ../../spec-cache/conformance/porw/sketch-tile-v2.json "$vector"',
-            ".venv/bin/python scripts/smoke_installed_wheel.py "
-            + '--uv "$(command -v uv)" --wheel "$wheel" --vector "$vector" '
-            + '--source-checkout "$GITHUB_WORKSPACE"',
-        ),
-    )
     assert "${RUNNER_TEMP:?}" in smoke_run
     assert '--source-checkout "$GITHUB_WORKSPACE"' in smoke_run
     assert "../../spec-cache/conformance/porw/sketch-tile-v2.json" in smoke_run
@@ -205,68 +209,31 @@ def _validate_release_contract(source: str) -> None:
     triton = _named_step("Run Python and mandatory Triton interpreter conformance", source)
     triton_run = triton.get("run")
     assert isinstance(triton_run, str)
-    _require_exact_commands(
-        triton_run,
-        (
-            "python -m pytest gpu/triton/tests/test_sketch.py "
-            + "gpu/triton/tests/test_conformance.py "
-            + "gpu/triton/tests/test_kernel_validation.py "
-            + "gpu/triton/tests/test_benchmark_honesty.py "
-            + '-q -rs --junitxml="$report"',
-            'python -B scripts/check_triton_interpreter_report.py "$report"',
-        ),
-    )
 
-    source_gate = _named_step("Enforce the single Python proof implementation", source)
+    source_gate = _named_step("Enforce tracked Python integration-source boundaries", source)
     source_run = source_gate.get("run")
     assert isinstance(source_run, str)
-    _require_exact_commands(
-        source_run,
-        ("./scripts/test-python-source-tree.sh", "./scripts/check-python-source-tree.sh"),
+    assert _effective_commands(source_run) == (
+        "set -euo pipefail",
+        "./scripts/test-python-source-tree.sh",
+        "./scripts/check-python-source-tree.sh",
     )
 
     rust_install = _named_step("Install the pinned Rust toolchain", source)
     rust_install_run = rust_install.get("run")
     assert isinstance(rust_install_run, str)
-    _require_exact_commands(
-        rust_install_run,
-        (
-            "rustup toolchain install nightly-2025-05-31 --profile minimal "
-            + "--component rustfmt --component clippy",
-            "rustc --version --verbose",
-            "cargo --version --verbose",
-        ),
-    )
 
     spec_lock = _named_step("Verify the canonical spec lock", source)
     spec_lock_run = spec_lock.get("run")
     assert isinstance(spec_lock_run, str)
-    _require_exact_commands(spec_lock_run, ("python3 - <<'PY'",))
 
     linux = _named_step("Verify and install the Linux interpreter environment", source)
     linux_run = linux.get("run")
     assert isinstance(linux_run, str)
-    _require_exact_commands(
-        linux_run,
-        (
-            'test "$(uname -s)" = Linux',
-            'test "$(uname -m)" = x86_64',
-            "python - <<'PY'",
-            "python -m pip install --require-hashes "
-            + "-r gpu/triton/requirements-test-linux-x86_64.lock",
-        ),
-    )
 
     cache = _named_step("Prove the spec cache stayed read-only", source)
     cache_run = cache.get("run")
     assert isinstance(cache_run, str)
-    _require_exact_commands(
-        cache_run,
-        (
-            "git diff --exit-code -- spec-cache",
-            'test -z "$(git status --porcelain --untracked-files=all -- spec-cache)"',
-        ),
-    )
 
 
 def _copy_archive_like_checkout(destination: Path) -> None:
@@ -442,6 +409,45 @@ def _inject_command_substitution(source: str) -> str:
     )
 
 
+def _insert_command_at_block_start(source: str) -> str:
+    return source.replace(
+        "          set -euo pipefail\n          uv sync --frozen --extra dev\n",
+        "          set -euo pipefail\n          exit 0\n          uv sync --frozen --extra dev\n",
+        1,
+    )
+
+
+def _insert_assignment_in_block_middle(source: str) -> str:
+    return source.replace(
+        "          uv run --frozen ruff check .\n          uv run --frozen ruff format --check .\n",
+        "          uv run --frozen ruff check .\n"
+        "          PYTHONPATH=/tmp\n"
+        "          uv run --frozen ruff format --check .\n",
+        1,
+    )
+
+
+def _insert_command_at_block_end(source: str) -> str:
+    return source.replace(
+        "          UV_OFFLINE=1 uv build --offline --no-build-isolation\n\n"
+        "      - name: Smoke-test the exact wheel outside the checkout\n",
+        "          UV_OFFLINE=1 uv build --offline --no-build-isolation\n"
+        "          exec true\n\n"
+        "      - name: Smoke-test the exact wheel outside the checkout\n",
+        1,
+    )
+
+
+def _break_heredoc_control_flow_indentation(source: str) -> str:
+    return source.replace(
+        "          if actual != expected:\n"
+        '              raise SystemExit(f"unexpected spec lock: {actual!r}")\n',
+        "          if actual != expected:\n"
+        '          raise SystemExit(f"unexpected spec lock: {actual!r}")\n',
+        1,
+    )
+
+
 def _comment_smoke_invocation(source: str) -> str:
     return source.replace(
         "          .venv/bin/python scripts/smoke_installed_wheel.py \\\n",
@@ -478,6 +484,10 @@ def _misnest_uv_inputs(source: str) -> str:
         _override_uv_function,
         _override_cargo_alias,
         _inject_command_substitution,
+        _insert_command_at_block_start,
+        _insert_assignment_in_block_middle,
+        _insert_command_at_block_end,
+        _break_heredoc_control_flow_indentation,
         _comment_smoke_invocation,
         _comment_zero_skip_invocation,
         _misnest_uv_inputs,
@@ -490,6 +500,39 @@ def test_release_contract_rejects_omissions_comments_and_wrong_nesting(
     mutated = mutation(source)
     assert mutated != source
     with pytest.raises((AssertionError, yaml.YAMLError)):
+        _validate_release_contract(mutated)
+
+
+@pytest.mark.parametrize(
+    "injected",
+    [
+        "return 0",
+        "source /tmp/porw-override.sh",
+        ". /tmp/porw-override.sh",
+        "PATH=/tmp",
+        "IFS=:",
+        "BASH_ENV=/tmp/porw-override.sh",
+        "PYTHONPATH=/tmp",
+        "env UV_OFFLINE=0 true",
+        "cd /tmp",
+        "trap - EXIT",
+        "set +e",
+        "porw_override() { true; }",
+        "alias uv=true",
+    ],
+)
+def test_release_contract_rejects_every_extra_effective_shell_construct(
+    injected: str,
+) -> None:
+    source = WORKFLOW_PATH.read_text(encoding="utf-8")
+    mutated = source.replace(
+        "          set -euo pipefail\n          uv sync --frozen --extra dev\n",
+        f"          set -euo pipefail\n          {injected}\n"
+        "          uv sync --frozen --extra dev\n",
+        1,
+    )
+    assert mutated != source
+    with pytest.raises(AssertionError):
         _validate_release_contract(mutated)
 
 
@@ -524,6 +567,20 @@ def test_exact_workflow_smoke_block_succeeds_in_archive_checkout(
     )
     assert "installed-wheel smoke: passed" in completed.stdout
     assert not any(Path(environment["RUNNER_TEMP"]).iterdir())
+
+
+def test_exact_workflow_source_boundary_block_succeeds_in_archive_checkout(
+    archive_checkout: Path,
+) -> None:
+    step = _named_step("Enforce tracked Python integration-source boundaries")
+    run = step.get("run")
+    assert isinstance(run, str)
+    completed = _run(
+        ["bash", "-euo", "pipefail", "-c", run],
+        cwd=archive_checkout,
+    )
+    assert "python source-tree gate self-tests: passed" in completed.stdout
+    assert "explicit PoRW AST binding invariant holds" in completed.stdout
 
 
 def test_wheel_smoke_rejects_direct_in_checkout_vector(
