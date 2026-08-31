@@ -84,6 +84,7 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--uv", required=True, type=Path)
     parser.add_argument("--wheel", required=True, type=Path)
     parser.add_argument("--vector", required=True, type=Path)
+    parser.add_argument("--locked-project", required=True, type=Path)
     parser.add_argument("--source-checkout", required=True, type=Path)
     return parser.parse_args()
 
@@ -107,6 +108,14 @@ def main() -> None:
     wheel = _regular_file(arguments.wheel, "wheel")
     vector = _regular_file(arguments.vector, "caller vector")
     checkout = arguments.source_checkout.resolve(strict=True)
+    locked_project = arguments.locked_project
+    if locked_project.is_symlink() or not locked_project.is_dir():
+        raise SystemExit(f"locked project must be a regular directory: {locked_project}")
+    locked_project = locked_project.resolve(strict=True)
+    if locked_project != checkout / "packages/python":
+        raise SystemExit("locked project must be the package directory in source checkout")
+    _regular_file(locked_project / "pyproject.toml", "locked project metadata")
+    _regular_file(locked_project / "uv.lock", "locked project lock")
     expected_prefix = f"aigg_porw-{EXPECTED_VERSION}-"
     if not wheel.name.startswith(expected_prefix) or wheel.suffix != ".whl":
         raise SystemExit(f"unexpected wheel identity: {wheel.name}")
@@ -130,8 +139,20 @@ def main() -> None:
         else:
             raise SystemExit("wheel smoke environment must be outside the source checkout")
         environment_path = root / "venv"
+        environment["UV_PROJECT_ENVIRONMENT"] = str(environment_path)
         _run(
-            [str(uv), "venv", "--python", sys.executable, str(environment_path)],
+            [
+                str(uv),
+                "sync",
+                "--project",
+                str(locked_project),
+                "--python",
+                sys.executable,
+                "--frozen",
+                "--offline",
+                "--no-dev",
+                "--no-install-project",
+            ],
             environment=environment,
             cwd=root,
         )
@@ -142,6 +163,7 @@ def main() -> None:
                 "pip",
                 "install",
                 "--offline",
+                "--no-deps",
                 "--python",
                 str(python),
                 str(wheel),

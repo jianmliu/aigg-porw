@@ -140,6 +140,7 @@ jobs:
             --uv "$(command -v uv)" \
             --wheel "$wheel" \
             --vector "$vector" \
+            --locked-project "$GITHUB_WORKSPACE/packages/python" \
             --source-checkout "$GITHUB_WORKSPACE"
 
       - name: Enforce tracked Python integration-source boundaries

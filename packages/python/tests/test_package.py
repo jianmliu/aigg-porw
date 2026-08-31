@@ -23,7 +23,7 @@ EXPECTED_UV_VERSION = "0.11.16"
 EXPECTED_SETUP_PYTHON_SHA = "e797f83bcb11b83ae66e0230d6156d7c80228e7c"
 EXPECTED_SETUP_UV_SHA = "c771a70e6277c0a99b617c7a806ffedaca235ff9"
 PINNED_WORKFLOW_DIGESTS = {
-    "conformance.yml": "66dc16beefc01467ca14447abf51d951f043689bec1ff18119c424f3d3e8caf0",
+    "conformance.yml": "c9b475b4f8d8c20fdc8c643d8e748cf5d78b983bca846c950a03e34cc672f289",
     "evm.yml": "7e13150fff5040f8f6b2c53a2433b010528b4ff153921d6a3b3503da0ee6d31e",
 }
 PINNED_RELEASE_RUN_DIGESTS = {
@@ -40,7 +40,7 @@ PINNED_RELEASE_RUN_DIGESTS = {
         "090d56644ea598261ac3d47d27f501b4adcc98760f2abeae613c3ce48afdf3d8"
     ),
     "Smoke-test the exact wheel outside the checkout": (
-        "7c3794d7550270206c02a2cad2df69c4069d55d28ea90d2cc0530c736d8f02e0"
+        "2c191373d25eded8a626e1c5f8a2043037c228603f6bd53baa66384272adc8a1"
     ),
     "Enforce tracked Python integration-source boundaries": (
         "a631a48f192d4adad249a61422d0e6c7bc3fd809c4d7ad74976d0619767bb040"
@@ -804,6 +804,8 @@ def test_wheel_smoke_rejects_direct_in_checkout_vector(
             str(wheel),
             "--vector",
             str(archive_checkout / "spec-cache/conformance/porw/sketch-tile-v2.json"),
+            "--locked-project",
+            str(package),
             "--source-checkout",
             str(archive_checkout),
         ],
