@@ -1,8 +1,9 @@
 # AIGG PoRW
 
-This private repository contains the `v0.1.0-research.1` release candidate for
+This private repository contains the next research release candidate for
 chain-neutral Proof of Resident Weights (PoRW) implementations and benchmarks.
-It is research software, not a production-capable reward or inference system.
+Its intended Git tag is `v0.2.0-research.1`; that tag is unpublished. It is
+research software, not a production-capable reward or inference system.
 
 The release is locked to scheme `aigg:porw:sketch-tile:v2`, private normative
 spec tag `porw-sketch-tile-v2.0.0-private.4` at commit
@@ -38,6 +39,10 @@ specification, the specification is authoritative.
 
 - [`crates/porw-core`](crates/porw-core/) — proof mathematics and reference
   logic. The read-only conformance cache is under [`spec-cache`](spec-cache/).
+- [`packages/python`](packages/python/) — installable `aigg-porw` research
+  package. Its PEP 440 distribution version is `0.2.0.dev1+research`, its
+  NumPy dependency is `numpy>=2.0,<3`, and its intended unpublished Git tag is
+  `v0.2.0-research.1`.
 - [`gpu/triton`](gpu/triton/) — Triton GPU implementation and benchmarks.
 - [`contracts/evm`](contracts/evm/) — EVM verifier, conformance tests, and gas
   benchmarks.
@@ -83,6 +88,15 @@ Cargo dependencies, CPython 3.12.13 with a platform-specific hash lock, Solidity
 0.8.33, London, optimizer 200, `via_ir`, Foundry 1.7.1, and forge-std v1.10.0.
 
 ```sh
+(cd packages/python && uv sync --frozen --extra dev)
+(cd packages/python && uv run --frozen ruff check .)
+(cd packages/python && uv run --frozen ruff format --check .)
+(cd packages/python && uv run --frozen mypy src tests scripts ../../scripts/check_python_source_tree.py ../../scripts/check_triton_interpreter_report.py)
+(cd packages/python && uv run --frozen pytest -q)
+(cd packages/python && UV_OFFLINE=1 uv build --offline --no-build-isolation)
+./scripts/test-python-source-tree.sh
+./scripts/check-python-source-tree.sh
+
 cargo test --workspace --locked
 cargo test -p aigg-porw-core --locked
 cargo test -p aigg-porw-core --features scale --locked
@@ -98,8 +112,18 @@ gpu/triton/.venv/bin/python -m pytest \
 contracts/evm/scripts/run-anvil-benchmark.sh --check-committed
 ```
 
+The source-tree gate is a syntactic boundary for tracked integration sources,
+not proof of semantic uniqueness. Before importing governed `gpu/triton`
+sources it rejects regular files and symlinks with case-insensitive `.zip`,
+`.whl`, `.egg`, `.pyz`, or `.pth` suffixes, including below `build`, `dist`,
+and `target`. Only the exact regular `gpu/triton/.venv` dependency environment
+is excluded; it is not tracked integration source, and release runners isolate
+their import paths. Archives outside `gpu/triton` are outside this invariant.
+
 On Darwin arm64, Triton is unavailable and the local Python run cannot satisfy
-the mandatory interpreter gate. The release requires the Linux x86_64 CI run
+the mandatory interpreter gate; the current host-applicable run reports 11
+Darwin skips, which are limitations rather than passing release evidence. The
+release requires the Linux x86-64 CI run
 with `TRITON_INTERPRET=1`, exact hash-locked dependencies, all named kernel tests
 collected, and zero skips. CI also proves tests leave `spec-cache` unchanged and
 fresh real-Anvil receipts have no unexplained deterministic drift from the
@@ -116,6 +140,15 @@ Subspace is `not_integrated`; commit
 passing consumer integration. `ai3-inference` is also `not_integrated`.
 Production economics are disabled. No current test turns proof of resident
 capacity into proof that a user inference request was executed.
+
+## Verification-result meaning
+
+`NO_FRAUD` is one challenge verdict. It is not proof of inference execution,
+universal residency, Worker eligibility, capacity, economic entitlement, or
+financial entitlement. A `PorwVerificationResult` is an ephemeral,
+non-credential local diagnostic: consumers must verify authenticated context
+and evidence locally and use the result only in that same in-process control
+flow. A received, stored, or reconstructed result is not evidence.
 
 ## Status and licensing
 

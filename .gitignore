@@ -1,6 +1,7 @@
 .worktrees/
 /target/
 **/.pytest_cache/
+**/__pycache__/
 /gpu/triton/.venv/
 /benchmarks/gpu/generated/
 /benchmarks/evm/generated/

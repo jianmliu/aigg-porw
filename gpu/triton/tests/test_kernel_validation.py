@@ -2,6 +2,7 @@
 
 import ast
 import importlib
+import importlib.util
 import os
 import subprocess
 import sys
@@ -11,9 +12,6 @@ from types import ModuleType
 import numpy as np
 import pytest
 import torch
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 from porw_sketch.reference import moe_align
 from porw_sketch.spec import TILE_BYTES, TILE_WORDS
 from porw_sketch.validation import (
@@ -22,9 +20,9 @@ from porw_sketch.validation import (
     validate_sweep_inputs,
 )
 
-
 KERNELS_PATH = Path(__file__).resolve().parents[1] / "porw_sketch" / "kernels.py"
 CANONICAL_K = TILE_BYTES // 2
+TRITON_AVAILABLE = importlib.util.find_spec("triton") is not None
 
 
 @pytest.fixture
@@ -34,6 +32,8 @@ def kernel_module(monkeypatch):
     existing = sys.modules.get(module_name)
     if existing is not None:
         return existing
+    if TRITON_AVAILABLE:
+        return importlib.import_module(module_name)
 
     fake_language = ModuleType("triton.language")
     fake_language.constexpr = object()
@@ -46,6 +46,12 @@ def kernel_module(monkeypatch):
     module = importlib.import_module(module_name)
     monkeypatch.setitem(sys.modules, module_name, module)
     return module
+
+
+@pytest.mark.skipif(not TRITON_AVAILABLE, reason="Triton is unavailable")
+def test_installed_triton_kernel_module_retains_native_launchers(kernel_module):
+    assert hasattr(kernel_module.moe_gemm_sketch_kernel, "__getitem__")
+    assert hasattr(kernel_module.sketch_sweep_kernel, "__getitem__")
 
 
 def fused_inputs():
@@ -188,9 +194,7 @@ def test_fused_validation_rejects_invalid_runtime_parameters(
     slot_seed, enable_sketch, blocks, error
 ):
     with pytest.raises(error):
-        validate_fused_inputs(
-            *fused_inputs(), slot_seed, enable_sketch, *blocks
-        )
+        validate_fused_inputs(*fused_inputs(), slot_seed, enable_sketch, *blocks)
 
 
 def test_sweep_validation_accepts_canonical_inputs():
@@ -339,6 +343,7 @@ def test_public_runtime_wrappers_contain_no_assert_statements():
 
 def test_validation_remains_active_under_python_optimized_mode():
     package_root = str(KERNELS_PATH.parents[1])
+    canonical_source = str(KERNELS_PATH.parents[3] / "packages/python/src")
     script = """
 import torch
 from porw_sketch.validation import validate_fused_inputs
@@ -352,10 +357,11 @@ except ValueError:
     raise SystemExit(0)
 raise SystemExit(9)
 """
-    env = dict(os.environ, PYTHONPATH=package_root)
-    result = subprocess.run(
-        [sys.executable, "-O", "-c", script], env=env, check=False
+    env = dict(
+        os.environ,
+        PYTHONPATH=os.pathsep.join((canonical_source, package_root)),
     )
+    result = subprocess.run([sys.executable, "-O", "-c", script], env=env, check=False)
     assert result.returncode == 0
 
 
@@ -380,8 +386,7 @@ def test_prepared_moe_launch_reuses_buffers_without_host_work(
     a, b, topk_ids = fused_inputs()
     prepared = kernel_module.prepare_moe_gemm(a, b, topk_ids, 0)
     output_ids = tuple(
-        id(tensor)
-        for tensor in (prepared.c, prepared.partials, prepared.coverage)
+        id(tensor) for tensor in (prepared.c, prepared.partials, prepared.coverage)
     )
     recording = RecordingKernel()
     monkeypatch.setattr(kernel_module, "moe_gemm_sketch_kernel", recording)
@@ -406,8 +411,7 @@ def test_prepared_moe_launch_reuses_buffers_without_host_work(
     assert recording.calls[0][2]["ENABLE_SKETCH"] is False
     assert recording.calls[1][2]["ENABLE_SKETCH"] is True
     assert output_ids == tuple(
-        id(tensor)
-        for tensor in (prepared.c, prepared.partials, prepared.coverage)
+        id(tensor) for tensor in (prepared.c, prepared.partials, prepared.coverage)
     )
 
 
@@ -462,9 +466,7 @@ def test_private_prepared_launchers_have_no_preflight_or_host_copy_calls():
     }
     calls = {
         launcher_name: {
-            node.func.attr
-            if isinstance(node.func, ast.Attribute)
-            else node.func.id
+            node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
             for node in ast.walk(launcher)
             if isinstance(node, ast.Call)
             and isinstance(node.func, (ast.Attribute, ast.Name))

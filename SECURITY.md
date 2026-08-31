@@ -12,6 +12,14 @@ of production readiness. A proof of available resident capacity does not prove
 that a worker executed an inference request, returned the requested model's
 output, or served a user's workload.
 
+`NO_FRAUD` is one challenge verdict. It is not proof of inference execution,
+universal residency, Worker eligibility, capacity, economic entitlement, or
+financial entitlement. `PorwVerificationResult` is an ephemeral,
+non-credential diagnostic, not a receipt, capability, or attestation. A
+consumer must verify authenticated context and proof locally and use the
+returned value only in the same in-process decision; results received from a
+caller, process, network, or storage must be rejected.
+
 ## Mandatory gates before a production-capable release
 
 The following work is required before any release may enable production rewards,

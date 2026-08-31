@@ -4,6 +4,9 @@ set -euo pipefail
 
 PORW_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PORW_REPO_ROOT="$(cd -- "$PORW_SCRIPT_DIR/../.." && pwd -P)"
+PORW_PACKAGE_SRC="$PORW_REPO_ROOT/packages/python/src"
+PORW_TRITON_SRC="$PORW_REPO_ROOT/gpu/triton"
+PORW_IMPORT_PROBE="$PORW_TRITON_SRC/verify_checkout_imports.py"
 PORW_PYTHON_BIN="${PORW_PYTHON:-}"
 PORW_OUTPUT_DIR="$PORW_REPO_ROOT/benchmarks/gpu/generated"
 PORW_OUTPUT_FILE=""
@@ -71,6 +74,19 @@ PORW_GIT_ROOT="$(git -C "$PORW_REPO_ROOT" rev-parse --show-toplevel 2>/dev/null)
   || porw_fail "gpu/triton is not inside an aigg-porw Git checkout"
 [[ "$(cd -- "$PORW_GIT_ROOT" && pwd -P)" == "$PORW_REPO_ROOT" ]] || porw_fail \
   "script path does not resolve to the current aigg-porw checkout root"
+[[ -f "$PORW_PACKAGE_SRC/aigg_porw/__init__.py" ]] || porw_fail \
+  "canonical aigg_porw checkout package is missing: $PORW_PACKAGE_SRC/aigg_porw"
+[[ -d "$PORW_TRITON_SRC/porw_sketch" ]] || porw_fail \
+  "Triton checkout package is missing: $PORW_TRITON_SRC/porw_sketch"
+[[ -f "$PORW_IMPORT_PROBE" && ! -L "$PORW_IMPORT_PROBE" ]] || porw_fail \
+  "isolated checkout import probe is missing or symlinked: $PORW_IMPORT_PROBE"
+
+unset PYTHONPATH PYTHONHOME PYTHONUSERBASE
+export PYTHONNOUSERSITE=1
+cd -- "$PORW_REPO_ROOT"
+
+"$PORW_PYTHON_BIN" -B -I "$PORW_IMPORT_PROBE" "$PORW_REPO_ROOT" \
+  || porw_fail "isolated checkout package import probe failed"
 
 porw_verify_output_dir
 
@@ -85,7 +101,7 @@ command -v nvidia-smi >/dev/null 2>&1 || porw_fail \
 nvidia-smi -L >/dev/null 2>&1 || porw_fail \
   "nvidia-smi cannot see an NVIDIA GPU"
 
-"$PORW_PYTHON_BIN" - <<'PY' || porw_fail \
+"$PORW_PYTHON_BIN" -B -I - <<'PY' || porw_fail \
   "PORW_PYTHON does not match the pinned native-GPU test environment"
 import sys
 
@@ -141,7 +157,7 @@ export TRITON_CACHE_DIR="$PORW_TRITON_CACHE"
 
   echo
   echo "=== software ==="
-  "$PORW_PYTHON_BIN" - <<'PY'
+  "$PORW_PYTHON_BIN" -B -I - <<'PY'
 import platform
 import sys
 
@@ -176,7 +192,7 @@ PY
 
   echo
   echo "=== correctness (native GPU backend) ==="
-  if "$PORW_PYTHON_BIN" -m pytest \
+  if "$PORW_PYTHON_BIN" -B -I -m pytest \
     "$PORW_SCRIPT_DIR/tests" -q -p no:cacheprovider; then
     echo "correctness_result: passed"
   else
@@ -186,7 +202,8 @@ PY
 
   echo
   echo "=== benchmark output ==="
-  "$PORW_PYTHON_BIN" "$PORW_SCRIPT_DIR/bench_gpu.py"
+  "$PORW_PYTHON_BIN" -B -I "$PORW_IMPORT_PROBE" "$PORW_REPO_ROOT" \
+    --run "$PORW_SCRIPT_DIR/bench_gpu.py"
 } 2>&1 | tee "$PORW_OUTPUT_FILE"
 
 echo "wrote $PORW_OUTPUT_FILE"
