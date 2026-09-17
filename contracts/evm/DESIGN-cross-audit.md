@@ -313,7 +313,9 @@ the real connectome, so a second execution kind is implemented end to end
   The BNB deployment is its own repository, staged in `proposals/aigg-bnb/` (design,
   commit-reveal `IBeacon` for PoSA chains, Greenfield pointer + verified fetch,
   deployment script, `split.sh` to cut the standalone repo); `PoRWClaimManager` takes an
-  `IBeacon` so nothing chain-specific lives here.
+  `IBeacon` so nothing chain-specific lives here. The standalone repo (`jianmliu/aigg-bnb`) is
+  deployed on BSC testnet with the real FlyWire brain published on Greenfield testnet and its
+  MEP registered (see that repo's README for the record).
 
 ## 7. Measured inputs to the design (browser, 4-core, no GPU)
 
