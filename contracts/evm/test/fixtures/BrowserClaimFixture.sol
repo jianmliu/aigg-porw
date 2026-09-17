@@ -6,6 +6,6 @@ library BrowserClaimFixture {
     bytes32 constant EXEC_KIND = 0xddaf2a689a2584c585650d196bb1e58103b5b610cf8b087c1cc2ca3c67afb6fc; uint32 constant STEPS = 2; uint32 constant CLAMP_Q16 = 65536;
     bytes32 constant PARTIALS_ROOT = 0x2d215117f2bfdb48020c1eba8d1d726edf05ba201dbbbb365fcd5afafdbecebe; uint64 constant COVERAGE_BYTES = 434176; bytes32 constant CHALLENGE = 0x14e56b93716199c063471b642fd434c575b4525db3702e419718452cc046b1a1;
     bytes32 constant DEVICE_ID = 0x8dd832049319556c1cd22ed66ae790d07fea25830a6151c2f0a9879b3ef61305; bytes32 constant EXEC_DIGEST = 0xd6ee81311837ea63a73424ce66d9d165665bc7e7d8a70f35c9d84f337e1fac05; uint32 constant STIMULUS_SEED = 5;
-    bytes32 constant CLAIM_HASH = 0xe26306625483cb49eb403b5a60e8624e4b293a8e8eba885420af5f5c0155690b; address constant SIGNER = 0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a;
+    bytes32 constant CLAIM_HASH = 0xe26306625483cb49eb403b5a60e8624e4b293a8e8eba885420af5f5c0155690b; address constant SIGNER = 0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A;
     function signature() internal pure returns (bytes memory) { return hex"7c552b11ceb1d2a3dfff11370ee4ad96ff108486d4a6d18dc8075354eab6574a79cfc3aa75284935196f1f2fc4aebada39fd964205adaea1e3c032ca8dd57cd11b"; }
 }

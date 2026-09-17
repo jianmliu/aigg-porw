@@ -85,6 +85,12 @@ writeSolidity(F, out.replace(/\.json$/, ""));
 console.log(`fixtures -> ${out} (+ MeshFixtures.sol, BrowserClaimFixture.sol): ${n} neurons, ${A.st.nTiles} tiles, s*=${sStar}, neuron ${neuron}, in-degree ${len}, k*=${kStar}, ${pairsA.length} bisection rounds`);
 
 // ---- Solidity fixture generation (typed constants; keeps foundry.toml free of fs permissions) ----
+// EIP-55 checksummed address literal (Solidity rejects non-checksummed 40-hex literals)
+function checksum(addrHex) {
+  const low = addrHex.slice(2).toLowerCase();
+  const h = Array.from(keccak_256(new TextEncoder().encode(low)), (b) => b.toString(16).padStart(2, "0")).join("");
+  return "0x" + Array.from(low, (c, i) => (parseInt(h[i], 16) >= 8 ? c.toUpperCase() : c)).join("");
+}
 function writeSolidity(F, base) {
   const dir = base.slice(0, base.lastIndexOf("/") + 1);
   const b32 = (v) => v; const num = (v) => String(v);
@@ -93,13 +99,13 @@ function writeSolidity(F, base) {
   const bytesFn = (name, hexv) => `    function ${name}() internal pure returns (bytes memory) { return hex"${hexv.slice(2)}"; }\n`;
   const claimFn = (name, c) => `    function ${name}() internal pure returns (IPoRWClaimManager.Claim memory c, bytes memory sig, address signer) {
         c = IPoRWClaimManager.Claim({ mepId: ${c.mepId}, partialsRoot: ${c.partialsRoot}, coverageBytes: ${c.coverageBytes}, challenge: ${c.challenge}, deviceId: ${c.deviceId}, execDigest: ${c.execDigest}, stimulusSeed: ${c.stimulusSeed} });
-        sig = hex"${c.signature.slice(2)}"; signer = ${c.signer};
+        sig = hex"${c.signature.slice(2)}"; signer = ${checksum(c.signer)};
     }\n`;
   const openingFn = (name, o) => `    function ${name}() internal pure returns (IPoRWClaimManager.Opening memory o) {
         o = IPoRWClaimManager.Opening({ tileIdx: ${o.tileIdx}, tile: ${name}Tile(), sTile: ${o.sTile}, partialsIndex: ${o.partialsIndex}, partialsProof: ${name}PP(), weightsProof: ${name}WP() });
     }\n` + bytesFn(name + "Tile", o.tile) + arr32(name + "PP", o.partialsProof) + arr32(name + "WP", o.weightsProof);
   const resultFn = (name, r) => `    function ${name}() internal pure returns (ITaskMarket.Result memory r, bytes memory sig, address signer) {
-        r = ITaskMarket.Result({ execDigest: ${r.execDigest}, execRoot: ${r.execRoot} }); sig = hex"${r.signature.slice(2)}"; signer = ${r.signer};
+        r = ITaskMarket.Result({ execDigest: ${r.execDigest}, execRoot: ${r.execRoot} }); sig = hex"${r.signature.slice(2)}"; signer = ${checksum(r.signer)};
     }\n`;
   const P = F.params, M = F.mep, D = F.dispute;
   let sol = `// SPDX-License-Identifier: 0BSD
@@ -113,7 +119,7 @@ library MeshFixtures {
     bytes32 constant MEP_ID = ${M.mepId}; bytes32 constant MODEL_ID = ${M.modelId}; bytes32 constant SCHEME_DIGEST = ${M.schemeDigest}; bytes32 constant EXEC_KIND = ${M.execKind};
     uint32 constant STEPS = ${M.steps}; uint32 constant CLAMP_Q16 = ${M.clampQ16}; uint32 constant NEURONS = ${M.neurons}; uint32 constant SYNAPSES = ${M.synapses};
     bytes32 constant SYNAPSE_ROOT = ${M.synapseRoot}; bytes32 constant CSR_ROOT = ${M.csrRoot}; bytes32 constant ROW_ROOT = ${M.rowRoot}; uint64 constant N_TILES = ${M.nTiles};
-    address constant A = ${F.instances.A}; address constant B = ${F.instances.B}; address constant L = ${F.instances.L};
+    address constant A = ${checksum(F.instances.A)}; address constant B = ${checksum(F.instances.B)}; address constant L = ${checksum(F.instances.L)};
     uint32 constant S_STAR = ${D.sStar}; uint32 constant ROUNDS = ${D.rounds}; uint32 constant NEURON = ${D.neuron}; uint32 constant ACT_A = ${D.actA}; uint32 constant ACT_B = ${D.actB}; uint32 constant K_STAR = ${D.kStar};
     uint32 constant ROW_START = ${D.rowStart.value}; uint32 constant ROW_END = ${D.rowEnd.value}; uint32 constant CHUNK_C = ${D.chunk.c}; uint32 constant ACT_PRE = ${D.actPre};
 `;
@@ -135,7 +141,7 @@ library BrowserClaimFixture {
     bytes32 constant EXEC_KIND = ${M.execKind}; uint32 constant STEPS = ${M.steps}; uint32 constant CLAMP_Q16 = ${M.clampQ16};
     bytes32 constant PARTIALS_ROOT = ${c.partialsRoot}; uint64 constant COVERAGE_BYTES = ${c.coverageBytes}; bytes32 constant CHALLENGE = ${c.challenge};
     bytes32 constant DEVICE_ID = ${c.deviceId}; bytes32 constant EXEC_DIGEST = ${c.execDigest}; uint32 constant STIMULUS_SEED = ${c.stimulusSeed};
-    bytes32 constant CLAIM_HASH = ${F.claimHashA}; address constant SIGNER = ${c.signer};
+    bytes32 constant CLAIM_HASH = ${F.claimHashA}; address constant SIGNER = ${checksum(c.signer)};
     function signature() internal pure returns (bytes memory) { return hex"${c.signature.slice(2)}"; }
 }
 `);
