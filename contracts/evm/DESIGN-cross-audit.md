@@ -225,11 +225,24 @@ the real connectome, so a second execution kind is implemented end to end
 - **Dispute**: segment → step (refinement) → neuron (state-tree bisection) → **row
   check** `state_s[i] == transition(state_{s-1}[i], lastPartialSum, i, s, seed)` →
   **single term** `w_k · spiked_{s-1}[pre_k]` with signed partial sums; the previous
-  state openings verify against the agreed previous-step root. `LifRowCheck.sol`
-  implements `transition` and the state leaf for the contract; wiring it into
-  `ExecutionDisputes` (exec-kind dispatch on `MEP.execKind`, signed sums, state leaves,
-  the segment-refinement phase, `initStateRoot` from `Task.inputCommit`) is the
-  remaining contract work — the JS adjudicator (`adjudicateLif`) is the reference.
+  state openings verify against the agreed previous-step root.
+- **On-chain dispatch (implemented, `test/MeshLif.t.sol` on fixtures from real node runs
+  via `export_lif_fixtures.mjs`)**: `ExecutionDisputes.openDispute` reads `MEP.execKind`;
+  for the LIF kind it takes `stride = MEP.clampQ16`, `segments = ⌈steps/stride⌉` and
+  `initStateRoot = Task.inputCommit`. Phases: `Step` (segment roots bound to `execRoot`)
+  → **`Refine`** (`postStepRoots`: the per-step roots of the first differing segment;
+  the chain must end at the party's committed segment root, the previous segment root
+  or `initStateRoot` is agreed; a chain of the wrong length or end is rejected as
+  `unbound chain`) → `Neuron` (unchanged `postChildren` over state trees) → `Synapse`
+  (`postRowLif`: claimed state bound to the leaf via `LifRowCheck.stateLeaf`, signed
+  `int64` sums) → `proveSynapseTermLif`: the neuron's own previous state opened against
+  the agreed root (row check = `LifRowCheck.transition`), then the first divergent
+  position, the CSR chunk (record weight read as `int16`), the input neuron's previous
+  state (its spike flag) and `term = w · spiked`. The SpMV functions revert with
+  `phase` in LIF mode and vice versa; `timeout` covers the Refine phase. Measured gas:
+  `postStepRoots` 275k (10 roots), `postChildren` 75k, `postRowLif` 109k (in-degree
+  34), `proveSynapseTermLif` 183k. Tests: input-sum liar caught at the signed term,
+  state liar caught by the row check, borrowed/short chains rejected, Refine timeout.
 
 ## 6. Economics (deployment choices, token-neutral)
 

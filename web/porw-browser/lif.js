@@ -20,6 +20,7 @@ export const canonicalStim = (i, seed) => (fmix32((Math.imul(i, GOLDEN32) + seed
 /** state = { v, g, refr, flags, count } (v, g signed 32-bit numbers) */
 export const stateLeaf = (i, s) => keccak_256(cat(le32(i), le32(s.v | 0), le32(s.g | 0), le16(s.refr), le16(s.flags), le32(s.count)));
 export const decodeState = (bytes, off = 0) => { const dv = new DataView(bytes.buffer, bytes.byteOffset + off, 16); return { v: dv.getInt32(0, true), g: dv.getInt32(4, true), refr: dv.getUint16(8, true), flags: dv.getUint16(10, true), count: dv.getUint32(12, true) }; };
+export const encodeState = (s) => { const b = new Uint8Array(16); const dv = new DataView(b.buffer); dv.setInt32(0, s.v, true); dv.setInt32(4, s.g, true); dv.setUint16(8, s.refr, true); dv.setUint16(10, s.flags, true); dv.setUint32(12, s.count, true); return b; };
 export const spiked = (s) => (s.flags & 2) ? 1 : 0;
 const I32_MAX = 2147483647n, I32_MIN = -2147483648n;
 

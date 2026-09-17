@@ -7,7 +7,7 @@ import { keccak_256 } from "@noble/hashes/sha3.js";
 import { claimHash, signHash, keypair } from "./claim.js";
 import { makeMep } from "./mep.js";
 import { hex, CSR_CHUNK } from "./verify.js";
-import { lifExecKind, countsDigest, decodeState } from "./lif.js";
+import { lifExecKind, countsDigest, decodeState, encodeState, transition } from "./lif.js";
 const LIF_STATE = 16, LIF_CHECKPOINT = 32;
 
 export class PorwNode {
@@ -153,7 +153,16 @@ export class PorwNode {
     if (this.pool && st.csr.sorted) await this.pool.map("porw_lif_step_rows_direct", n, (i0, c) => [syn, st.csr.rowStartPtr, from, to, n, i0, i0 + c, step, seed]);
     else if (this.pool) await this.pool.map("porw_lif_step_csr_range", n, (i0, c) => [syn, st.csr.permPtr, st.csr.rowStartPtr, from, to, n, i0, i0 + c, step, seed]);
     else { rc = e.porw_lif_step(syn, st.hdr.synapses >>> 0, from, to, st.slot.lif.acc, n >>> 0, step >>> 0, seed >>> 0); if (rc !== 0) throw new Error("lif rc=" + rc); }
-    if (this.execLie && this.execLie.step === step) { const b = k.u8(to + this.execLie.neuron * LIF_STATE, LIF_STATE); const dv = new DataView(b.buffer, b.byteOffset, LIF_STATE); dv.setInt32(0, dv.getInt32(0, true) + this.execLie.delta, true); } // test hook: a lying executor
+    if (this.execLie && this.execLie.step === step) { // test hooks: a lying executor
+      const L = this.execLie, i = L.neuron;
+      if (L.kind === "input") { // lie in the accumulated input: state = transition(prev, I + delta) — consistent with lied partial sums
+        const R = k.u32(st.csr.rowStartPtr, n + 1); const m = k.mark(); const out = k.alloc(Math.max(1, R[i + 1] - R[i]) * 8);
+        if (e.porw_lif_partial_sums(syn, st.csr.permPtr, from, n >>> 0, R[i], R[i + 1], out) !== 0) throw new Error("sums"); const sums = new BigInt64Array(k.memory.buffer, out, R[i + 1] - R[i]);
+        const I = sums.length ? sums[sums.length - 1] : 0n; k.release(m);
+        const next = transition(decodeState(k.u8(from + i * LIF_STATE, LIF_STATE)), I + BigInt(L.delta), i, step, seed);
+        k.u8(to + i * LIF_STATE, LIF_STATE).set(encodeState(next));
+      } else { const b = k.u8(to + i * LIF_STATE, LIF_STATE); const dv = new DataView(b.buffer, b.byteOffset, LIF_STATE); dv.setInt32(0, dv.getInt32(0, true) + L.delta, true); } // lie in the state itself
+    }
   }
   async lifCommit(st, statePtr) {
     const k = this.k, e = k.exports, n = st.hdr.neurons, L = st.slot.lif;

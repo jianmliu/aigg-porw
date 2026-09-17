@@ -5,6 +5,7 @@ import "../interfaces/PorwMesh.sol";
 import "../PorwVerifierKeccak.sol";
 import "./InstanceRegistry.sol";
 import "./TaskMarket.sol";
+import "./LifRowCheck.sol";
 
 /// @notice Interactive execution fraud proof between two executors of the same task:
 ///   Step   : both reveal actRoots (bound to their execRoot); first differing step s*.
@@ -17,6 +18,12 @@ import "./TaskMarket.sol";
 ///            k* (csrRoot), and the input activation act_{s*-1}[pre] (agreed root, or the stimulus rule);
 ///            the contract recomputes w*act and the party whose sums don't add up loses.
 ///   Timeouts: a party that doesn't post within ROUND_BLOCKS loses.
+/// Execution kinds are dispatched on MEP.execKind at open time:
+///   int-spmv-q16 : per-step activation roots; row = min(sum >> 16, clamp); u64 sums.
+///   int-lif      : segment state roots every `stride` = MEP.clampQ16 steps -> Refine phase (per-step roots of
+///                  the first differing segment, bound to the committed segment root) -> state-tree bisection ->
+///                  row = LifRowCheck.transition(state_{s-1}[i], last signed sum) -> term = w(int16) * spiked(pre).
+///                  The agreed root before step 1 is the task's inputCommit (initStateRoot).
 contract ExecutionDisputes is IExecutionDisputes {
     uint64 public immutable ROUND_BLOCKS;
     uint256 public immutable SLASH_AMOUNT;
@@ -32,7 +39,11 @@ contract ExecutionDisputes is IExecutionDisputes {
         Phase phase; uint32 step; bytes32 prevRoot; uint32 level; uint32 idx; uint32 neuron;
         uint64 deadline; bool exists; address loser;
     }
+    struct LifDispute { bool lif; uint32 stride; uint32 segments; uint32 seg; bytes32 initStateRoot; }
+    struct LifParty { bytes32[] stepRoots; bool refined; LifRowCheck.State state; int64[] sums; bool rowPosted; }
     mapping(bytes32 => Dispute) public disputes;
+    mapping(bytes32 => LifDispute) public lifs;
+    mapping(bytes32 => mapping(address => LifParty)) internal lifParties;
     mapping(bytes32 => mapping(address => Party)) internal parties;
     mapping(bytes32 => address) public partyA;
     mapping(bytes32 => address) public partyB;
@@ -48,6 +59,11 @@ contract ExecutionDisputes is IExecutionDisputes {
         Dispute storage d = disputes[taskId];
         d.mepId = mepId; d.neurons = m.neurons; d.synapses = m.synapses; d.steps = m.steps; d.stimulusSeed = seed; d.synapseRoot = m.synapseRoot;
         d.phase = Phase.Step; d.exists = true; d.deadline = uint64(block.number) + ROUND_BLOCKS;
+        if (m.execKind == LifRowCheck.execKind()) {
+            require(m.clampQ16 >= 1, "stride");
+            LifDispute storage ld = lifs[taskId];
+            ld.lif = true; ld.stride = m.clampQ16; ld.segments = (m.steps + m.clampQ16 - 1) / m.clampQ16; ld.initStateRoot = market.taskInput(taskId);
+        }
         partyA[taskId] = a; partyB[taskId] = b;
         (, parties[taskId][a].execRoot) = market.resultOf(taskId, a);
         (, parties[taskId][b].execRoot) = market.resultOf(taskId, b);
@@ -63,16 +79,41 @@ contract ExecutionDisputes is IExecutionDisputes {
     function revealRoots(bytes32 taskId, bytes32[] calldata actRoots) external {
         Dispute storage d = disputes[taskId]; require(d.exists && d.phase == Phase.Step, "phase");
         Party storage p = _party(taskId); require(!p.revealed, "revealed");
-        require(actRoots.length == d.steps && _rootOf(actRoots) == p.execRoot, "execRoot");
+        LifDispute storage ld = lifs[taskId];
+        uint32 count = ld.lif ? ld.segments : d.steps;
+        require(actRoots.length == count && _rootOf(actRoots) == p.execRoot, "execRoot");
         p.actRoots = actRoots; p.revealed = true;
         Party storage q = parties[taskId][_other(taskId, msg.sender)];
         if (!q.revealed) return;
-        uint32 s = 0; while (s < d.steps && p.actRoots[s] == q.actRoots[s]) s++;
-        require(s < d.steps, "no divergence"); // identical roots cannot yield different execRoots
+        uint32 s = 0; while (s < count && p.actRoots[s] == q.actRoots[s]) s++;
+        require(s < count, "no divergence"); // identical roots cannot yield different execRoots
+        if (ld.lif) { // first differing SEGMENT: refine to steps first
+            ld.seg = s; d.prevRoot = s == 0 ? ld.initStateRoot : p.actRoots[s - 1];
+            d.phase = Phase.Refine; d.deadline = uint64(block.number) + ROUND_BLOCKS;
+            emit DisputeRound(taskId, Phase.Refine, s, 0); return;
+        }
         d.step = s + 1; d.prevRoot = s == 0 ? bytes32(0) : p.actRoots[s - 1];
-        p.node = p.actRoots[s]; q.node = q.actRoots[s];
+        _startNeuron(taskId, d, p, q, p.actRoots[s], q.actRoots[s]);
+    }
+    function _startNeuron(bytes32 taskId, Dispute storage d, Party storage p, Party storage q, bytes32 nodeP, bytes32 nodeQ) internal {
+        p.node = nodeP; q.node = nodeQ;
         d.level = _levels(d.neurons) - 1; d.idx = 0; d.phase = Phase.Neuron; d.deadline = uint64(block.number) + ROUND_BLOCKS;
         emit DisputeRound(taskId, Phase.Neuron, d.level, 0);
+    }
+
+    // ---- Refine phase (int-lif): per-step roots inside the first differing segment ----
+    function postStepRoots(bytes32 taskId, bytes32[] calldata roots) external {
+        Dispute storage d = disputes[taskId]; LifDispute storage ld = lifs[taskId]; require(d.exists && d.phase == Phase.Refine, "phase");
+        Party storage p = _party(taskId); LifParty storage lp = lifParties[taskId][msg.sender]; require(!lp.refined, "refined");
+        uint32 s0 = ld.seg * ld.stride; uint32 len = d.steps - s0 < ld.stride ? d.steps - s0 : ld.stride;
+        require(roots.length == len && roots[len - 1] == p.actRoots[ld.seg], "unbound chain"); // must end at the committed segment root
+        lp.stepRoots = roots; lp.refined = true;
+        address o = _other(taskId, msg.sender); LifParty storage lq = lifParties[taskId][o];
+        if (!lq.refined) return;
+        uint32 j = 0; while (j < len && lp.stepRoots[j] == lq.stepRoots[j]) j++;
+        require(j < len, "no divergence"); // the chains end at different segment roots, so they differ somewhere
+        d.step = s0 + j + 1; if (j > 0) d.prevRoot = lp.stepRoots[j - 1]; // else: the agreed previous segment root already in d.prevRoot
+        _startNeuron(taskId, d, p, parties[taskId][o], lp.stepRoots[j], lq.stepRoots[j]);
     }
 
     // ---- Neuron phase: each party posts the children of its current node ----
@@ -96,16 +137,68 @@ contract ExecutionDisputes is IExecutionDisputes {
 
     // ---- Row phase (inside Phase.Synapse): claimed activation bound to the leaf + partial sums ----
     function postRow(bytes32 taskId, uint32 claimedAct, uint64[] calldata sums) external {
-        Dispute storage d = disputes[taskId]; require(d.exists && d.phase == Phase.Synapse, "phase");
+        Dispute storage d = disputes[taskId]; require(d.exists && d.phase == Phase.Synapse && !lifs[taskId].lif, "phase");
         Party storage p = _party(taskId); require(!p.rowPosted, "posted");
         require(keccak256(bytes.concat(_le32(d.neuron), _le32(claimedAct))) == p.leaf, "leaf");
         require(sums.length <= MAX_IN_DEGREE, "in-degree");
         p.act = claimedAct; p.sums = sums; p.rowPosted = true; d.deadline = uint64(block.number) + ROUND_BLOCKS;
     }
 
+    // ---- Row phase (int-lif): claimed state bound to the leaf + signed partial sums ----
+    function postRowLif(bytes32 taskId, int32 v, int32 g, uint16 refr, uint16 flags, uint32 count, int64[] calldata sums) external {
+        Dispute storage d = disputes[taskId]; require(d.exists && d.phase == Phase.Synapse && lifs[taskId].lif, "phase");
+        Party storage p = _party(taskId); LifParty storage lp = lifParties[taskId][msg.sender]; require(!lp.rowPosted, "posted");
+        LifRowCheck.State memory st = LifRowCheck.State(v, g, refr, flags, count);
+        require(LifRowCheck.stateLeaf(d.neuron, st) == p.leaf, "leaf");
+        require(sums.length <= MAX_IN_DEGREE, "in-degree");
+        lp.state = st; lp.sums = sums; lp.rowPosted = true; d.deadline = uint64(block.number) + ROUND_BLOCKS;
+    }
+
+    /// @notice final adjudication (int-lif) once both rows are posted; anyone may call with the openings
+    function proveSynapseTermLif(bytes32 taskId, LifTermProof calldata pf) external {
+        Dispute storage d = disputes[taskId]; require(d.exists && d.phase == Phase.Synapse && lifs[taskId].lif, "phase");
+        LifParty storage a = lifParties[taskId][partyA[taskId]]; LifParty storage b = lifParties[taskId][partyB[taskId]];
+        require(a.rowPosted && b.rowPosted, "rows");
+        require(keccak256(bytes.concat(pf.csrRoot, pf.rowRoot)) == d.synapseRoot, "synapseRoot");
+        uint32 n = d.neurons;
+        require(_verify(pf.rowRoot, _leaf32(d.neuron, pf.bounds.start), d.neuron, n + 1, pf.bounds.startProof) && _verify(pf.rowRoot, _leaf32(d.neuron + 1, pf.bounds.end), d.neuron + 1, n + 1, pf.bounds.endProof), "row bounds");
+        // the neuron's own previous state, against the agreed previous-step root
+        LifRowCheck.State memory prev = _state(pf.self);
+        require(_verify(d.prevRoot, LifRowCheck.stateLeaf(d.neuron, prev), d.neuron, n, pf.self.proof), "prev state");
+        uint32 len = pf.bounds.end - pf.bounds.start;
+        bool lenA = a.sums.length == len; bool lenB = b.sums.length == len;
+        if (lenA != lenB) return _resolve(taskId, lenA ? partyB[taskId] : partyA[taskId], "row length");
+        require(lenA, "both wrong length");
+        bool rowA = _rowOkLif(a, prev, len, d); bool rowB = _rowOkLif(b, prev, len, d);
+        if (rowA != rowB) return _resolve(taskId, rowA ? partyB[taskId] : partyA[taskId], "row check");
+        require(rowA, "both rows inconsistent");
+        require(pf.kStar >= pf.bounds.start && pf.kStar < pf.bounds.end, "k range");
+        uint32 j = pf.kStar - pf.bounds.start;
+        require(a.sums[j] != b.sums[j] && (j == 0 || a.sums[j - 1] == b.sums[j - 1]), "not first divergence");
+        uint32 nChunks = (d.synapses + CSR_CHUNK - 1) / CSR_CHUNK;
+        require(pf.chunk.c == pf.kStar / CSR_CHUNK && _verify(pf.csrRoot, keccak256(bytes.concat(_le32(pf.chunk.c), pf.chunk.records)), pf.chunk.c, nChunks, pf.chunk.proof), "chunk");
+        uint32 off = (pf.kStar - pf.chunk.c * CSR_CHUNK) * 10;
+        require(pf.chunk.records.length >= off + 10, "record");
+        (uint32 pre, uint32 post, uint16 wu) = _record(pf.chunk.records, off);
+        require(post == d.neuron, "record post");
+        // the input neuron's previous state (did it spike at s-1?), against the same agreed root
+        LifRowCheck.State memory preState = _state(pf.pre);
+        require(_verify(d.prevRoot, LifRowCheck.stateLeaf(pre, preState), pre, n, pf.pre.proof), "pre state");
+        int64 term = int64(int16(wu)) * LifRowCheck.spiked(preState);
+        bool okA = a.sums[j] == (j == 0 ? int64(0) : a.sums[j - 1]) + term;
+        bool okB = b.sums[j] == (j == 0 ? int64(0) : b.sums[j - 1]) + term;
+        require(okA != okB, "no single loser");
+        _resolve(taskId, okA ? partyB[taskId] : partyA[taskId], "term");
+    }
+    function _state(StateOpening calldata o) internal pure returns (LifRowCheck.State memory) { return LifRowCheck.State(o.v, o.g, o.refr, o.flags, o.count); }
+    function _rowOkLif(LifParty storage p, LifRowCheck.State memory prev, uint32 len, Dispute storage d) internal view returns (bool) {
+        int64 I = len == 0 ? int64(0) : p.sums[len - 1];
+        return LifRowCheck.same(LifRowCheck.transition(prev, I, d.neuron, d.step, d.stimulusSeed), p.state);
+    }
+
     /// @notice final adjudication once both rows are posted (anyone may call with the openings)
     function proveSynapseTerm(bytes32 taskId, uint32 kStar, bytes32 csrRoot, bytes32 rowRoot, RowBounds calldata bounds, ChunkOpening calldata chunk, uint32 actPre, bytes32[] calldata actProof) external {
-        Dispute storage d = disputes[taskId]; require(d.exists && d.phase == Phase.Synapse, "phase");
+        Dispute storage d = disputes[taskId]; require(d.exists && d.phase == Phase.Synapse && !lifs[taskId].lif, "phase");
         Party storage a = parties[taskId][partyA[taskId]]; Party storage b = parties[taskId][partyB[taskId]];
         require(a.rowPosted && b.rowPosted, "rows");
         require(keccak256(bytes.concat(csrRoot, rowRoot)) == d.synapseRoot, "synapseRoot");
@@ -143,7 +236,9 @@ contract ExecutionDisputes is IExecutionDisputes {
         Party storage a = parties[taskId][partyA[taskId]]; Party storage b = parties[taskId][partyB[taskId]];
         bool aDone; bool bDone;
         if (d.phase == Phase.Step) { aDone = a.revealed; bDone = b.revealed; }
+        else if (d.phase == Phase.Refine) { aDone = lifParties[taskId][partyA[taskId]].refined; bDone = lifParties[taskId][partyB[taskId]].refined; }
         else if (d.phase == Phase.Neuron) { aDone = a.posted; bDone = b.posted; }
+        else if (lifs[taskId].lif) { aDone = lifParties[taskId][partyA[taskId]].rowPosted; bDone = lifParties[taskId][partyB[taskId]].rowPosted; }
         else { aDone = a.rowPosted; bDone = b.rowPosted; }
         require(aDone != bDone, "both or neither"); // both silent: the dispute simply stalls (no evidence either way)
         _resolve(taskId, aDone ? partyB[taskId] : partyA[taskId], "timeout");

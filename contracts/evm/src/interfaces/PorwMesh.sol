@@ -108,8 +108,10 @@ interface ITaskMarket {
 }
 
 interface IExecutionDisputes {
-    /// @dev interactive bisection: step -> neuron -> synapse -> one u64 term recomputed on-chain
-    enum Phase { Step, Neuron, Synapse, Resolved }
+    /// @dev interactive bisection: step -> neuron -> synapse -> one term recomputed on-chain.
+    ///      `Refine` exists only for execution kinds that commit segment roots (int-lif): the parties
+    ///      post the per-step roots of the first differing segment before the neuron bisection.
+    enum Phase { Step, Refine, Neuron, Synapse, Resolved }
     event DisputeRound(bytes32 indexed taskId, Phase phase, uint256 lo, uint256 hi);
     event DisputeResolved(bytes32 indexed taskId, address loser, address winner);
     function open(bytes32 taskId, address a, address b) external payable;
@@ -127,4 +129,17 @@ interface IExecutionDisputes {
     ///         exactly one party's sums fail (row length, row check, or the term) and it loses.
     function proveSynapseTerm(bytes32 taskId, uint32 kStar, bytes32 csrRoot, bytes32 rowRoot, RowBounds calldata bounds, ChunkOpening calldata chunk, uint32 actPre, bytes32[] calldata actProof) external;
     function timeout(bytes32 taskId) external;
+
+    // ---- `aigg:exec:int-lif:v1` (segment roots every `stride` = MEP.clampQ16 steps; state leaves) ----
+    /// @dev a neuron's state opened against a state root (LifRowCheck.stateLeaf)
+    struct StateOpening { int32 v; int32 g; uint16 refr; uint16 flags; uint32 count; bytes32[] proof; }
+    struct LifTermProof { uint32 kStar; bytes32 csrRoot; bytes32 rowRoot; RowBounds bounds; ChunkOpening chunk; StateOpening self; StateOpening pre; }
+    /// @notice Refine phase: the per-step state roots of the first differing segment; the last must equal the
+    ///         party's committed segment root (binding) — the previous segment root (or initStateRoot) is agreed
+    function postStepRoots(bytes32 taskId, bytes32[] calldata roots) external;
+    /// @notice Row phase (LIF): claimed state (bound to the party's leaf) + CSR-ordered SIGNED partial sums
+    function postRowLif(bytes32 taskId, int32 v, int32 g, uint16 refr, uint16 flags, uint32 count, int64[] calldata sums) external;
+    /// @notice Final term (LIF): `self` opens state_{s-1}[i*] against the agreed previous root (row check =
+    ///         LifRowCheck.transition), `pre` opens state_{s-1}[pre] for the term w * spiked(pre)
+    function proveSynapseTermLif(bytes32 taskId, LifTermProof calldata pf) external;
 }

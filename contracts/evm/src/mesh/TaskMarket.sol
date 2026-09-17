@@ -60,6 +60,8 @@ contract TaskMarket is ITaskMarket {
     function resultHash(bytes32 taskId, bytes32 execDigest, bytes32 execRoot) public pure returns (bytes32) { return keccak256(abi.encodePacked("porw-result", taskId, execDigest, execRoot)); }
     function resultOf(bytes32 taskId, address who) external view returns (bytes32 execDigest, bytes32 execRoot) { Result storage r = results[taskId][who]; return (r.execDigest, r.execRoot); }
     function taskInfo(bytes32 taskId) external view returns (bytes32 mepId, uint32 stimulusSeed, address client) { StoredTask storage st = tasks[taskId]; return (st.t.mepId, st.t.stimulusSeed, st.client); }
+    /// @notice the task's input commitment (int-lif: initStateRoot over state_0 derived from the stimulus set)
+    function taskInput(bytes32 taskId) external view returns (bytes32) { return tasks[taskId].t.inputCommit; }
 
     function submitResult(bytes32 taskId, Result calldata r, bytes calldata signature) external {
         StoredTask storage st = tasks[taskId];

@@ -28,6 +28,7 @@ aigg-spec conformance vectors, and the claim is verified on-chain.
 | `node_page.html` + `run_node_browser.mjs` | the full node loop in headless Chromium (optionally with the pool) and this process as the verifier |
 | `synth.js` | JS payload synthesizers (v1 as the Python demo; v2 with signed counts for the LIF tests) |
 | `bench_lif_node.mjs` / `model_id.mjs` | full-brain LIF measurement (single thread, pool, research mode); model / MEP ids of a payload file |
+| `export_fixtures.mjs` / `export_lif_fixtures.mjs` | typed Solidity fixtures for the on-chain tests from real node runs (SpMV mesh; LIF mesh with a state liar and an input-sum liar) |
 | `test_*.mjs`, `crosscheck.py`, `int_spmv.py` | tests and Python cross-checks |
 | `../../contracts/evm/test/BrowserClaim.t.sol` | the node's claim verified **on-chain** (`mep_id`, claim hash, `ecrecover`) |
 
@@ -129,7 +130,8 @@ The settlement design that consumes these artifacts is
   Poisson, floor shifts (a neuron can rest at −1 LSB), no synaptic delays. Results
   are reproducible and disputable, not a biological calibration; calibrating against
   the published model is research work on top of this substrate.
-- **Not yet**: `ExecutionDisputes` dispatch for the LIF kind (`LifRowCheck.sol` is
-  the rule; the JS `adjudicateLif` + `refineSegment` are the reference); gossip
-  transport (libp2p/WebRTC); wallet (EIP-712) signing; a deployment script and a
-  live-chain run.
+- **On-chain LIF dispute**: `ExecutionDisputes` dispatches on the MEP's exec kind
+  (Refine phase for segment roots, `postRowLif`, `proveSynapseTermLif`), tested end to
+  end on artifacts from this node (`export_lif_fixtures.mjs` → `test/MeshLif.t.sol`).
+- **Not yet**: gossip transport (libp2p/WebRTC); wallet (EIP-712) signing; a
+  deployment script and a live-chain run.
