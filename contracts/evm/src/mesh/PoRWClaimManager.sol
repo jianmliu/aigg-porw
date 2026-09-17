@@ -5,13 +5,14 @@ import "../interfaces/PorwMesh.sol";
 import "../PorwVerifierKeccak.sol";
 import "./InstanceRegistry.sol";
 import "./PorwEIP712.sol";
+import "../interfaces/IBeacon.sol";
 
 /// @notice Per-epoch residency claims for browser instances, with on-chain opening challenges
 ///         adjudicated by the keccak-scheme tile fraud proof. The honest path is off-chain
 ///         (beacon-selected auditors sample openings directly); a challenge escalates only on
 ///         a failed check. Epoch challenge = keccak(beacon[epoch] || mepId); the beacon is
-///         recorded once per epoch from prevrandao (a pilot beacon — production uses PoT
-///         randomness / a VRF-style beacon).
+///         recorded once per epoch from an IBeacon provider, or — when none is configured (pilot,
+///         chains with a random prevrandao) — from keccak(prevrandao || blockNumber).
 contract PoRWClaimManager is IPoRWClaimManager {
     uint64 public immutable EPOCH_BLOCKS;
     uint64 public immutable OPENING_WINDOW;
@@ -20,6 +21,7 @@ contract PoRWClaimManager is IPoRWClaimManager {
     IMEPRegistry public immutable meps;
     InstanceRegistry public immutable instances;
     PorwVerifierKeccak public immutable verifier;
+    IBeacon public immutable beaconProvider; // address(0): prevrandao pilot beacon
     bytes32 public immutable DOMAIN_SEPARATOR; // EIP-712: claims are signed as typed data (wallet or delegated session key)
 
     struct StoredClaim {
@@ -32,8 +34,8 @@ contract PoRWClaimManager is IPoRWClaimManager {
     mapping(bytes32 => StoredClaim) public claims;
     mapping(bytes32 => mapping(uint64 => OpenChallenge)) public challenges;
 
-    constructor(IMEPRegistry m, InstanceRegistry i, PorwVerifierKeccak v, uint64 epochBlocks, uint64 openingWindow, uint256 openingDeposit, uint256 slashAmount) {
-        meps = m; instances = i; verifier = v; EPOCH_BLOCKS = epochBlocks; OPENING_WINDOW = openingWindow; OPENING_DEPOSIT = openingDeposit; SLASH_AMOUNT = slashAmount;
+    constructor(IMEPRegistry m, InstanceRegistry i, PorwVerifierKeccak v, uint64 epochBlocks, uint64 openingWindow, uint256 openingDeposit, uint256 slashAmount, IBeacon beaconProvider_) {
+        meps = m; instances = i; verifier = v; EPOCH_BLOCKS = epochBlocks; OPENING_WINDOW = openingWindow; OPENING_DEPOSIT = openingDeposit; SLASH_AMOUNT = slashAmount; beaconProvider = beaconProvider_;
         DOMAIN_SEPARATOR = PorwEIP712.domainSeparator(address(this));
     }
     /// @notice the EIP-712 digest a wallet / session key signs for a claim (schemeDigest and modelId come from the MEP)
@@ -44,11 +46,12 @@ contract PoRWClaimManager is IPoRWClaimManager {
 
     function currentEpoch() public view returns (uint64) { return uint64(block.number) / EPOCH_BLOCKS; }
 
-    /// @notice record this epoch's beacon (once). Reproducible off-chain from (prevrandao, block.number).
+    /// @notice record this epoch's beacon (once): from the configured provider, else (pilot) from (prevrandao, block.number).
     function rollEpoch() external returns (bytes32 b) {
         uint64 e = currentEpoch();
         require(beacon[e] == bytes32(0), "rolled");
-        b = keccak256(abi.encodePacked(block.prevrandao, uint256(block.number)));
+        if (address(beaconProvider) != address(0)) { b = beaconProvider.beaconFor(e); require(b != bytes32(0), "beacon not ready"); }
+        else b = keccak256(abi.encodePacked(block.prevrandao, uint256(block.number)));
         beacon[e] = b;
     }
 

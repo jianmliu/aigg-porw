@@ -297,8 +297,11 @@ the real connectome, so a second execution kind is implemented end to end
   lie (dispute loss). Challenger bounty from the slashed bond; false challenges lose
   their deposit.
 - Stake asset and settlement chain are deployment choices: AI3 on Auto EVM for the
-  pilot; BNB bond + BSC/opBNB settlement + Greenfield weights for a BNB deployment
-  (proposed separately in aigg-spec, not a change to the AI3 pilot).
+  pilot; BNB bond + BSC/opBNB settlement + Greenfield weights for a BNB deployment.
+  The BNB deployment is its own repository, staged in `proposals/aigg-bnb/` (design,
+  commit-reveal `IBeacon` for PoSA chains, Greenfield pointer + verified fetch,
+  deployment script, `split.sh` to cut the standalone repo); `PoRWClaimManager` takes an
+  `IBeacon` so nothing chain-specific lives here.
 
 ## 7. Measured inputs to the design (browser, 4-core, no GPU)
 
