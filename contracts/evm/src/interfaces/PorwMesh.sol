@@ -41,6 +41,8 @@ interface IMEPRegistry {
         bytes32 execKind;     // keccak256("aigg:exec:int-spmv-q16:v1")
         uint32 steps;
         uint32 clampQ16;
+        uint32 neurons;       // registry metadata pinned at registration (act-tree width)
+        uint32 synapses;      // registry metadata pinned at registration (CSR chunk count)
         bytes32 synapseRoot;  // keccak256(csrRoot || rowRoot): csrRoot over keccak(LE32 c || 64 post-sorted records), rowRoot over keccak(LE32 i || LE32 rowStart[i])
         bytes weightsDA;      // content pointer for the bytes (Greenfield object / DSN piece / CID)
     }
@@ -114,13 +116,15 @@ interface IExecutionDisputes {
     function bisect(bytes32 taskId, uint256 mid, bytes32 commitmentAtMid) external;
     struct RowBounds { uint32 start; bytes32[] startProof; uint32 end; bytes32[] endProof; } // rowStart[i], rowStart[i+1] in rowRoot
     struct ChunkOpening { uint32 c; bytes records; bytes32[] proof; }                          // CSR chunk containing k* (csrRoot)
-    struct PartyRow { uint32 claimedAct; uint64 partialBefore; uint64 partialAfter; }           // the party's row claim at k*
-    /// @notice row check + final term: the chunk record at k* (post == i*), the input activation act_{s-1}[pre]
-    ///         (proof in the agreed actRoot[s-1], or the stimulus rule when s == 1), term = w * act in u64;
-    ///         exactly one party's partialAfter != partialBefore + term (or fails the row check) and loses.
-    function proveSynapseTerm(
-        bytes32 taskId, uint32 neuron, uint32 kStar, RowBounds calldata bounds, ChunkOpening calldata chunk,
-        uint32 actPre, bytes32[] calldata actProof, PartyRow calldata a, PartyRow calldata b
-    ) external;
+    /// @notice Step phase: reveal actRoots bound to the party's execRoot
+    function revealRoots(bytes32 taskId, bytes32[] calldata actRoots) external;
+    /// @notice Neuron phase: post the two children of the party's current node (keccak(l||r) == node)
+    function postChildren(bytes32 taskId, bytes32 left, bytes32 right) external;
+    /// @notice Row phase: claimed activation (bound to the party's leaf) + CSR-ordered partial sums
+    function postRow(bytes32 taskId, uint32 claimedAct, uint64[] calldata sums) external;
+    /// @notice Final term: row bounds (rowRoot), the CSR chunk holding k* (csrRoot), the input activation
+    ///         act_{s-1}[pre] (agreed root, or the stimulus rule when s == 1); term = w * act in u64;
+    ///         exactly one party's sums fail (row length, row check, or the term) and it loses.
+    function proveSynapseTerm(bytes32 taskId, uint32 kStar, bytes32 csrRoot, bytes32 rowRoot, RowBounds calldata bounds, ChunkOpening calldata chunk, uint32 actPre, bytes32[] calldata actProof) external;
     function timeout(bytes32 taskId) external;
 }

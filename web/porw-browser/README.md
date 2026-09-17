@@ -101,5 +101,7 @@ The settlement design that consumes these artifacts is
 - **Residency is eligibility, not the rewarded resource** (a 521 MiB model is not
   scarce; the DRAM envelope is weak over a jittery network). The rewarded resource
   is verified, stake-gated execution units.
-- **Not yet**: gossip transport (libp2p/WebRTC); wallet (EIP-712) signing; the
-  contracts themselves (interfaces + design exist; implementation next).
+- **Contracts**: implemented in `contracts/evm/src/mesh/` and tested end to end on
+  fixtures exported from this node (`export_fixtures.mjs` → `test/Mesh.t.sol`).
+- **Not yet**: gossip transport (libp2p/WebRTC); wallet (EIP-712) signing; a
+  deployment script and a live-chain run.

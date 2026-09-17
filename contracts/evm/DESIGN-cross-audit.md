@@ -1,7 +1,8 @@
 # Redundancy / cross-audit settlement for browser fly-brain instances
 
-**Status:** design + interfaces (`src/interfaces/PorwMesh.sol`); verifier primitives and
-the browser node exist and are measured. Chain-neutral EVM; target deployments are the
+**Status:** implemented (`src/mesh/`) and tested end to end against artifacts the browser
+node produced (`test/Mesh.t.sol`, fixtures from `web/porw-browser/export_fixtures.mjs`);
+the browser node and verifier primitives exist and are measured. Chain-neutral EVM; target deployments are the
 AI3 pilot (Auto EVM) and, as a separate ecosystem proposal, BNB Chain (BSC/opBNB with
 Greenfield for weights). Nothing here changes a PoRW scheme id.
 
@@ -154,6 +155,39 @@ Every round is one transaction carrying two or three Merkle proofs (≈ 18 × 32
 each); estimated 100–200k gas per round; measured 13 bisection rounds for a 5k-neuron
 model (≈ 18 for 139k), plus ≤ ~9 for the synapse range, plus the final check. Rare by
 construction (only on disagreement among bonded parties).
+
+## 5b. Implementation and measured gas (`src/mesh/`, `test/Mesh.t.sol`)
+
+`MEPRegistry`, `InstanceRegistry` (bond / exit delay / slash / stake-weighted eligible
+votes), `PoRWClaimManager` (epoch beacon, `ecrecover`'d claims, opening challenges
+adjudicated by `PorwVerifierKeccak.verifyTileFraudProofKeccakCounted`, deposits,
+timeouts), `TaskMarket` (index sortition, signed results, unanimous settlement or
+dispute, payout after resolution) and `ExecutionDisputes` (reveal roots → children
+rounds bound by `keccak(l‖r) == node` → row post → single-term check; timeouts).
+The released `PorwVerifier` bytecode is untouched: the keccak counted path lives in
+`PorwVerifierKeccak`, which inherits it.
+
+Tests run the whole flow on fixtures exported from real node runs: MEP registration,
+bonding, the fixture-derived beacon/challenge, claims by three instances, NoFraud /
+Fraud / Invalid / timeout openings (slash and payouts asserted), sortition of the
+eligible pair, signed results, and three dispute endings — the divergent **term**
+(B slashed, A paid slash + fee), the **row check**, and **timeout**. Per-function gas
+(forge `--gas-report`, 4k-neuron fixture; larger models only add ~1 bisection round
+per doubling):
+
+| call | gas |
+|---|---|
+| `submitClaim` | ~240k |
+| `challengeOpening` / `respondOpening` (incl. keccak tile fraud proof) / `claimExpiredChallenge` | ~96k / ~870k / ~68k |
+| `postTask` / `submitResult` / `settle` (→ dispute) | ~190k / ~181k / ~341k |
+| `revealRoots` (2 steps) | ~130–234k |
+| `postChildren` (one bisection round, per party) | ~38–115k |
+| `postRow` (in-degree 14) | ~176k |
+| `proveSynapseTerm` | ~290k |
+| `timeout` | ~27–205k |
+
+A full dispute for a 139k-neuron model is ≈ 18 children rounds × 2 parties plus the
+row and term calls — on the order of 4–5M gas total, paid by the loser's slash.
 
 ## 6. Economics (deployment choices, token-neutral)
 

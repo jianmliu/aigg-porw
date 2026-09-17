@@ -1,0 +1,118 @@
+// SPDX-License-Identifier: 0BSD
+pragma solidity ^0.8.20;
+
+import "../interfaces/PorwMesh.sol";
+import "../PorwVerifierKeccak.sol";
+import "./InstanceRegistry.sol";
+
+/// @notice Per-epoch residency claims for browser instances, with on-chain opening challenges
+///         adjudicated by the keccak-scheme tile fraud proof. The honest path is off-chain
+///         (beacon-selected auditors sample openings directly); a challenge escalates only on
+///         a failed check. Epoch challenge = keccak(beacon[epoch] || mepId); the beacon is
+///         recorded once per epoch from prevrandao (a pilot beacon — production uses PoT
+///         randomness / a VRF-style beacon).
+contract PoRWClaimManager is IPoRWClaimManager {
+    uint64 public immutable EPOCH_BLOCKS;
+    uint64 public immutable OPENING_WINDOW;
+    uint256 public immutable OPENING_DEPOSIT;
+    uint256 public immutable SLASH_AMOUNT;
+    IMEPRegistry public immutable meps;
+    InstanceRegistry public immutable instances;
+    PorwVerifierKeccak public immutable verifier;
+
+    struct StoredClaim {
+        address instance; bytes32 mepId; uint64 epoch; bytes32 partialsRoot; uint64 coverageBytes;
+        bytes32 challenge; bytes32 deviceId; bytes32 execDigest; uint32 stimulusSeed; bool valid; bool exists;
+    }
+    struct OpenChallenge { address challenger; uint256 deposit; uint64 deadline; bool open; }
+
+    mapping(uint64 => bytes32) public beacon;
+    mapping(bytes32 => StoredClaim) public claims;
+    mapping(bytes32 => mapping(uint64 => OpenChallenge)) public challenges;
+
+    constructor(IMEPRegistry m, InstanceRegistry i, PorwVerifierKeccak v, uint64 epochBlocks, uint64 openingWindow, uint256 openingDeposit, uint256 slashAmount) {
+        meps = m; instances = i; verifier = v; EPOCH_BLOCKS = epochBlocks; OPENING_WINDOW = openingWindow; OPENING_DEPOSIT = openingDeposit; SLASH_AMOUNT = slashAmount;
+    }
+
+    function currentEpoch() public view returns (uint64) { return uint64(block.number) / EPOCH_BLOCKS; }
+
+    /// @notice record this epoch's beacon (once). Reproducible off-chain from (prevrandao, block.number).
+    function rollEpoch() external returns (bytes32 b) {
+        uint64 e = currentEpoch();
+        require(beacon[e] == bytes32(0), "rolled");
+        b = keccak256(abi.encodePacked(block.prevrandao, uint256(block.number)));
+        beacon[e] = b;
+    }
+
+    function epochChallenge(uint64 epoch, bytes32 mepId) public view returns (bytes32) { return keccak256(abi.encodePacked(beacon[epoch], mepId)); }
+    function claimIdOf(address instance, bytes32 mepId, uint64 epoch) public pure returns (bytes32) { return keccak256(abi.encodePacked(instance, mepId, epoch)); }
+    function hasValidClaim(address instance, bytes32 mepId, uint64 epoch) external view returns (bool) { StoredClaim storage c = claims[claimIdOf(instance, mepId, epoch)]; return c.exists && c.valid; }
+
+    function submitClaim(Claim calldata c, bytes calldata signature) external returns (bytes32 claimId) {
+        uint64 e = currentEpoch();
+        require(beacon[e] != bytes32(0), "no beacon");
+        require(c.challenge == epochChallenge(e, c.mepId), "challenge");
+        IMEPRegistry.MEP memory m = meps.getMEP(c.mepId);
+        require(c.coverageBytes > 0 && c.coverageBytes % 4096 == 0, "coverage");
+        bytes32 h = PorwMeshHash.claimHash(m.schemeDigest, c.mepId, m.modelId, c.partialsRoot, c.coverageBytes, c.challenge, c.deviceId, c.execDigest, c.stimulusSeed);
+        address signer = _recover(h, signature);
+        require(signer != address(0) && instances.isBondedFor(signer, c.mepId), "not bonded");
+        claimId = claimIdOf(signer, c.mepId, e);
+        require(!claims[claimId].exists, "claimed");
+        claims[claimId] = StoredClaim(signer, c.mepId, e, c.partialsRoot, c.coverageBytes, c.challenge, c.deviceId, c.execDigest, c.stimulusSeed, true, true);
+        emit ClaimSubmitted(claimId, signer, c.mepId, e);
+    }
+
+    function challengeOpening(bytes32 claimId, uint64 tileIdx) external payable {
+        StoredClaim storage c = claims[claimId];
+        require(c.exists && c.valid, "claim");
+        require(tileIdx < c.coverageBytes / 4096, "tile");
+        require(msg.value >= OPENING_DEPOSIT, "deposit");
+        OpenChallenge storage ch = challenges[claimId][tileIdx];
+        require(!ch.open, "open");
+        challenges[claimId][tileIdx] = OpenChallenge(msg.sender, msg.value, uint64(block.number) + OPENING_WINDOW, true);
+        emit OpeningChallenged(claimId, tileIdx, msg.sender);
+    }
+
+    /// @notice anyone may post the opening; the verdict binds the instance (full-coverage claims:
+    ///         the partials tree and the weights tree have the same leaf count).
+    function respondOpening(bytes32 claimId, Opening calldata o) external {
+        StoredClaim storage c = claims[claimId];
+        OpenChallenge storage ch = challenges[claimId][o.tileIdx];
+        require(c.exists && ch.open && block.number <= ch.deadline, "no open challenge");
+        IMEPRegistry.MEP memory m = meps.getMEP(c.mepId);
+        uint64 nLeaves = c.coverageBytes / 4096;
+        uint8 verdict = verifier.verifyTileFraudProofKeccakCounted(
+            c.partialsRoot, nLeaves, m.modelId, nLeaves, c.challenge, c.deviceId,
+            o.tileIdx, o.sTile, o.partialsIndex, o.partialsProof, o.tile, o.weightsProof
+        );
+        require(verdict != 2, "invalid opening"); // the instance may retry before the deadline
+        ch.open = false;
+        emit OpeningResolved(claimId, o.tileIdx, verdict);
+        if (verdict == 0) { _fraud(c, ch); }
+        else { (bool ok,) = c.instance.call{value: ch.deposit}(""); require(ok, "pay"); }
+    }
+
+    function claimExpiredChallenge(bytes32 claimId, uint64 tileIdx) external {
+        StoredClaim storage c = claims[claimId];
+        OpenChallenge storage ch = challenges[claimId][tileIdx];
+        require(c.exists && ch.open && block.number > ch.deadline, "not expired");
+        ch.open = false;
+        emit OpeningResolved(claimId, tileIdx, 3);
+        _fraud(c, ch);
+    }
+
+    function _fraud(StoredClaim storage c, OpenChallenge storage ch) internal {
+        c.valid = false;
+        instances.slash(c.instance, SLASH_AMOUNT, ch.challenger, "porw:tile-fraud");
+        (bool ok,) = ch.challenger.call{value: ch.deposit}(""); require(ok, "refund");
+    }
+
+    function _recover(bytes32 h, bytes calldata sig) internal pure returns (address) {
+        if (sig.length != 65) return address(0);
+        bytes32 r; bytes32 s; uint8 v;
+        assembly { r := calldataload(sig.offset) s := calldataload(add(sig.offset, 32)) v := byte(0, calldataload(add(sig.offset, 64))) }
+        if (v < 27) v += 27;
+        return ecrecover(h, v, r, s);
+    }
+}
