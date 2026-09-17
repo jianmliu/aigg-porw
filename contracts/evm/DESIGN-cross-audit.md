@@ -111,9 +111,23 @@ value the claimant controls. Implemented and tested in `swarm.js` (`assignSortit
 `auditors`, `settle`); rendezvous hashing is kept as an off-chain alternative but the
 contract and the mesh must share one rule.
 
-Transport: browsers cannot listen. Tasks/results/openings travel over a gossip layer
-(libp2p gossipsub with the WebRTC transport, or a relay); the chain is the source of
-truth for registry, beacon, claims, results, and settlement. No instance is special.
+Transport: browsers cannot listen. **Stage 1 (implemented)**: bonded WebSocket relays
+(`RelayRegistry.sol`; `web/porw-browser/relay.js`) — stateless pub/sub rooms per MEP
+(claims, task announcements) and per instance inbox (audit requests/responses, tasks/
+results). Every message is a signed envelope (`envelope.js`: `keccak("porw-msg" ‖ type ‖
+mepId ‖ ts ‖ keccak(canonical payload))` signed by the reward key), so relays are never
+trusted for correctness; receivers verify and de-duplicate, and an instance fans out to
+≥ 2 relays so one honest relay suffices. A relay can only drop or delay (liveness), and
+silence is what the contracts punish, so the fallbacks stay on-chain: an unresponsive
+instance gets a deposit-backed `challengeOpening` and answers with `respondOpening`
+itself (the node produces that exact struct); dispute moves are direct transactions.
+Tested (`test_relay.mjs`, `run_relay_browser.mjs` with a Chromium tab as the instance):
+audits and tasks through two relays with a third censoring relay, forged/tampered/
+spoofed envelopes dropped at the relay and at the client, all-censoring relays →
+escalation + on-chain fallback. **Stage 2**: the same envelopes over libp2p gossipsub
+(WebRTC + circuit relay) when instance counts make operated relays a bottleneck; the
+chain remains the source of truth for registry, beacon, claims, results, settlement. No
+instance is special.
 
 ## 5. Execution fraud proof (interactive bisection to one synapse)
 

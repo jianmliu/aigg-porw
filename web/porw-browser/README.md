@@ -24,6 +24,9 @@ aigg-spec conformance vectors, and the claim is verified on-chain.
 | `node.js` | `PorwNode`: multi-model residency, per-MEP signed claims (residency + execution digest), tile openings, dispute openings (activation / rowStart / CSR chunk / partial sums / tree nodes); LIF path with segment roots every `commitStride` steps, checkpoint + replay for openings |
 | `verify.js` / `verifier.js` / `dispute.js` | **independent** verifier (noble keccak only, never the wasm): claim checks, sampled openings, sketch recomputation, redundant re-execution, and the execution dispute (step → neuron bisection → row check → synapse bisection → one-term check) |
 | `swarm.js` | mesh coordination: stake-weighted **index sortition** (the contract rule), redundancy sets, backups, auditors, majority settlement |
+| `envelope.js` / `relay.js` / `relay_client.js` | **stage-1 transport**: signed message envelopes (reward key), a stateless WebSocket relay (`ws`), an isomorphic multi-relay client (fan-out, verify, dedupe, request/response on inbox topics) |
+| `node_service.js` / `auditor.js` | the instance announcing claims and serving audits/tasks over relays (+ the on-chain fallback opening); the auditor sampling openings through relays and escalating to `challengeOpening` calldata |
+| `run_relay_browser.mjs` | a Chromium tab as a relay-served instance: audit + task from this process |
 | `index.html` + `worker.js` | audit-throughput PoC (per-worker slices, no shared memory) |
 | `node_page.html` + `run_node_browser.mjs` | the full node loop in headless Chromium (optionally with the pool) and this process as the verifier |
 | `synth.js` | JS payload synthesizers (v1 as the Python demo; v2 with signed counts for the LIF tests) |
@@ -38,7 +41,8 @@ aigg-spec conformance vectors, and the claim is verified on-chain.
 cd web/porw-browser
 ./build.sh          # sketch.wasm (own memory) + porw-shared.wasm (imported shared memory)
 npm install
-npm test            # test_wasm (keccak fixture, trees) · test_node (2 MEPs, fraud) · test_swarm · test_pool · test_dispute · test_lif
+npm test            # test_wasm · test_node · test_swarm · test_pool · test_dispute · test_lif · test_relay (2 honest + 1 censoring relay)
+PW_CHROMIUM=/path/to/chrome node run_relay_browser.mjs      # the tab announces, serves audits and a task over two relays
 # the real brain: export it (see demo/fly_brain/README.md), then
 node test_lif.mjs flywire-783-min5.bin ../../spec-cache/conformance/exec/int-lif-v1/flywire-fafb-v783-min5.int-lif-v1.seed7-500steps.numpy.json
 node bench_lif_node.mjs flywire-783-min5.bin 100 4 out.json
@@ -130,8 +134,19 @@ The settlement design that consumes these artifacts is
   Poisson, floor shifts (a neuron can rest at −1 LSB), no synaptic delays. Results
   are reproducible and disputable, not a biological calibration; calibrating against
   the published model is research work on top of this substrate.
+- **Relay transport** (`test_relay.mjs`): envelopes verify / reject tampering, spoofing,
+  staleness; the auditor receives each claim once across relays; 16 openings audited
+  through the relay; a residency liar caught and escalated with the exact
+  `respondOpening` struct; a censoring relay tolerated next to an honest one; all
+  relays censoring → `challengeOpening` escalation, and the instance's own on-chain
+  opening verifies; a task announced over the relay returns a result whose signature
+  recovers the instance over `TaskMarket.resultHash`. `run_relay_browser.mjs` repeats
+  the audit and the task with a Chromium tab as the instance.
 - **On-chain LIF dispute**: `ExecutionDisputes` dispatches on the MEP's exec kind
   (Refine phase for segment roots, `postRowLif`, `proveSynapseTermLif`), tested end to
   end on artifacts from this node (`export_lif_fixtures.mjs` → `test/MeshLif.t.sol`).
-- **Not yet**: gossip transport (libp2p/WebRTC); wallet (EIP-712) signing; a
-  deployment script and a live-chain run.
+- **Transport**: stage-1 bonded relays (`RelayRegistry.sol`); relays affect liveness
+  only, and silence is answered on-chain. Stage 2 (libp2p gossipsub over WebRTC) reuses
+  the same envelopes.
+- **Not yet**: wallet (EIP-712) signing; a deployment script and a live-chain run;
+  libp2p transport.

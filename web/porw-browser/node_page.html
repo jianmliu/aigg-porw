@@ -10,6 +10,8 @@ import { loadKernel } from "./porw.js";
 import { createPool } from "./pool.js";
 import { PorwNode } from "./node.js";
 import { hex } from "./verify.js";
+import { RelayClient } from "./relay_client.js";
+import { NodeService } from "./node_service.js";
 const log = (s) => { document.getElementById("log").textContent += "\n" + s; };
 const q = new URLSearchParams(location.search);
 const steps = Number(q.get("steps") || 2);
@@ -25,7 +27,12 @@ try {
   const node = new PorwNode(kernel, { privHex: "0x" + "33".repeat(32), pool });
   const st = await node.loadModel(q.get("name") || "flywire-female", payload, { steps }); // exec kind follows the payload version (v2 -> int-lif)
   log(`payload ${payload.length} B fetched in ${fetchMs.toFixed(0)} ms; ${st.nTiles} tiles; weights leaves + model id in ${st.leavesMs.toFixed(0)} ms`);
+  // optional stage-1 relay transport: ?relays=ws://a,ws://b — announce the claim and serve audits/tasks from the tab
+  const relays = (q.get("relays") || "").split(",").filter(Boolean); let svc = null, rc = null;
+  if (relays.length) { rc = new RelayClient(relays, node.key); const nOpen = await rc.connect(); svc = new NodeService(node, rc); svc.serve(st.mep.mepId); log(`relay: connected to ${nOpen}/${relays.length}`); }
   window.porwNode = {
+    announce: async (chHex, seed) => { const { r, env } = await svc.announce(st.mep.mepId, Uint8Array.from(chHex.match(/../g).map((h) => parseInt(h, 16))), { stimulusSeed: seed }); return { claimHash: hex(r.claimHash), envId: env.sig.slice(0, 18), served: svc.served, relayStats: { received: rc.received, duplicates: rc.duplicates, rejected: rc.rejected } }; },
+    served: () => (svc ? { ...svc.served, address: rc.address } : null),
     info: () => ({ nTiles: st.nTiles, neurons: st.hdr.neurons, synapses: st.hdr.synapses, modelId: hex(st.modelId), mepId: hex(st.mep.mepId),
                    steps, exec: st.exec, fetchMs, leavesMs: st.leavesMs, backend: node.k.backend, hc: navigator.hardwareConcurrency, workers, iso: crossOriginIsolated, sorted: st.csr.sorted }),
     challenge: async (chHex, seed) => { const r = await node.challenge(st.mep.mepId, Uint8Array.from(chHex.match(/../g).map((h) => parseInt(h, 16))), { stimulusSeed: seed });

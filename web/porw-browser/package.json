@@ -4,7 +4,7 @@
   "description": "",
   "main": "porw.js",
   "scripts": {
-    "test": "node test_wasm.mjs && node test_node.mjs - && node test_swarm.mjs && node test_pool.mjs && node test_dispute.mjs && node test_lif.mjs",
+    "test": "node test_wasm.mjs && node test_node.mjs - && node test_swarm.mjs && node test_pool.mjs && node test_dispute.mjs && node test_lif.mjs && node test_relay.mjs",
     "build": "./build.sh"
   },
   "keywords": [],
@@ -13,7 +13,8 @@
   "dependencies": {
     "@noble/hashes": "^2.4.0",
     "@noble/secp256k1": "^3.2.0",
-    "playwright": "^1.63.0"
+    "playwright": "^1.63.0",
+    "ws": "^8.21.3"
   },
   "type": "module",
   "private": true
