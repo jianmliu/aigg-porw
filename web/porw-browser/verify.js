@@ -33,6 +33,12 @@ export function merkleRoot(leaves) { // array of Uint8Array(32)
   while (lvl.length > 1) { const nx = []; for (let i = 0; i < lvl.length; i += 2) nx.push(parent(lvl[i], i + 1 < lvl.length ? lvl[i + 1] : lvl[i])); lvl = nx; }
   return lvl[0];
 }
+/** inclusion proof for leaf `index` (duplicate-last tree, same rule as merkleVerifyCounted) */
+export function merkleProof(leaves, index) {
+  const proof = []; let lvl = leaves.slice(), i = index;
+  while (lvl.length > 1) { const sib = (i ^ 1) < lvl.length ? lvl[i ^ 1] : lvl[i]; proof.push(sib); const nx = []; for (let j = 0; j < lvl.length; j += 2) nx.push(parent(lvl[j], j + 1 < lvl.length ? lvl[j + 1] : lvl[j])); lvl = nx; i >>= 1; }
+  return proof;
+}
 export function merkleVerifyCounted(root, leaf, index, count, proof) {
   if (count === 0 || index >= count) return false;
   let acc = leaf, w = count, p = 0, i = index;

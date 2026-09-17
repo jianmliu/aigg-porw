@@ -85,10 +85,18 @@ interface IPoRWClaimManager {
         bytes32[] partialsProof;
         bytes32[] weightsProof;
     }
+    /// @dev aggregated path: one Merkle root per (MEP, epoch, aggregator) over claim leaves
+    ///      leaf = keccak256(abi.encode(instance, partialsRoot, coverageBytes, deviceId, execDigest, stimulusSeed, keccak256(signature)))
+    struct ClaimLeaf { address instance; bytes32 partialsRoot; uint64 coverageBytes; bytes32 deviceId; bytes32 execDigest; uint32 stimulusSeed; bytes signature; }
+    event EpochRootPosted(bytes32 indexed mepId, uint64 indexed epoch, address indexed aggregator, bytes32 root, uint64 count);
     event ClaimSubmitted(bytes32 indexed claimId, address indexed instance, bytes32 indexed mepId, uint64 epoch);
     event OpeningChallenged(bytes32 indexed claimId, uint64 tileIdx, address challenger);
     event OpeningResolved(bytes32 indexed claimId, uint64 tileIdx, uint8 verdict); // 0 Fraud, 1 NoFraud, 2 Invalid, 3 Timeout
     function submitClaim(Claim calldata claim, bytes calldata signature) external returns (bytes32 claimId);
+    /// @notice aggregated path: anyone posts a root over the epoch's signed claims (off-chain collected); untrusted
+    function postEpochRoot(bytes32 mepId, uint64 epoch, bytes32 root, uint64 count) external;
+    /// @notice materialize one claim from a posted root: inclusion proof + the leaf; the signature is verified here
+    function materializeClaim(bytes32 mepId, uint64 epoch, address aggregator, uint64 index, ClaimLeaf calldata leaf, bytes32[] calldata proof) external returns (bytes32 claimId);
     function challengeOpening(bytes32 claimId, uint64 tileIdx) external payable;
     function respondOpening(bytes32 claimId, Opening calldata opening) external;
     function claimExpiredChallenge(bytes32 claimId, uint64 tileIdx) external;

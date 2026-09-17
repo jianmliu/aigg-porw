@@ -27,6 +27,7 @@ aigg-spec conformance vectors, and the claim is verified on-chain.
 | `verify.js` / `verifier.js` / `dispute.js` | **independent** verifier (noble keccak only, never the wasm): claim checks, sampled openings, sketch recomputation, redundant re-execution, and the execution dispute (step → neuron bisection → row check → synapse bisection → one-term check) |
 | `swarm.js` | mesh coordination: stake-weighted **index sortition** (the contract rule), redundancy sets, backups, auditors, majority settlement |
 | `envelope.js` / `relay.js` / `relay_client.js` | **stage-1 transport**: signed message envelopes (reward key), a stateless WebSocket relay (`ws`), an isomorphic multi-relay client (fan-out, verify, dedupe, request/response on inbox topics) |
+| `aggregator.js` | **aggregated claims** (BSC posture): an untrusted aggregator batches the epoch's verified claims into one Merkle root (`postEpochRoot`) and serves inclusion proofs over the relay; instances `materializeClaim` only when they need eligibility |
 | `node_service.js` / `auditor.js` | the instance announcing claims and serving audits/tasks over relays (+ the on-chain fallback opening); the auditor sampling openings through relays and escalating to `challengeOpening` calldata |
 | `run_relay_browser.mjs` | a Chromium tab as a relay-served instance: audit + task from this process |
 | `index.html` + `worker.js` | audit-throughput PoC (per-worker slices, no shared memory) |
@@ -43,7 +44,7 @@ aigg-spec conformance vectors, and the claim is verified on-chain.
 cd web/porw-browser
 ./build.sh          # sketch.wasm (own memory) + porw-shared.wasm (imported shared memory)
 npm install
-npm test            # test_wasm · test_node · test_swarm · test_pool · test_dispute · test_lif · test_eip712 · test_relay
+npm test            # test_wasm · test_node · test_swarm · test_pool · test_dispute · test_lif · test_eip712 · test_relay · test_aggregator
 PW_CHROMIUM=/path/to/chrome node run_wallet_browser.mjs     # injected wallet: one Delegation prompt, session-key claims
 PW_CHROMIUM=/path/to/chrome node run_relay_browser.mjs      # the tab announces, serves audits and a task over two relays
 # the real brain: export it (see demo/fly_brain/README.md), then
@@ -141,6 +142,11 @@ The settlement design that consumes these artifacts is
   digests == generic typed-data hashing == Solidity; claims/results signed by a delegated
   session key resolve to the bonded wallet on-chain and off-chain; wrong domain / chain,
   expired or revoked delegation rejected; a wallet prompts once (Delegation) in Chromium.
+- **Aggregated claims** (`test_aggregator.mjs`, `MeshAggregated.t.sol`): the aggregator
+  accepts valid claims keyed by wallet and rejects a stale-challenge one; two aggregators
+  build the same root; an instance's proof verifies exactly as the contract does; on-chain,
+  materialized claims give eligibility (a task settles into a dispute), a junk leaf cannot
+  be materialized, and a materialized residency liar is slashed through an opening challenge.
 - **Relay transport** (`test_relay.mjs`): envelopes verify / reject tampering, spoofing,
   staleness; the auditor receives each claim once across relays; 16 openings audited
   through the relay; a residency liar caught and escalated with the exact

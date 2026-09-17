@@ -11,6 +11,7 @@ import * as V from "./verify.js";
 import * as D from "./dispute.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import * as E from "./eip712.js";
+import { claimLeafHash, leafOf } from "./aggregator.js";
 import { domains, walletAndSession, CHAIN_ID, CM_ADDR, MK_ADDR, REG_ADDR, DELEGATION_EXPIRY } from "./export_fixtures_common.js";
 
 const [out, epochBlocksArg, epochArg, prevrandaoArg] = process.argv.slice(2);
@@ -70,12 +71,18 @@ const preOpen = sStar > 1 ? A.nd.openActivation(mepId, sStar - 1, rec.pre) : { a
 const actA = A.nd.openActivation(mepId, sStar, neuron).act, actB = B.nd.openActivation(mepId, sStar, neuron).act;
 if (V.rowActivation(lied[len - 1]) !== actB) throw new Error("lied sums inconsistent with B's activation (clamp)");
 
+// aggregated path: one root over the epoch's claims (A, B, L sorted by wallet) + one junk leaf (tampered signature)
+const aggEntries = [[A, rA], [B, rB], [L, rL]].map(([P, r]) => ({ instance: P.ws.wallet.address.toLowerCase(), leaf: leafOf(r, P.ws.wallet.address.toLowerCase()) }));
+const junkSig = Uint8Array.from(rA.signature); junkSig[3] ^= 0x55; aggEntries.push({ instance: "0x00000000000000000000000000000000000000ff", leaf: { ...leafOf(rA, "0x00000000000000000000000000000000000000ff"), signature: junkSig } });
+aggEntries.sort((x, y) => (x.instance < y.instance ? -1 : 1)); const aggLeaves = aggEntries.map((e) => claimLeafHash(e.leaf)); const aggRoot = V.merkleRoot(aggLeaves);
+const aggProof = (who) => { const i = aggEntries.findIndex((e) => e.instance === who.toLowerCase()); const l = aggEntries[i].leaf; return { index: i, leaf: { instance: l.instance, partialsRoot: H(l.partialsRoot), coverageBytes: l.coverageBytes, deviceId: H(l.deviceId), execDigest: H(l.execDigest), stimulusSeed: l.stimulusSeed, signature: H(l.signature) }, proof: V.merkleProof(aggLeaves, i).map(H) }; };
 const F = ({
   params: { epochBlocks: EPOCH_BLOCKS, epoch: EPOCH, epochStart, prevrandao: Number(PREVRANDAO), beacon: H(beacon), challenge: H(challenge), steps, stimulusSeed, nonces: nonces.map(H), taskIds: taskIds.map(H) },
   mep: { mepId: H(mepId), modelId: H(mep.modelId), schemeDigest: H(mep.schemeDigest), execKind: H(mep.execKind), steps: mep.steps, clampQ16: mep.clampQ16, neurons: n, synapses: A.st.hdr.synapses, synapseRoot: H(rA.result.synapseRoot), csrRoot: H(rA.result.csrRoot), rowRoot: H(rA.result.rowRoot), nTiles: A.st.nTiles },
   instances: { A: A.ws.wallet.address, B: B.ws.wallet.address, L: L.ws.wallet.address }, sessions: { A: H(A.nd.key.address), B: H(B.nd.key.address), L: H(L.nd.key.address) },
   delegations: { A: A.ws.delegation, B: B.ws.delegation, L: L.ws.delegation }, eip712: { chainId: CHAIN_ID, claimManager: CM_ADDR, market: MK_ADDR, registry: REG_ADDR, expiry: DELEGATION_EXPIRY },
   claimA: claimJson(rA), claimB: claimJson(rB), claimL: claimJson(rL), claimHashA: H(rA.claimHash),
+  aggregated: { root: H(aggRoot), count: aggLeaves.length, A: aggProof(A.ws.wallet.address), B: aggProof(B.ws.wallet.address), L: aggProof(L.ws.wallet.address), junk: aggProof("0x00000000000000000000000000000000000000ff") },
   openingNoFraud: opening(A.nd, rA, 3), openingFraud: opening(L.nd, rL, 7), openingHonestOfLiar: opening(L.nd, rL, 3),
   resultsA: taskIds.map((t) => resultSig(A, rA, t)), resultsB: taskIds.map((t) => resultSig(B, rB, t)),
   dispute: { sStar, actRootsA: rA.result.actRoots.map(H), actRootsB: rB.result.actRoots.map(H), rounds: pairsA.length, pairsAFlat: pairsA.flat(), pairsBFlat: pairsB.flat(), neuron, actA, actB,
@@ -131,6 +138,8 @@ library MeshFixtures {
 `;
   const delFn = (name, d) => `    function ${name}() internal pure returns (address instance, address session, uint64 expiry, bytes memory sig) { instance = ${checksum(d.instance)}; session = ${checksum(d.session)}; expiry = ${d.expiry}; sig = hex"${d.sig.slice(2)}"; }\n`;
   sol += delFn("delegationA", F.delegations.A) + delFn("delegationB", F.delegations.B) + delFn("delegationL", F.delegations.L);
+  const leafFn = (name, p) => `    function ${name}() internal pure returns (uint64 index, IPoRWClaimManager.ClaimLeaf memory l, bytes32[] memory proof) { index = ${p.index}; l = IPoRWClaimManager.ClaimLeaf({ instance: ${checksum(p.leaf.instance)}, partialsRoot: ${p.leaf.partialsRoot}, coverageBytes: ${p.leaf.coverageBytes}, deviceId: ${p.leaf.deviceId}, execDigest: ${p.leaf.execDigest}, stimulusSeed: ${p.leaf.stimulusSeed}, signature: hex"${p.leaf.signature.slice(2)}" }); proof = ${name}Proof(); }\n` + arr32(name + "Proof", p.proof);
+  sol += `    bytes32 constant AGG_ROOT = ${F.aggregated.root}; uint64 constant AGG_COUNT = ${F.aggregated.count};\n` + leafFn("aggLeafA", F.aggregated.A) + leafFn("aggLeafB", F.aggregated.B) + leafFn("aggLeafL", F.aggregated.L) + leafFn("aggLeafJunk", F.aggregated.junk);
   sol += arr32("nonces", P.nonces) + arr32("taskIds", P.taskIds);
   sol += claimFn("claimA", F.claimA) + claimFn("claimB", F.claimB) + claimFn("claimL", F.claimL);
   sol += openingFn("openingNoFraud", F.openingNoFraud) + openingFn("openingFraud", F.openingFraud) + openingFn("openingHonestOfLiar", F.openingHonestOfLiar);

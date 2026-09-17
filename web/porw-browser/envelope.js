@@ -17,7 +17,7 @@ export function canonical(v) {
   if (Array.isArray(v)) return "[" + v.map(canonical).join(",") + "]";
   return "{" + Object.keys(v).sort().map((k) => JSON.stringify(k) + ":" + canonical(v[k])).join(",") + "}";
 }
-export const TYPES = ["claim", "open-request", "open-response", "task-announce", "result", "relay-hello"];
+export const TYPES = ["claim", "open-request", "open-response", "task-announce", "result", "claim-proof-request", "claim-proof", "relay-hello"];
 export function msgHash(type, mepIdHex, ts, payload) {
   return keccak_256(cat(utf8("porw-msg"), utf8(type), unhex(mepIdHex), be64(ts), keccak_256(utf8(canonical(payload)))));
 }

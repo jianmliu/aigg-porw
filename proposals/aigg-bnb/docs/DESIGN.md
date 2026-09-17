@@ -79,8 +79,12 @@ Measured in aigg-porw (anvil, keccak scheme): tile fraud proof ≈ 1.11M gas; `s
 | 10,000 instances × 1 claim per 10-minute epoch | 2.4G gas / epoch | $1.4 / epoch | $1,440 / epoch |
 
 Reading: on opBNB the honest path (one claim per instance per epoch) is negligible even at
-10k instances; on BSC it is not, which is why claims should stay per-epoch (not per-slot)
-and why the honest audit path is off-chain (relays) with on-chain escalation only.
+10k instances; on BSC it is not. For BSC use the **aggregated claim path** (implemented in
+aigg-porw: `postEpochRoot` ≈ 70k gas once per MEP per epoch by an untrusted aggregator;
+`materializeClaim` ≈ 230k only for instances that compete for tasks that epoch or are
+audited): 10,000 passive instances then cost one root per epoch (≈ $0.04 on BSC at the
+assumed price), and 500 active ones ≈ $70 per epoch. opBNB is therefore not required for
+mainnet; it remains the cheaper choice if every instance should carry an on-chain claim.
 
 ## 6. Risks and limits specific to BNB
 

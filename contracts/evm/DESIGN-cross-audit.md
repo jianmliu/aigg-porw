@@ -84,9 +84,21 @@ deployable, but each owns its state.
   `DisputeOpened` (§5). Stragglers past `TASK_TIMEOUT` are replaced by the next
   sortition index; the client can always verify the result itself by re-execution.
 - **`IExecutionDisputes`** — the interactive fraud proof (§5).
-- **Epoch aggregation** — claims and settled tasks roll into `EpochPoRWRoot`-style
-  facts (aggregator untrusted for correctness: it cannot forge signatures or survive
-  challenges on a wrong root), consumed read-only by rewards/incentive vaults.
+- **Epoch aggregation (implemented, `postEpochRoot` / `materializeClaim`)** — on
+  chains where one claim tx per instance per epoch is too expensive (BSC), an
+  **untrusted aggregator** (`web/porw-browser/aggregator.js`) collects the epoch's
+  signed claims over the relay, verifies each, builds one Merkle tree (leaves
+  `keccak(abi.encode(instance, partialsRoot, coverageBytes, deviceId, execDigest,
+  stimulusSeed, keccak(sig)))`, sorted by instance) and posts one root per (MEP, epoch).
+  An instance fetches its inclusion proof over the relay (`claim-proof-request`) and
+  `materializeClaim`s only when it needs on-chain eligibility (it wants tasks that epoch)
+  or is audited; the signature is verified at materialization, so a junk leaf cannot be
+  materialized, and an omitted instance falls back to `submitClaim`. Materialized claims
+  are stored exactly like direct ones (eligibility, opening challenges, slashing). Measured:
+  `postEpochRoot` ≈ 70k gas, `materializeClaim` ≈ 230k (4 leaves). Passive instances cost
+  nothing on-chain; per-epoch chain cost is one root per MEP plus one materialization per
+  instance that competes for tasks. Settled tasks still roll into epoch facts consumed
+  read-only by rewards/incentive vaults.
 
 ## 3a. Wallet signing (EIP-712) and session keys — implemented
 
