@@ -63,3 +63,29 @@ Per-slot cost is dominated by the keccak-scheme partials commitment and the
 inference, not by the sketch; workers would parallelize the first two ≈ 4× on 4
 cores. Deterministic fields (model id, MEP id, claim encoding) reproduce anywhere;
 timings are this host/browser only.
+
+## Node loop with dispute commitments and a shared-memory worker pool (added later)
+
+Files: `flywire-521mib-node-loop-single-dispute.json` (1 thread), `…-unsorted-w4.json`
+(4 workers, records in original order), `…-sorted-w4.json` (4 workers, records
+published **sorted by post neuron**, block-parallel Merkle trees). Same 521 MiB /
+139,255-neuron / 54.5M-synapse model, steps = 2, 16 sampled openings per round.
+Per-slot work now includes the execution-dispute commitments (per-step activation
+roots + execRoot); one-time load includes the CSR commitments (`csrRoot`, `rowRoot`).
+
+| per slot (ms) | sketch | partials commit | inference | dispute commit | **total** | one-time load |
+|---|---|---|---|---|---|---|
+| 1 thread | 164 | 345 | 585 | 716 | **1811** | 18.6 s |
+| 4 workers, unsorted (perm gathers) | 38 | 219 | 672 | 472 | **1401** | 8.3 s |
+| 4 workers, post-sorted | 51 | 247 | 85 | 465 | **848** | 6.5 s |
+| 4 workers, post-sorted, parallel trees | 51–59 | 112–148 | 67–75 | 236–266 | **484–540** | 5.7 s |
+
+Findings: (1) CSR inference through a permutation is *slower* than the scatter
+kernel even on 4 workers — every record access becomes a random read into the
+545 MB payload; publishing records sorted by post neuron makes rows contiguous and
+the parallel inference streams sequentially (672 → 67 ms). (2) After that the
+single-threaded tree builds dominated; building aligned 2^m-leaf blocks on
+workers and only the upper levels on the main thread halves the commit costs.
+Openings stay ~16–19 ms for 16 tiles (cached trees). All pool-path outputs are
+bit-identical to the single-thread path (`test_pool.mjs`); all rounds `no_fraud`,
+re-execution digests match. Timings are this host/browser only.

@@ -14,7 +14,7 @@ const indepModelId = (p) => { const n = Math.floor(p.length / TILE_BYTES); const
 
 // --- node hosts two released brains, each its own MEP ---
 const node = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "11".repeat(32) });
-const F = node.loadModel("flywire-female", female, { steps: 3 }), M = node.loadModel("male-cns", male, { steps: 2 });
+const F = await node.loadModel("flywire-female", female, { steps: 3 }), M = await node.loadModel("male-cns", male, { steps: 2 });
 console.log(`female: ${F.nTiles} tiles mep ${V.hex(F.mep.mepId).slice(0, 14)}… | male: ${M.nTiles} tiles mep ${V.hex(M.mep.mepId).slice(0, 14)}…`);
 // the verifier derives both MEPs independently from the public model bytes + published profile params
 const mepF = makeMep({ name: "flywire-female", modelId: indepModelId(female), steps: 3 });
@@ -25,7 +25,7 @@ check("distinct brains -> distinct model ids and MEP ids", !V.eq(mepF.modelId, m
 
 // --- one challenge, a signed claim per MEP ---
 const ch = Vf.freshChallenge();
-const rf = node.challenge(mepF.mepId, ch, { stimulusSeed: 1 }), rm = node.challenge(mepM.mepId, ch, { stimulusSeed: 1 });
+const rf = await node.challenge(mepF.mepId, ch, { stimulusSeed: 1 }), rm = await node.challenge(mepM.mepId, ch, { stimulusSeed: 1 });
 console.log(`female claim: sketch ${rf.timings.sketchMs.toFixed(1)} ms, commit ${rf.timings.commitMs.toFixed(1)} ms, infer ${rf.timings.inferMs.toFixed(1)} ms`);
 const vf = Vf.verifyClaim(rf, mepF, ch), vm = Vf.verifyClaim(rm, mepM, ch);
 check("female claim verifies (scheme, mep, model, challenge, hash, signature)", vf.ok);
@@ -48,8 +48,8 @@ check("re-executing female claim with the male MEP's steps does NOT match", !Vf.
 
 // --- fraud: a lie in one tile of one MEP is caught by that MEP's audit only ---
 const liar = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "22".repeat(32) });
-const LF = liar.loadModel("flywire-female", female, { steps: 3 }); liar.lies.set(`${V.hex(LF.mep.mepId)}:7`, 12345);
-const lr = liar.challenge(LF.mep.mepId, ch, { stimulusSeed: 1 }); const lv = Vf.verifyClaim(lr, mepF, ch);
+const LF = await liar.loadModel("flywire-female", female, { steps: 3 }); liar.lies.set(`${V.hex(LF.mep.mepId)}:7`, 12345);
+const lr = await liar.challenge(LF.mep.mepId, ch, { stimulusSeed: 1 }); const lv = Vf.verifyClaim(lr, mepF, ch);
 check("liar's claim is well-formed and signed (fraud not visible from the claim alone)", lv.ok);
 const lo = Vf.verifyOpening(liar.open(LF.mep.mepId, 7), lr.claim, lv.slotSeed, LF.nTiles);
 check(`opening of lied tile -> '${lo.verdict}'`, lo.verdict === "fraud" && lo.weightsOk && lo.partialsOk);

@@ -39,11 +39,11 @@ export async function loadKernelFromBytes(bytes) {
   const { instance } = await WebAssembly.instantiate(bytes, {});
   return wrap(instance.exports);
 }
-export function wrap(e) {
+export function wrap(e, memory = e.memory) {
   const k = {
     exports: e,
     backend: e.porw_simd_backend() === 1 ? "simd128" : "scalar",
-    memory: e.memory,
+    memory,
     alloc: (n) => { const p = e.porw_alloc(n >>> 0); if (!p) throw new Error("wasm alloc failed"); return p; },
     mark: () => e.porw_heap_mark(),
     release: (m) => e.porw_heap_release(m),
@@ -52,9 +52,9 @@ export function wrap(e) {
       const rc = e.porw_sketch_tiles(bufPtr, nTiles >>> 0, firstTile >>> 0, slotSeed >>> 0, outPtr);
       if (rc !== 0) throw new Error("sketch rc=" + rc);
     },
-    u8: (ptr, n) => new Uint8Array(e.memory.buffer, ptr, n),
-    u32: (ptr, n) => new Uint32Array(e.memory.buffer, ptr, n),
-    put: (bytes) => { const p = k.alloc(bytes.length); new Uint8Array(e.memory.buffer, p, bytes.length).set(bytes); return p; },
+    u8: (ptr, n) => new Uint8Array(memory.buffer, ptr, n),
+    u32: (ptr, n) => new Uint32Array(memory.buffer, ptr, n),
+    put: (bytes) => { const p = k.alloc(bytes.length); new Uint8Array(memory.buffer, p, bytes.length).set(bytes); return p; },
     keccak256: (bytes) => { const m = k.mark(); const p = k.put(bytes); const o = k.alloc(32);
       e.porw_keccak256(p, bytes.length, o); const r = new Uint8Array(k.u8(o, 32)); k.release(m); return r; },
     slotSeed: (challenge32, device32) => { const m = k.mark(); const c = k.put(challenge32), d = k.put(device32);
@@ -91,4 +91,23 @@ export function attachTrees(k) {
     if (d >= 0xFFFFFFFE) { k.release(m); throw new Error("tree proof error " + d); }
     const out = []; for (let i = 0; i < d; i++) out.push(new Uint8Array(k.u8(o + i * 32, 32))); k.release(m); return out; };
   return k;
+}
+
+// node (level, idx) of a cached tree: level 0 = leaves; widths halve (ceil) up to the root
+export function treeWidths(n) { const w = [n]; while (w[w.length - 1] > 1) w.push((w[w.length - 1] + 1) >> 1); return w; }
+export function treeNodeAt(k, tree, level, idx) {
+  const w = treeWidths(tree.n); let off = 0; for (let l = 0; l < level; l++) off += w[l];
+  if (level >= w.length || idx >= w[level]) throw new Error("tree node out of range");
+  return new Uint8Array(k.u8(tree.ptr + (off + idx) * 32, 32));
+}
+
+// parallel cached-tree build over a pool: aligned 2^m-leaf blocks on workers, upper levels on main
+export async function treeBuildParallel(pool, leavesPtr, n, treePtr) {
+  const k = pool.kernel, e = k.exports;
+  let m = Math.max(1, Math.floor(Math.log2(Math.max(2, Math.floor(n / (pool.workers * 2))))));
+  const block = 1 << m, nBlocks = Math.ceil(n / block);
+  await pool.map("porw_merkle_tree_build_blocks", nBlocks, (f, c) => [leavesPtr, n, treePtr, m, f, c]);
+  if (e.porw_merkle_tree_build_upper(treePtr, n >>> 0, m) !== 0) throw new Error("tree upper build failed");
+  const nodes = k.treeNodes(n);
+  return { ptr: treePtr, n, root: new Uint8Array(k.u8(treePtr + (nodes - 1) * 32, 32)) };
 }

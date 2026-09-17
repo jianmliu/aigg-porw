@@ -34,7 +34,8 @@ MEP, stake-gated (opening a thousand tabs is free; a bond is not).
 | `mep_id` | `(bytes32 schemeDigest, bytes32 modelId, bytes32 execKind, uint32 steps, uint32 clampQ16)` | `mep.js`; `BrowserClaim.t.sol` |
 | residency claim | `(schemeDigest, mepId, modelId, partialsRoot, uint64 coverageBytes, challenge, deviceId, execDigest, uint32 stimulusSeed)`, secp256k1 signature, `ecrecover` | `claim.js`; `BrowserClaim.t.sol` |
 | tile opening | `(tileIdx, tile[4096], s_tile, partialsIndex, partialsProof[], weightsProof[])` | `node.js` → `verifyTileFraudProofKeccak` |
-| execution result | `execDigest = keccak(act_final as LE u32[])`, plus per-step activation roots `actRoot[s]` (§5) | `spmv_wasm.c`, `node.js` |
+| execution result | `execDigest = keccak(act_final as LE u32[])`; `execRoot = merkle([actRoot[1..steps]])` with `actRoot[s]` over leaves `keccak(LE32 i ‖ LE32 act_s[i])` (§5) | `spmv_wasm.c`, `dispute_wasm.c`, `node.js` |
+| CSR commitments (per model) | `csrRoot` over chunk leaves `keccak(LE32 c ‖ 64 post-sorted records)`, `rowRoot` over `keccak(LE32 i ‖ LE32 rowStart[i])` (n+1 leaves), `synapseRoot = keccak(csrRoot ‖ rowRoot)` | `dispute_wasm.c`, `node.js`, `verify.js` |
 | task id | `keccak(mepId ‖ uint32 stimulusSeed ‖ nonce32)` | `swarm.js` |
 | assignment | index sortition over stake-weighted eligible votes (§4) | `swarm.js` `assignSortition` |
 
@@ -44,6 +45,12 @@ Scheme digest `keccak256("aigg:porw:sketch-tile-keccak:v1")` and exec kind
 One MEP per released brain (female FlyWire adult brain, male CNS, …): same scheme,
 different `model_id` and execution parameters ⇒ different `mep_id`. A node hosts any
 subset; a claim binds exactly one MEP and cannot be rebound (tested).
+
+**Publication convention.** A MEP's payload SHOULD list synapse records sorted by
+post neuron (CSR order). Then `perm` is the identity, chunk leaves hash contiguous
+bytes, and row-parallel inference streams sequentially — measured 672 → 67 ms per
+step on 4 workers. Unsorted payloads still work (the node builds the permutation)
+but every synapse read becomes a random access into the payload.
 
 ## 3. Contracts and state ownership
 
@@ -114,8 +121,11 @@ disagreement to a single arithmetic term, then the contract checks that term.
 
 Executors commit, with each result: `execRoot = merkle([actRoot[1..steps]])`, where
 `actRoot[s]` is the Merkle root over per-neuron leaves `keccak(LE32 neuron ‖ LE32 act_s)`.
-(Cost in the browser: `steps × n_neurons` keccaks ≈ a few hundred ms per task;
-required so that a wrong step can be isolated without recomputing earlier ones.)
+Measured cost in the browser: ~250 ms per slot for two steps on 4 workers (leaves in
+parallel, block-parallel trees); required so that a wrong step can be isolated
+without recomputing earlier ones. Step 0 is the stimulus, a pure function of
+`stimulusSeed` — no tree. **Implemented and tested** (`dispute_wasm.c`, `dispute.js`,
+`test_dispute.mjs`), including the row check below.
 
 Given two executors A, B with different `execDigest`:
 
@@ -125,18 +135,24 @@ Given two executors A, B with different `execDigest`:
 2. **Neuron**: bisect over the neuron index space of `actRoot[s*]` (≤ 18 rounds for
    139k neurons; or the challenger names the differing neuron `i*` directly with
    both openings) → a neuron whose `act_{s*}[i*]` differs.
-3. **Synapse**: `act_{s*}[i*] = min(acc >> 16, clamp)`, `acc = Σ_{k∈in(i*)} w_k · act_{s*−1}[pre_k]`
-   over `i*`'s incoming synapses (contiguous in the CSR-ordered `synapseRoot`; the
-   range boundaries are opened with two proofs). Bisect the partial sums over the
-   range (≤ ~9 rounds for an average in-degree ≈ 390; bounded by `MAX_IN_DEGREE`)
-   → one synapse `k*` where the parties' running sums diverge.
-4. **Check**: the contract verifies one synapse record (proof in `synapseRoot`) and one
-   input activation `act_{s*−1}[pre_{k*}]` (proof in `actRoot[s*−1]`), recomputes
-   `w · act` and the single-step partial-sum update in u64, and rules. The loser is
-   slashed; the winner and the challenger are paid from the slashed bond.
+3. **Row check, then synapse**: each party opens its claimed `act_{s*}[i*]` and its
+   running partial sums over `i*`'s incoming range `[rowStart[i*], rowStart[i*+1])`
+   (bounds opened with two `rowRoot` proofs). A party whose claimed activation is not
+   `min(lastPartialSum >> 16, clamp)` loses immediately (a lie in the activation
+   alone). Otherwise bisect the partial sums (≤ ~9 rounds for an average in-degree
+   ≈ 390; bounded by `MAX_IN_DEGREE`) → the first position `k*` where the parties'
+   running sums diverge.
+4. **Check**: the contract verifies the CSR chunk containing `k*` (proof in `csrRoot`;
+   64 records per chunk, so the opening is ≈ 644 B + ~20 × 32 B), reads record `k*`
+   (its `post` must be `i*`), opens the input activation `act_{s*−1}[pre_{k*}]` (proof in
+   the *agreed* `actRoot[s*−1]`, or the stimulus rule when `s* = 1`), recomputes
+   `term = w · act` in u64 and requires `partialAfter == partialBefore + term` for each
+   party; exactly one fails and is slashed. The winner and the challenger are paid
+   from the slashed bond.
 
 Every round is one transaction carrying two or three Merkle proofs (≈ 18 × 32 B
-each); estimated 100–200k gas per round, ≤ ~30 rounds worst case. Rare by
+each); estimated 100–200k gas per round; measured 13 bisection rounds for a 5k-neuron
+model (≈ 18 for 139k), plus ≤ ~9 for the synapse range, plus the final check. Rare by
 construction (only on disagreement among bonded parties).
 
 ## 6. Economics (deployment choices, token-neutral)
@@ -158,11 +174,10 @@ construction (only on disagreement among bonded parties).
 | tile fraud proof on-chain (keccak scheme) | 1,106,534 gas (2.1% of a 52M block; ~0.8% of BSC's 140M) |
 | ecrecover of a claim | ~3.2k gas; claim hash + recovery test passes (`BrowserClaim.t.sol`) |
 | residency audit in-browser, 521 MiB | 44 ms with 4 workers; ~140 ms single thread |
-| per-slot node work, single thread | sketch ~140 ms + partials commit ~335 ms + inference (54.5M syn × 2 steps) ~0.4–0.55 s ≈ 0.9–1.0 s |
-| one-time model load | weights leaves + model id ≈ 7.4 s (single wasm thread) |
-| redundant re-execution (Node, same wasm) | ≈ 0.8 s |
-
-Workers parallelize sketch, weights leaves, and partials leaves (≈ 4× on 4 cores).
+| per-slot node work incl. dispute commitments, 4 workers, post-sorted, parallel trees | sketch ~55 + partials commit ~130 + inference ~70 + dispute commit ~250 ≈ **0.5 s** (single thread: 1.8 s) |
+| one-time model load (weights leaves, model id, CSR commitments) | 5.7 s (4 workers); 18.6 s single thread |
+| 16 sampled tile openings | 16–19 ms (cached trees) |
+| redundant re-execution (Node, same wasm) | ≈ 0.65–0.8 s |
 
 ## 8. Honest limits
 
@@ -172,5 +187,6 @@ Workers parallelize sketch, weights leaves, and partials leaves (≈ 4× on 4 co
   independent re-execution (the client, or an auditor); the design keeps re-execution
   cheap (≈ 1 s) precisely so that anyone can check.
 - Browser residency is weak as a scarcity signal; it is used as eligibility only.
-- The interactive dispute needs the CSR `synapseRoot` and per-step `actRoot`s to be
-  committed; both are straightforward but not yet implemented in the browser node.
+- The interactive dispute's commitments (`actRoot[s]`, `execRoot`, `csrRoot`,
+  `rowRoot`, `synapseRoot`) and the verifier-side protocol are implemented and tested
+  off-chain; the on-chain contracts are the next step.

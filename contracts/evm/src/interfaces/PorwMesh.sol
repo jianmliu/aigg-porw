@@ -6,6 +6,8 @@ pragma solidity ^0.8.20;
 ///         pinned by the browser node and by test/BrowserClaim.t.sol. Nothing here changes a
 ///         PoRW scheme id; the stake asset and beacon source are deployment choices.
 
+/// @dev CSR chunk size for synapse-record leaves (dispute openings)
+uint32 constant CSR_CHUNK = 64;
 /// @dev keccak256("aigg:porw:sketch-tile-keccak:v1")
 bytes32 constant SCHEME_SKETCH_TILE_KECCAK_V1 = 0x718b2eb3b33a6d18d904363ee1cc2fb797e344af10132ebfd93aef8d5d72e4b4;
 
@@ -39,7 +41,7 @@ interface IMEPRegistry {
         bytes32 execKind;     // keccak256("aigg:exec:int-spmv-q16:v1")
         uint32 steps;
         uint32 clampQ16;
-        bytes32 synapseRoot;  // Merkle root over CSR (post-sorted) synapse records — execution disputes
+        bytes32 synapseRoot;  // keccak256(csrRoot || rowRoot): csrRoot over keccak(LE32 c || 64 post-sorted records), rowRoot over keccak(LE32 i || LE32 rowStart[i])
         bytes weightsDA;      // content pointer for the bytes (Greenfield object / DSN piece / CID)
     }
     event MEPRegistered(bytes32 indexed mepId, bytes32 indexed modelId, bytes32 schemeDigest);
@@ -110,10 +112,15 @@ interface IExecutionDisputes {
     event DisputeResolved(bytes32 indexed taskId, address loser, address winner);
     function open(bytes32 taskId, address a, address b) external payable;
     function bisect(bytes32 taskId, uint256 mid, bytes32 commitmentAtMid) external;
-    /// @notice final step: one synapse record proof (synapseRoot) + one input activation proof (actRoot[s-1])
+    struct RowBounds { uint32 start; bytes32[] startProof; uint32 end; bytes32[] endProof; } // rowStart[i], rowStart[i+1] in rowRoot
+    struct ChunkOpening { uint32 c; bytes records; bytes32[] proof; }                          // CSR chunk containing k* (csrRoot)
+    struct PartyRow { uint32 claimedAct; uint64 partialBefore; uint64 partialAfter; }           // the party's row claim at k*
+    /// @notice row check + final term: the chunk record at k* (post == i*), the input activation act_{s-1}[pre]
+    ///         (proof in the agreed actRoot[s-1], or the stimulus rule when s == 1), term = w * act in u64;
+    ///         exactly one party's partialAfter != partialBefore + term (or fails the row check) and loses.
     function proveSynapseTerm(
-        bytes32 taskId, uint32 post, uint32 pre, uint16 weight, bytes32[] calldata synapseProof,
-        uint32 actPre, bytes32[] calldata actProof, uint64 partialBefore, uint64 partialAfter
+        bytes32 taskId, uint32 neuron, uint32 kStar, RowBounds calldata bounds, ChunkOpening calldata chunk,
+        uint32 actPre, bytes32[] calldata actProof, PartyRow calldata a, PartyRow calldata b
     ) external;
     function timeout(bytes32 taskId) external;
 }

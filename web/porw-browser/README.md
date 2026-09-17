@@ -2,95 +2,104 @@
 
 A browser tab as a **fly-brain instance**: it holds a released fly-brain model resident
 in wasm memory, proves that residency with PoRW, runs the model's deterministic
-inference, signs claims with a secp256k1 key (the reward key), answers audits, and
-can take distributed inference tasks in a leaderless mesh. No install. Measured in
-headless Chromium; every cryptographic output is checked against an independent
-implementation and the aigg-spec conformance vectors.
+inference, commits everything an execution dispute needs, signs claims with a
+secp256k1 key (the reward key), answers audits, and can take distributed inference
+tasks in a leaderless mesh. No install. Measured in headless Chromium; every
+cryptographic output is checked against an independent implementation and the
+aigg-spec conformance vectors, and the claim is verified on-chain.
 
 ## Modules
 
 | file | role |
 |---|---|
-| `sketch_wasm.c` | scheme-v2 tile sketch, WASM **SIMD128** (4 × u32 lanes) + scalar fallback; deterministic test-payload filler; bump allocator with mark/release |
-| `commit_wasm.c` | **keccak256** (freestanding keccak-f[1600]); weights/partials leaves; Merkle root/proof; **cached Merkle tree** (build once, O(log n) proofs); slot-seed derivation — scheme `aigg:porw:sketch-tile-keccak:v1` |
-| `spmv_wasm.c` | deterministic **integer fixed-point SpMV** (`aigg:exec:int-spmv-q16:v1`): reads the packed synapse records of the resident payload in place; unsigned Q16, hard clamp; bit-identical across engines |
-| `porw.js` / `model.js` | wasm glue (Node + browser), payload header decode, tree/SpMV wrappers |
+| `sketch_wasm.c` | scheme-v2 tile sketch, WASM **SIMD128** + scalar fallback; deterministic test-payload filler; bump allocator with mark/release |
+| `commit_wasm.c` | **keccak256** (freestanding keccak-f[1600]); weights/partials leaves; Merkle root/proof; **cached trees** (O(log n) proofs); **block-parallel tree build**; slot-seed derivation — scheme `aigg:porw:sketch-tile-keccak:v1` |
+| `spmv_wasm.c` | deterministic **integer fixed-point SpMV** (`aigg:exec:int-spmv-q16:v1`) over the packed synapse records in place; unsigned Q16, hard clamp |
+| `dispute_wasm.c` | execution-dispute commitments: per-step activation leaves, CSR build (counting sort by post), CSR chunk leaves (64 records/leaf), rowStart leaves, CSR-ordered partial sums; row-parallel inference (`…_csr_range`, and `…_rows_direct` when records are published post-sorted) |
+| `pool.js` / `pool_worker.js` | **shared-memory worker pool**: one resident copy in a shared `WebAssembly.Memory`, N instances of `porw-shared.wasm` (each with its own stack region) computing disjoint ranges in place; browser Workers (needs cross-origin isolation) or Node `worker_threads` |
+| `porw.js` / `model.js` | wasm glue (Node + browser), payload header decode, tree/SpMV wrappers, tree-node access for bisection |
 | `mep.js` | Model Execution Profiles — one per released brain (female FlyWire, male CNS, …): `mep_id = keccak(scheme ‖ model_id ‖ exec kind ‖ steps ‖ clamp)` |
-| `claim.js` | EVM-packed claim encoding (`abi.encodePacked` layout), secp256k1 signing / `ecrecover`-compatible recovery (noble) |
-| `node.js` | `PorwNode`: multi-model residency, per-MEP signed claims (residency + execution digest), tile openings from cached trees |
-| `verify.js` / `verifier.js` | **independent** verifier (noble keccak only, never the wasm): claim checks, sampled openings, sketch recomputation → `no_fraud / fraud / invalid`, redundant re-execution |
-| `swarm.js` | mesh coordination: stake-weighted **index sortition** (the contract rule), redundancy sets, backup queues, auditor sets, majority settlement |
-| `index.html` + `worker.js` | audit-throughput PoC with Web Workers (per-worker slices, no SharedArrayBuffer) |
-| `node_page.html` + `run_node_browser.mjs` | the full node loop in headless Chromium with this process as the verifier |
-| `test_wasm.mjs` / `test_node.mjs` / `test_swarm.mjs` / `test_spmv.mjs` | tests (see below); `crosscheck.py` / `int_spmv.py` — Python cross-checks |
-| `../../contracts/evm/test/BrowserClaim.t.sol` | the node's claim verified **on-chain**: `mep_id` and claim-hash encodings recomputed, `ecrecover` signer |
+| `claim.js` | EVM-packed claim encoding, secp256k1 signing / `ecrecover`-compatible recovery (noble) |
+| `node.js` | `PorwNode`: multi-model residency, per-MEP signed claims (residency + execution digest), tile openings, dispute openings (activation / rowStart / CSR chunk / partial sums / tree nodes) |
+| `verify.js` / `verifier.js` / `dispute.js` | **independent** verifier (noble keccak only, never the wasm): claim checks, sampled openings, sketch recomputation, redundant re-execution, and the execution dispute (step → neuron bisection → row check → synapse bisection → one-term check) |
+| `swarm.js` | mesh coordination: stake-weighted **index sortition** (the contract rule), redundancy sets, backups, auditors, majority settlement |
+| `index.html` + `worker.js` | audit-throughput PoC (per-worker slices, no shared memory) |
+| `node_page.html` + `run_node_browser.mjs` | the full node loop in headless Chromium (optionally with the pool) and this process as the verifier |
+| `synth.js` | JS payload synthesizer (same layout as the Python demo; records post-sorted by default) |
+| `test_*.mjs`, `crosscheck.py`, `int_spmv.py` | tests and Python cross-checks |
+| `../../contracts/evm/test/BrowserClaim.t.sol` | the node's claim verified **on-chain** (`mep_id`, claim hash, `ecrecover`) |
 
 ## Build, test, run
 
 ```sh
 cd web/porw-browser
-./build.sh                    # clang --target=wasm32 -O3 -msimd128 → sketch.wasm
-npm install                   # playwright (drivers), @noble/hashes, @noble/secp256k1
-npm test                      # test_wasm (keccak fixture) + test_node (loop, fraud) + test_swarm
+./build.sh          # sketch.wasm (own memory) + porw-shared.wasm (imported shared memory)
+npm install
+npm test            # test_wasm (keccak fixture, trees) · test_node (2 MEPs, fraud) · test_swarm · test_pool · test_dispute
 
-# audit-throughput PoC (workers)
+# audit-throughput PoC
 PW_CHROMIUM=/path/to/chrome node run_browser.mjs --mib 521 --workers 4
-# full node loop at FlyWire scale (export a payload first, see int_spmv.py / demo payload.py)
-PW_CHROMIUM=/path/to/chrome node run_node_browser.mjs --payload flywire-female.bin --steps 2 --samples 16 --rounds 3
-# Python cross-checks: sketches vs native kernel; integer SpMV vs numpy int64
-../../gpu/triton/.venv/bin/python crosscheck.py result.json
-../../gpu/triton/.venv/bin/python int_spmv.py flywire-female 20000 200000 1 3 /tmp/x && node test_spmv.mjs /tmp/x
+# full node loop at FlyWire scale; --workers N uses the shared-memory pool (server sends COOP/COEP)
+PW_CHROMIUM=/path/to/chrome node run_node_browser.mjs --payload flywire-female-sorted.bin --steps 2 --samples 16 --rounds 3 --workers 4
 ```
 
 ## What is verified
 
-- **Scheme conformance**: wasm keccak256 == noble on all block sizes; scheme digest,
-  slot seed, sketches, weights/partials leaves and roots, Merkle proofs — all
-  bit-identical to `spec-cache/conformance/porw/sketch-tile-keccak-v1.json`
-  (cached from aigg-spec, provenance in `…SOURCE.md`); tampered leaves rejected;
-  duplicate-last trees verified at every index; cached trees == streaming trees.
-- **Sketch kernel**: browser sketches bit-identical to the native AVX2 kernel
-  (`crosscheck.py`, 133,376 values, single-thread and multi-worker).
-- **Deterministic inference**: wasm integer SpMV bit-identical to the numpy int64
-  reference (digest, sum, non-zero count); Chromium == Node; re-executing with the
-  wrong MEP's parameters does **not** match.
-- **Node loop** (two MEPs, female + male): MEP ids match the verifier's independent
-  derivation; claims verify (scheme, MEP, model, challenge, hash, signature); a
-  claim is rejected against another MEP; tampered/malformed signatures rejected
-  (never a crash); sampled openings verify with the sketch recomputed from the
-  opened bytes; a **lie in one committed tile → `fraud`**, an honest tile →
-  `no_fraud`, forged bytes → `invalid`; redundant re-execution matches.
-- **On-chain**: `forge test` recomputes `mep_id` and the claim hash from the
-  fields and `ecrecover`s the signer (61k gas incl. JSON parsing).
-- **Mesh**: sortition is deterministic, stake-weighted, excludes ineligible
-  instances and the claimant (for auditors), spreads load across tasks;
-  settlement detects a dissenter and flags a fraud-proof round.
+- **Scheme conformance**: wasm keccak256 == noble on all block sizes; scheme digest, slot
+  seed, sketches, weights/partials leaves, roots and Merkle proofs — bit-identical to
+  the cached aigg-spec keccak vector; cached and block-parallel trees == streaming
+  trees (roots and every proof, odd sizes, partial last block).
+- **Sketch kernel**: browser sketches bit-identical to the native AVX2 kernel.
+- **Deterministic inference**: wasm integer SpMV == numpy int64; scatter kernel ==
+  CSR-ordered rows == post-sorted direct rows (bit-identical); Chromium == Node; the
+  wrong MEP's parameters do **not** match.
+- **Pool path == single-thread path**: model id, partials root, execution digest and
+  root, claim hash, openings — identical (sorted and unsorted payloads).
+- **Node loop** (female + male MEPs): claims verify; cross-MEP rebinding rejected;
+  malformed signatures rejected without crashing; sampled openings verify with the
+  sketch recomputed; a lie in one committed tile → `fraud`; forged bytes →
+  `invalid`; redundant re-execution matches.
+- **Execution dispute** (`test_dispute.mjs`): `actRoots`/`execRoot`/`synapseRoot`
+  reproduced by noble; first differing step found; neuron bisection over both
+  parties' trees finds the lied neuron (13 rounds for 5k neurons); a lie in the
+  activation is caught by the **row check** (claimed act ≠ min(last partial sum ≫ 16,
+  clamp)); a lie carried consistently into the partial sums is caught at the exact
+  **divergent synapse term** with the record (CSR chunk proof), row bounds
+  (rowStart proofs) and input activation (previous-step root or stimulus rule);
+  swapping roles still blames the liar; two honest executors never dispute.
+- **On-chain**: `forge test` recomputes `mep_id` and the claim hash and `ecrecover`s
+  the signer.
+- **Mesh**: sortition deterministic, stake-weighted, excludes ineligible instances and
+  the claimant; settlement flags a dissenter.
 
 ## Measured (4-core Xeon, no GPU, Chromium 141; `benchmarks/browser/`)
 
-| | |
-|---|---|
-| residency audit of 521 MiB (sketch only) | 127.6 ms single thread; **43.6 ms with 4 workers** |
-| one-time model load: weights leaves + model id | ~7.4 s (single wasm thread) |
-| per slot, single thread: sketch + partials commit + inference (54.5M syn × 2) | ~140 + ~350 + ~450–650 ms ≈ **0.9–1.2 s** |
-| 16 sampled openings served | **16–18 ms** (cached trees) |
-| redundant re-execution (Node) | ~0.8–0.9 s |
+521 MiB model, 139,255 neurons / 54.5M synapses, steps = 2, per-slot work including
+the dispute commitments:
 
-The per-slot cost is dominated by the keccak partials commitment and the inference,
-not the sketch; workers would parallelize the first two ≈ 4×.
+| per slot (ms) | sketch | partials commit | inference | dispute commit | **total** | one-time load |
+|---|---|---|---|---|---|---|
+| 1 thread | 164 | 345 | 585 | 716 | **1811** | 18.6 s |
+| 4 workers, unsorted | 38 | 219 | 672 | 472 | **1401** | 8.3 s |
+| 4 workers, post-sorted | 51 | 247 | 85 | 465 | **848** | 6.5 s |
+| 4 workers, post-sorted, parallel trees | ~55 | ~130 | ~70 | ~250 | **~480–540** | 5.7 s |
+
+16 sampled openings: 16–19 ms (cached trees). Two findings worth keeping: a CSR
+permutation makes every synapse read a random access into the 545 MB payload, so
+**publish models with records sorted by post neuron** (rows contiguous, parallel
+inference streams: 672 → 67 ms); and once inference is cheap the single-threaded
+tree builds dominate, so build aligned 2^m-leaf blocks on workers.
 
 ## Design and honest limits
 
-The settlement design that consumes these artifacts — redundancy, beacon sortition,
-cross-audit, and the interactive execution fraud proof down to one synapse — is in
+The settlement design that consumes these artifacts is
 [`contracts/evm/DESIGN-cross-audit.md`](../../contracts/evm/DESIGN-cross-audit.md)
-with interfaces in `contracts/evm/src/interfaces/PorwMesh.sol`.
+(interfaces in `contracts/evm/src/interfaces/PorwMesh.sol`).
 
 - **No TEE in a browser.** Execution correctness comes from determinism +
-  redundancy + cross-audit + fraud proofs, not hardware.
-- **Residency is eligibility, not the rewarded resource.** A 521 MiB model is not
-  scarce and the DRAM envelope is weak against SSDs over a jittery network; the
-  rewarded resource is verified, stake-gated execution units.
-- **Not yet in the node**: workers for leaves/sketch in the node path; per-step
-  activation roots and the CSR `synapseRoot` needed by the execution dispute;
-  gossip transport (libp2p/WebRTC); wallet (EIP-712) signing; contract wiring.
+  redundancy + cross-audit + the dispute protocol above, not hardware.
+- **Residency is eligibility, not the rewarded resource** (a 521 MiB model is not
+  scarce; the DRAM envelope is weak over a jittery network). The rewarded resource
+  is verified, stake-gated execution units.
+- **Not yet**: gossip transport (libp2p/WebRTC); wallet (EIP-712) signing; the
+  contracts themselves (interfaces + design exist; implementation next).

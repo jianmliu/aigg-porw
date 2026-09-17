@@ -203,3 +203,49 @@ uint32_t porw_merkle_tree_proof(const uint8_t *tree, uint32_t n, uint32_t index,
     }
     return depth;
 }
+
+/* ---------- parallel tree build: aligned blocks of 2^m leaves ----------
+ * Non-last blocks are full, so their subtrees are exactly the global tree's nodes; the
+ * duplicate-last rule only ever fires inside the last block. Workers build levels 0..m of
+ * their blocks in place; the main thread finishes levels m+1..root. */
+static inline uint32_t level_width(uint32_t n, uint32_t l) { uint32_t w = n; for (uint32_t i = 0; i < l; i++) w = (w + 1) / 2; return w; }
+static inline uint32_t level_offset(uint32_t n, uint32_t l) { uint32_t off = 0, w = n; for (uint32_t i = 0; i < l; i++) { off += w; w = (w + 1) / 2; } return off; }
+
+EXPORT("porw_merkle_tree_build_blocks")
+int porw_merkle_tree_build_blocks(const uint8_t *leaves, uint32_t n, uint8_t *tree, uint32_t m,
+                                  uint32_t first_block, uint32_t n_blocks) {
+    if (n == 0 || m > 31) return 1;
+    uint32_t block = 1u << m;
+    for (uint32_t b = first_block; b < first_block + n_blocks; b++) {
+        uint32_t first = b * block; if (first >= n) return 2;
+        uint32_t end = first + block; if (end > n) end = n;
+        for (uint64_t i = (uint64_t)first * 32; i < (uint64_t)end * 32; i++) tree[i] = leaves[i];
+        for (uint32_t l = 1; l <= m; l++) {
+            uint32_t wl = level_width(n, l), wprev = level_width(n, l - 1);
+            uint32_t offl = level_offset(n, l), offprev = level_offset(n, l - 1);
+            uint32_t i0 = first >> l, i1 = (end + (1u << l) - 1) >> l; if (i1 > wl) i1 = wl;
+            for (uint32_t i = i0; i < i1; i++) {
+                const uint8_t *L = tree + (uint64_t)(offprev + 2 * i) * 32;
+                const uint8_t *R = (2 * i + 1 < wprev) ? tree + (uint64_t)(offprev + 2 * i + 1) * 32 : L;
+                parent(L, R, tree + (uint64_t)(offl + i) * 32);
+            }
+        }
+    }
+    return 0;
+}
+
+EXPORT("porw_merkle_tree_build_upper")
+int porw_merkle_tree_build_upper(uint8_t *tree, uint32_t n, uint32_t from_level) {
+    if (n == 0) return 1;
+    uint32_t w = level_width(n, from_level), off = level_offset(n, from_level);
+    while (w > 1) {
+        uint32_t nw = (w + 1) / 2, noff = off + w;
+        for (uint32_t i = 0; i < nw; i++) {
+            const uint8_t *L = tree + (uint64_t)(off + 2 * i) * 32;
+            const uint8_t *R = (2 * i + 1 < w) ? tree + (uint64_t)(off + 2 * i + 1) * 32 : L;
+            parent(L, R, tree + (uint64_t)(noff + i) * 32);
+        }
+        off = noff; w = nw;
+    }
+    return 0;
+}

@@ -45,3 +45,13 @@ export function merkleVerifyCounted(root, leaf, index, count, proof) {
   return p === proof.length && eq(acc, root);
 }
 export const splitLeaves = (bytes) => { const out = []; for (let i = 0; i < bytes.length; i += 32) out.push(bytes.subarray(i, i + 32)); return out; };
+
+// ---- execution-dispute commitments (independent definitions) ----
+export const CLAMP_Q16 = 65536, CSR_CHUNK = 64;
+export const actLeaf = (i, act) => keccak(cat(le32(i), le32(act)));
+export const rowStartLeaf = (i, v) => keccak(cat(le32(i), le32(v)));
+export const csrChunkLeaf = (c, recordsBytes) => keccak(cat(le32(c), recordsBytes));
+export const synapseRootOf = (csrRoot, rowRoot) => keccak(cat(csrRoot, rowRoot));
+export const stimulusAct = (i, seed) => (fmix32((Math.imul(i, GOLDEN32) + seed) >>> 0) % 100 === 0 ? CLAMP_Q16 : 0);
+export const rowActivation = (lastSum) => { const v = lastSum >> 16n; return Number(v > BigInt(CLAMP_Q16) ? BigInt(CLAMP_Q16) : v); };
+export const record = (bytes) => { const dv = new DataView(bytes.buffer, bytes.byteOffset, 10); return { pre: dv.getUint32(0, true), post: dv.getUint32(4, true), w: dv.getUint16(8, true) }; };

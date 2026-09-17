@@ -7,22 +7,28 @@
 <pre id="log">loading…</pre>
 <script type="module">
 import { loadKernel } from "./porw.js";
+import { createPool } from "./pool.js";
 import { PorwNode } from "./node.js";
 import { hex } from "./verify.js";
 const log = (s) => { document.getElementById("log").textContent += "\n" + s; };
 const q = new URLSearchParams(location.search);
 const steps = Number(q.get("steps") || 2);
+const workers = Number(q.get("workers") || 0);
 try {
   const t0 = performance.now();
   const payload = new Uint8Array(await (await fetch("/payload.bin")).arrayBuffer());
   const fetchMs = performance.now() - t0;
-  const node = new PorwNode(await loadKernel("./sketch.wasm"), { privHex: "0x" + "33".repeat(32) });
-  const st = node.loadModel(q.get("name") || "flywire-female", payload, { steps });
+  let pool = null, kernel;
+  if (workers > 0) { if (!crossOriginIsolated) throw new Error("workers need cross-origin isolation (COOP/COEP)");
+    pool = await createPool({ wasmBytes: await (await fetch("./porw-shared.wasm")).arrayBuffer(), workers }); kernel = pool.kernel; }
+  else kernel = await loadKernel("./sketch.wasm");
+  const node = new PorwNode(kernel, { privHex: "0x" + "33".repeat(32), pool });
+  const st = await node.loadModel(q.get("name") || "flywire-female", payload, { steps });
   log(`payload ${payload.length} B fetched in ${fetchMs.toFixed(0)} ms; ${st.nTiles} tiles; weights leaves + model id in ${st.leavesMs.toFixed(0)} ms`);
   window.porwNode = {
     info: () => ({ nTiles: st.nTiles, neurons: st.hdr.neurons, synapses: st.hdr.synapses, modelId: hex(st.modelId), mepId: hex(st.mep.mepId),
-                   steps, fetchMs, leavesMs: st.leavesMs, backend: node.k.backend, hc: navigator.hardwareConcurrency }),
-    challenge: (chHex, seed) => { const r = node.challenge(st.mep.mepId, Uint8Array.from(chHex.match(/../g).map((h) => parseInt(h, 16))), { stimulusSeed: seed });
+                   steps, fetchMs, leavesMs: st.leavesMs, backend: node.k.backend, hc: navigator.hardwareConcurrency, workers, iso: crossOriginIsolated, sorted: st.csr.sorted }),
+    challenge: async (chHex, seed) => { const r = await node.challenge(st.mep.mepId, Uint8Array.from(chHex.match(/../g).map((h) => parseInt(h, 16))), { stimulusSeed: seed });
       const c = r.claim; return { claim: { schemeDigest: hex(c.schemeDigest), mepId: hex(c.mepId), modelId: hex(c.modelId), partialsRoot: hex(c.partialsRoot),
         coverageBytes: c.coverageBytes, challenge: hex(c.challenge), deviceId: hex(c.deviceId), execDigest: hex(c.execDigest), stimulusSeed: c.stimulusSeed },
         claimHash: hex(r.claimHash), signature: hex(r.signature), address: hex(r.address), timings: r.timings }; },

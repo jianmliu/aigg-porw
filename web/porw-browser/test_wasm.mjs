@@ -63,4 +63,45 @@ check(`all ${N} proofs verify (duplicate-last)`, allOk);
   check("cached tree root == merkleRoot", V.eq(tree.root, k.merkleRoot(leaves)));
   let same = true; for (let i = 0; i < N; i++) { const a = k.treeProof(tree, i), b = k.merkleProof(leaves, i); same &&= a.length === b.length && a.every((x, j) => V.eq(x, b[j])); }
   check("cached tree proofs == streaming proofs (all indices)", same); }
+// ---- dispute commitments: act/rowstart leaves == noble; CSR build; partial sums; CSR step == scatter step ----
+{ const { synthesizePayload } = await import("./synth.js"); const { decodeHeader } = await import("./model.js");
+  const e = k.exports; const p = synthesizePayload("csr-test", 3000, 30000); const hdr = decodeHeader(p);
+  const bp = k.put(p); const n = hdr.neurons, ns = hdr.synapses; const syn = bp + hdr.synOffset;
+  const rs = k.alloc((n + 1) * 4), perm = k.alloc(ns * 4), cur = k.alloc(n * 4);
+  check("csr build rc=0", e.porw_csr_build(syn, ns, n, rs, perm, cur) === 0);
+  const R = k.u32(rs, n + 1), P = k.u32(perm, ns), S = p.subarray(hdr.synOffset);
+  const post = (kk) => new DataView(S.buffer, S.byteOffset + P[kk] * 10, 10).getUint32(4, true);
+  let sorted = true, covered = new Set(); for (let kk = 0; kk < ns; kk++) { if (kk && post(kk) < post(kk - 1)) sorted = false; covered.add(P[kk]); }
+  check("perm sorts synapses by post and is a permutation", sorted && covered.size === ns && R[0] === 0 && R[n] === ns);
+  let rowsOk = true; for (let i = 0; i < n; i++) for (let kk = R[i]; kk < R[i + 1]; kk++) if (post(kk) !== i) rowsOk = false;
+  check("rowStart ranges hold exactly neuron i's incoming synapses", rowsOk);
+  // scatter step vs CSR-ordered step: bit-identical activations
+  const a0 = k.alloc(n * 4); e.porw_spmv_stimulus(a0, n, 1); const a1 = k.alloc(n * 4), a2 = k.alloc(n * 4), acc = k.alloc(n * 8);
+  check("scatter step rc=0", e.porw_spmv_step(syn, ns, a0, a1, acc, n) === 0);
+  check("csr step rc=0", e.porw_spmv_step_csr(syn, perm, rs, a0, a2, n) === 0);
+  check("CSR-ordered step == scatter step (bit-identical)", V.eq(k.u8(a1, n * 4), k.u8(a2, n * 4)));
+  // partial sums: last running sum over a neuron's range == its accumulator; act_out = min(acc>>16, 65536)
+  const i = 42, k0 = R[i], k1 = R[i + 1]; const ps = k.alloc(Math.max(1, k1 - k0) * 8);
+  check("partial sums rc=0", e.porw_csr_partial_sums(syn, perm, a0, n, k0, k1, ps) === 0);
+  const sums = new BigUint64Array(k.memory.buffer, ps, k1 - k0); const last = k1 > k0 ? sums[k1 - k0 - 1] : 0n;
+  check(`partial sums consistent with activation (neuron ${i}, in-degree ${k1 - k0})`, Number(last >> 16n > 65536n ? 65536n : last >> 16n) === k.u32(a1, n)[i]);
+  // leaves vs noble
+  const al = k.alloc(n * 32); e.porw_act_leaves(a1, n, 0, al);
+  const le32 = (v) => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, v >>> 0, true); return b; };
+  let okA = true; const A1 = k.u32(a1, n); for (let j = 0; j < n; j += 97) okA &&= V.eq(k.u8(al + j * 32, 32), V.keccak(new Uint8Array([...le32(j), ...le32(A1[j])])));
+  check("act leaves == noble keccak(LE32 i || LE32 act)", okA);
+  const rl = k.alloc((n + 1) * 32); e.porw_rowstart_leaves(rs, n + 1, 0, rl);
+  let okR = true; for (let j = 0; j <= n; j += 101) okR &&= V.eq(k.u8(rl + j * 32, 32), V.keccak(new Uint8Array([...le32(j), ...le32(R[j])])));
+  check("rowStart leaves == noble", okR);
+  const CH = 64, nc = Math.ceil(ns / CH); const cl = k.alloc(nc * 32);
+  check("csr chunk leaves rc=0", e.porw_csr_chunk_leaves(syn, perm, ns, CH, 0, nc, cl) === 0);
+  let okC = true; for (const c of [0, 7, nc - 1]) { const k0c = c * CH, k1c = Math.min(k0c + CH, ns); const parts = [le32(c)]; for (let kk = k0c; kk < k1c; kk++) parts.push(S.subarray(P[kk] * 10, P[kk] * 10 + 10)); okC &&= V.eq(k.u8(cl + c * 32, 32), V.keccak(new Uint8Array(parts.flatMap((x) => [...x])))); }
+  check("csr chunk leaves == noble (first, middle, last/short chunk)", okC); }
+{ const e = k.exports; let ok = true;
+  for (const [N, m] of [[133, 3], [1024, 4], [1025, 5], [7, 1], [2, 1], [1, 0]]) {
+    const leaves = new Uint8Array(N * 32).map((_, i) => (i * 13 + N) & 0xff); const lp = k.put(leaves); const tp = k.alloc(k.treeNodes(N) * 32);
+    const nb = Math.ceil(N / (1 << m)); ok &&= e.porw_merkle_tree_build_blocks(lp, N, tp, m, 0, nb) === 0 && e.porw_merkle_tree_build_upper(tp, N, m) === 0;
+    const root = new Uint8Array(k.u8(tp + (k.treeNodes(N) - 1) * 32, 32)); ok &&= V.eq(root, k.merkleRoot(leaves));
+    const tree = { ptr: tp, n: N }; for (let i = 0; i < N; i++) { const a = k.treeProof(tree, i), b = k.merkleProof(leaves, i); ok &&= a.length === b.length && a.every((x, j) => V.eq(x, b[j])); } }
+  check("block-parallel tree build == streaming (roots + all proofs, incl. odd sizes and partial last block)", ok); }
 console.log(fails === 0 ? "ALL PASS" : `${fails} FAILURES`); process.exit(fails ? 1 : 0);

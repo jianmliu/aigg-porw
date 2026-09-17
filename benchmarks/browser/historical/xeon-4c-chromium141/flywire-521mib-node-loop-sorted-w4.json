@@ -1,0 +1,117 @@
+{
+  "info": {
+    "nTiles": 133329,
+    "neurons": 139255,
+    "synapses": 54500000,
+    "modelId": "0xb9c9ac37c7dc2d837c18426fbfa335c1c59df82108c6770b87e284f9b8cfb0e2",
+    "mepId": "0x17151f147fd098877cdf737ab4c6a078d7256ee38e90ccd4ed5ff53b613fd84f",
+    "steps": 2,
+    "fetchMs": 987.160000000149,
+    "leavesMs": 5656.905000000261,
+    "backend": "simd128",
+    "hc": 4,
+    "workers": 4,
+    "iso": true,
+    "sorted": true
+  },
+  "verifierModelMs": 23468.332259000003,
+  "mepMatches": true,
+  "rounds": [
+    {
+      "claimOk": true,
+      "signer": "0x5cbdd86a2fa8dc4bddd8a8f69dba48572eec07fb",
+      "verdicts": [
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud"
+      ],
+      "reexecMatches": true,
+      "timings": {
+        "sketchMs": 185.214999999851,
+        "commitMs": 115.21999999973923,
+        "inferMs": 271.589999999851,
+        "disputeCommitMs": 235.660000000149
+      },
+      "slotMs": 807.6849999995902,
+      "openMs": 18.438029000000824,
+      "reMs": 782.1983239999972
+    },
+    {
+      "claimOk": true,
+      "signer": "0x5cbdd86a2fa8dc4bddd8a8f69dba48572eec07fb",
+      "verdicts": [
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud"
+      ],
+      "reexecMatches": true,
+      "timings": {
+        "sketchMs": 50.83499999996275,
+        "commitMs": 147.97499999962747,
+        "inferMs": 75.37999999988824,
+        "disputeCommitMs": 265.7650000001304
+      },
+      "slotMs": 539.9549999996088,
+      "openMs": 16.220362000000023,
+      "reMs": 633.663563999995
+    },
+    {
+      "claimOk": true,
+      "signer": "0x5cbdd86a2fa8dc4bddd8a8f69dba48572eec07fb",
+      "verdicts": [
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud"
+      ],
+      "reexecMatches": true,
+      "timings": {
+        "sketchMs": 58.69500000029802,
+        "commitMs": 112.12000000011176,
+        "inferMs": 67.43999999994412,
+        "disputeCommitMs": 245.97500000009313
+      },
+      "slotMs": 484.23000000044703,
+      "openMs": 16.413025000001653,
+      "reMs": 646.538410000001
+    }
+  ]
+}

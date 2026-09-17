@@ -1,0 +1,34 @@
+// Pool path (shared memory, Node worker_threads) must be bit-identical to the single-thread path.
+import fs from "node:fs";
+import { loadKernelFromBytes } from "./porw.js";
+import { createPool } from "./pool.js";
+import { PorwNode } from "./node.js";
+import { synthesizePayload } from "./synth.js";
+import * as V from "./verify.js";
+let fails = 0; const check = (n, ok) => { console.log((ok ? "  ok   " : "  FAIL ") + n); if (!ok) fails++; };
+const payload = synthesizePayload("pool-test", 30000, 300000);
+const single = new PorwNode(await loadKernelFromBytes(fs.readFileSync(new URL("./sketch.wasm", import.meta.url))), { privHex: "0x" + "11".repeat(32) });
+const pool = await createPool({ wasmBytes: fs.readFileSync(new URL("./porw-shared.wasm", import.meta.url)), workers: 4, nodeWorkers: true });
+const pooled = new PorwNode(pool.kernel, { privHex: "0x" + "11".repeat(32), pool });
+const S = await single.loadModel("pool-test", payload, { steps: 3 }), P = await pooled.loadModel("pool-test", payload, { steps: 3 });
+check(`model id: pool(${pool.workers} workers) == single`, V.eq(S.modelId, P.modelId));
+const ch = new Uint8Array(32).fill(5);
+const t1 = performance.now(); const rs = await single.challenge(S.mep.mepId, ch, { stimulusSeed: 2 }); const ms1 = performance.now() - t1;
+const t2 = performance.now(); const rp = await pooled.challenge(P.mep.mepId, ch, { stimulusSeed: 2 }); const ms2 = performance.now() - t2;
+check("partials root: pool == single", V.eq(rs.claim.partialsRoot, rp.claim.partialsRoot));
+check("execution digest (parallel CSR rows) == single (scatter)", V.eq(rs.claim.execDigest, rp.claim.execDigest));
+check("claim hash identical", V.eq(rs.claimHash, rp.claimHash));
+const o1 = single.open(S.mep.mepId, 11), o2 = pooled.open(P.mep.mepId, 11);
+check("openings identical (sketch, proofs)", o1.sketch === o2.sketch && o1.partialsProof.every((x, i) => V.eq(x, o2.partialsProof[i])) && o1.weightsProof.every((x, i) => V.eq(x, o2.weightsProof[i])));
+console.log(`timing (small model): single ${ms1.toFixed(0)} ms | pool ${ms2.toFixed(0)} ms (sketch ${rp.timings.sketchMs.toFixed(0)}, commit ${rp.timings.commitMs.toFixed(0)}, infer ${rp.timings.inferMs.toFixed(0)})`);
+pool.close();
+{ const up = synthesizePayload("pool-unsorted", 20000, 200000, { sortByPost: false });
+  const s1 = new PorwNode(await loadKernelFromBytes(fs.readFileSync(new URL("./sketch.wasm", import.meta.url))), { privHex: "0x" + "11".repeat(32) });
+  const pool2 = await createPool({ wasmBytes: fs.readFileSync(new URL("./porw-shared.wasm", import.meta.url)), workers: 3, nodeWorkers: true });
+  const p1 = new PorwNode(pool2.kernel, { privHex: "0x" + "11".repeat(32), pool: pool2 });
+  const a = await s1.loadModel("pool-unsorted", up, { steps: 2 }), b = await p1.loadModel("pool-unsorted", up, { steps: 2 });
+  check("unsorted payload detected (perm path)", b.csr.sorted === false && P.csr.sorted === true);
+  const ra = await s1.challenge(a.mep.mepId, ch, { stimulusSeed: 4 }), rb = await p1.challenge(b.mep.mepId, ch, { stimulusSeed: 4 });
+  check("unsorted: pool (perm-gather rows) == single (scatter) execution digest", V.eq(ra.claim.execDigest, rb.claim.execDigest) && V.eq(ra.result.execRoot, rb.result.execRoot));
+  pool2.close(); }
+console.log(fails ? `${fails} FAILURES` : "ALL PASS"); process.exit(fails ? 1 : 0);
