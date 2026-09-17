@@ -1,0 +1,69 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>PoRW browser PoC — fly-brain residency audit</title>
+<pre id="log">loading…</pre>
+<script type="module">
+import { loadKernel, runSlice, TILE_BYTES } from "./porw.js";
+
+const q = new URLSearchParams(location.search);
+const mib      = Number(q.get("mib") || 521);
+const workers  = Number(q.get("workers") || (navigator.hardwareConcurrency || 4));
+const repeats  = Number(q.get("repeats") || 3);
+const seed     = Number(q.get("seed") || 7);
+const slotSeed = Number(q.get("slot") || 2876441635);
+const single   = q.get("single") !== "0";
+
+const log = (s) => { document.getElementById("log").textContent += "\n" + s; };
+const nTiles = Math.floor((mib * (1 << 20)) / TILE_BYTES);
+const gib = (nTiles * TILE_BYTES) / (1 << 30);
+const result = { mib, nTiles, bytes: nTiles * TILE_BYTES, repeats, seed, slotSeed, ua: navigator.userAgent,
+                 hardwareConcurrency: navigator.hardwareConcurrency, deviceMemoryGiB: navigator.deviceMemory ?? null };
+document.getElementById("log").textContent = `tiles=${nTiles} (${mib} MiB) workers=${workers} repeats=${repeats}`;
+
+try {
+  // ---- single-threaded: main-thread kernel over the whole buffer ----
+  if (single) {
+    const k = await loadKernel("./sketch.wasm");
+    result.backend = k.backend;
+    const r = runSlice(k, { nTiles, firstTile: 0, seed, slotSeed, repeats });
+    result.single = { fillMs: r.fillMs, medianMs: r.medianMs, bestMs: r.bestMs, gibPerS: gib / (r.medianMs / 1000) };
+    result.sketchesSingle = Array.from(r.sketches);
+    log(`single [${k.backend}]: fill ${r.fillMs.toFixed(0)} ms, sketch median ${r.medianMs.toFixed(1)} ms = ${result.single.gibPerS.toFixed(2)} GiB/s`);
+  }
+
+  // ---- multi-worker: each worker owns a contiguous slice ----
+  const ws = [];
+  for (let i = 0; i < workers; i++) {
+    const w = new Worker("./worker.js", { type: "module" });
+    await new Promise((res, rej) => {
+      w.onmessage = (ev) => ev.data.type === "ready" ? res(ev.data) : rej(new Error(ev.data.error));
+      w.postMessage({ type: "init", wasmUrl: new URL("./sketch.wasm", location.href).href });
+    });
+    ws.push(w);
+  }
+  const per = Math.floor(nTiles / workers), rem = nTiles % workers;
+  const slices = []; let pos = 0;
+  for (let i = 0; i < workers; i++) { const n = per + (i < rem ? 1 : 0); slices.push({ id: i, firstTile: pos, nTiles: n }); pos += n; }
+
+  const tWall0 = performance.now();
+  const outs = await Promise.all(slices.map((s, i) => new Promise((res, rej) => {
+    ws[i].onmessage = (ev) => ev.data.type === "done" ? res(ev.data) : rej(new Error(ev.data.error));
+    ws[i].postMessage({ type: "run", id: s.id, nTiles: s.nTiles, firstTile: s.firstTile, seed, slotSeed, repeats });
+  })));
+  const wallMs = performance.now() - tWall0; // includes fill + warm + repeats: not the audit time
+  // Audit time for the parallel run = the slowest worker's median sketch time
+  // (all slices run concurrently; each worker times only its own sketch).
+  const slowestMedian = Math.max(...outs.map((o) => o.medianMs));
+  const sketches = new Uint32Array(nTiles);
+  for (const o of outs) sketches.set(o.sketches, slices[o.id].firstTile);
+  result.multi = { workers, medianMs: slowestMedian, gibPerS: gib / (slowestMedian / 1000),
+                   perWorkerMedianMs: outs.map((o) => o.medianMs), wallMsIncludingFill: wallMs };
+  result.sketchesMulti = Array.from(sketches);
+  log(`multi x${workers}: slowest worker median ${slowestMedian.toFixed(1)} ms = ${result.multi.gibPerS.toFixed(2)} GiB/s`);
+  ws.forEach((w) => w.terminate());
+  result.ok = true;
+} catch (err) {
+  result.ok = false; result.error = String(err && err.stack || err); log("ERROR " + result.error);
+}
+window.__porwResult = result;
+</script>

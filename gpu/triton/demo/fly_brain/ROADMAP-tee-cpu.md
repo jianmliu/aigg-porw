@@ -1,5 +1,11 @@
 # Roadmap: TEE-CPU execution-proof adapter for the PoRW demo
 
+> **Status (browser route):** this TEE roadmap is **paused** while the
+> zero-install browser route is explored (`web/porw-browser/`). Browsers expose
+> no hardware attestation, so the browser node's execution proof comes from
+> determinism + redundancy + cross-audit + fraud proofs instead. The seam and
+> stages below remain the plan for a native (installed) client.
+
 PoRW proves **residency** — the exact model weight bytes were on the device and
 answered byte-level audits under a fresh challenge. It deliberately does not
 prove **execution** — that a user request was actually run against those

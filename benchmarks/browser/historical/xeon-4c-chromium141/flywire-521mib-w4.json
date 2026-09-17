@@ -1,0 +1,44 @@
+{
+  "mib": 521,
+  "nTiles": 133376,
+  "bytes": 546308096,
+  "repeats": 3,
+  "seed": 7,
+  "slotSeed": 2876441635,
+  "ua": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/141.0.0.0 Safari/537.36",
+  "hardwareConcurrency": 4,
+  "deviceMemoryGiB": 8,
+  "backend": "simd128",
+  "single": {
+    "fillMs": 377.0999999999767,
+    "medianMs": 127.59999999997672,
+    "bestMs": 127.29999999993015,
+    "gibPerS": 3.9873750979631106
+  },
+  "multi": {
+    "workers": 4,
+    "medianMs": 43.59999999997672,
+    "gibPerS": 11.66947391055669,
+    "perWorkerMedianMs": [
+      33.90000000002328,
+      33.699999999953434,
+      43.59999999997672,
+      34.59999999997672
+    ],
+    "wallMsIncludingFill": 262.69999999995343
+  },
+  "ok": true,
+  "chromium": "141.0.7390.37",
+  "sketch_digests": {
+    "sketchesSingle_blake3": "0x338817468d75940bbf6d2f684e5529688ed789eafd0a9b7058e364549c6f48da",
+    "sketchesSingle_count": 133376,
+    "sketchesMulti_blake3": "0x338817468d75940bbf6d2f684e5529688ed789eafd0a9b7058e364549c6f48da",
+    "sketchesMulti_count": 133376
+  },
+  "host": {
+    "cpu": "Intel Xeon @ 2.80GHz, 4 vCPU (no GPU)",
+    "ram_gib": 15,
+    "kernel": "6.18.44-fc-v33",
+    "node": "v22.22.2"
+  }
+}

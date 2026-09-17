@@ -71,6 +71,14 @@ cd gpu/triton
 .venv/bin/python -m demo.fly_brain.pure_cpu_e2e --name smoke --neurons 5000 --synapses 50000
 ```
 
+## Browser route (zero-install)
+
+The same audit kernel compiled to WebAssembly SIMD128 runs in a browser tab:
+a full bit-exact audit of the 521 MiB fly brain takes ~44 ms with 4 Web
+Workers in headless Chromium on a 4-core machine — see
+[`web/porw-browser/`](../../../../web/porw-browser/README.md) for the PoC,
+measurements, and the honest limits of using browser residency for rewards.
+
 ## Optional: TEE-CPU execution proof
 
 PoRW proves residency, not that a request was executed. `--attest mock` adds a
