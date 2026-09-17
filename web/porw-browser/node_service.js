@@ -18,7 +18,8 @@ export const resultHash = (taskId32, digest32, root32) => keccak_256(cat(new Tex
 export const resultSigningHash = (domain, taskId32, digest32, root32) => (domain ? resultDigest(domain, taskId32, digest32, root32) : resultHash(taskId32, digest32, root32));
 
 export class NodeService {
-  constructor(node, client, { maxTilesPerRequest = 64 } = {}) { this.node = node; this.client = client; this.maxTiles = maxTilesPerRequest; this.served = { openings: 0, tasks: 0 }; this.unsubs = []; }
+  /** `onResult(result)`: called with each signed task result (e.g. to hand it to a gas-sponsoring relayer for TaskMarket.submitResult) */
+  constructor(node, client, { maxTilesPerRequest = 64, onResult = null } = {}) { this.node = node; this.client = client; this.maxTiles = maxTilesPerRequest; this.served = { openings: 0, tasks: 0 }; this.unsubs = []; this.onResult = onResult; }
   /** run the epoch challenge for a MEP and announce the signed claim (auditors pick it up on the MEP topic) */
   async announce(mepId, challenge32, { stimulusSeed = 1 } = {}) {
     const r = await this.node.challenge(mepId, challenge32, { stimulusSeed });
@@ -42,7 +43,9 @@ export class NodeService {
       const r = await this.node.challenge(mepId, unhex(p.taskId), { stimulusSeed: p.stimulusSeed >>> 0, stimulusIds: ids }); // the task id doubles as the (irrelevant) sketch challenge
       const h = resultSigningHash(this.node.domains?.market, unhex(p.taskId), r.result.execDigest, r.result.execRoot);
       this.served.tasks++;
-      return { type: "result", payload: { taskId: p.taskId, execDigest: hex(r.result.execDigest), execRoot: hex(r.result.execRoot), signature: hex(signHash(h, this.node.key.priv)), delegation: this.node.delegation || null } };
+      const result = { taskId: p.taskId, execDigest: hex(r.result.execDigest), execRoot: hex(r.result.execRoot), signature: hex(signHash(h, this.node.key.priv)), signer: hex(this.node.key.address), delegation: this.node.delegation || null };
+      if (this.onResult) { try { await this.onResult(result); } catch {} }
+      return { type: "result", payload: result };
     }));
   }
   /** on-chain fallback: the exact IPoRWClaimManager.Opening the instance submits itself via respondOpening */
