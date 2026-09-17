@@ -1,0 +1,44 @@
+{
+  "experiment": "porw-cpu-dram-residency",
+  "scheme": "aigg:porw:sketch-tile:v2",
+  "model": {
+    "name": "flywire-adult-brain",
+    "source": "synthetic",
+    "neurons": 139255,
+    "synapses": 54500000,
+    "n_tiles": 133329,
+    "bytes_total": 546115584,
+    "mib_total": 520.816
+  },
+  "model_id": "0x65682031739f6d9f67fd2b6d4d4438a97a11b76074b0041b90cbe4580eb92c32",
+  "challenge": "0x000000000000000000000000000000000000000000000000000000000000002a",
+  "slot_seed": 2876441635,
+  "residency": {
+    "resident_bytes": 546115584,
+    "mlocked": true,
+    "max_rss_delta_bytes": 0
+  },
+  "dram_bandwidth": {
+    "read_gib_s": 10.807,
+    "reference_sketch_gib_s_median": 0.086,
+    "reference_sketch_gib_s_best": 0.086,
+    "reference_sketch_seconds_median": 5.943422,
+    "repeats": 5
+  },
+  "envelope": {
+    "slot_ms": 100.0,
+    "bandwidth_gib_s": 10.807,
+    "bytes_per_slot": 1160392789,
+    "coverage_bytes": 546115584,
+    "coverage_fits_slot": true,
+    "max_model_mib_per_slot": 1106.6
+  },
+  "weights_root": "0x65682031739f6d9f67fd2b6d4d4438a97a11b76074b0041b90cbe4580eb92c32",
+  "partials_root": "0x42a47eb1766e8743e6a3c9b411d244101709f127ad0219c738ba7816fe05a840",
+  "commit_seconds": 1.005,
+  "sweep_matches_reference": true,
+  "opening_verified": true,
+  "fraud_honest_verdict": "no_fraud",
+  "fraud_tampered_verdict": "fraud",
+  "all_checks_pass": true
+}
