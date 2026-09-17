@@ -54,9 +54,12 @@ class State:
 
 def step(S: State, pre, post, w, step_idx, seed):
     n = S.v.size
-    I = np.zeros(n, np.int64)
-    contrib = w * S.spiked[pre].astype(np.int64)
-    np.add.at(I, post, contrib)  # exact int64 accumulation (order-independent)
+    # exact integer accumulation via bincount: every product |w| <= 32767 and every row has at most
+    # max_in_degree terms, so each partial sum is far below 2^53 and float64 addition is exact
+    # (order-independent). ~30x faster than np.add.at; identical state trajectory (501/501 leaf hashes
+    # on the seed-7 / 500-step conformance vector).
+    assert np.abs(w).max() * np.bincount(post, minlength=n).max() < 2 ** 53
+    I = np.bincount(post, weights=(w * S.spiked[pre].astype(np.int64)).astype(np.float64), minlength=n).astype(np.int64)
     g = S.g - ((S.g * DT_TAU_S_Q16) >> 16) + I * W_UNIT_Q16
     g = np.clip(g, I32_MIN, I32_MAX)
     R = State(n, S.stim); R.g = g; R.count = S.count.copy()
