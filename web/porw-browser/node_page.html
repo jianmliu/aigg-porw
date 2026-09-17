@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>PoRW browser node — full loop</title>
+<script type="importmap">
+{ "imports": { "@noble/hashes/": "./node_modules/@noble/hashes/", "@noble/secp256k1": "./node_modules/@noble/secp256k1/index.js" } }
+</script>
+<pre id="log">loading…</pre>
+<script type="module">
+import { loadKernel } from "./porw.js";
+import { PorwNode } from "./node.js";
+import { hex } from "./verify.js";
+const log = (s) => { document.getElementById("log").textContent += "\n" + s; };
+const q = new URLSearchParams(location.search);
+const steps = Number(q.get("steps") || 2);
+try {
+  const t0 = performance.now();
+  const payload = new Uint8Array(await (await fetch("/payload.bin")).arrayBuffer());
+  const fetchMs = performance.now() - t0;
+  const node = new PorwNode(await loadKernel("./sketch.wasm"), { privHex: "0x" + "33".repeat(32) });
+  const st = node.loadModel(q.get("name") || "flywire-female", payload, { steps });
+  log(`payload ${payload.length} B fetched in ${fetchMs.toFixed(0)} ms; ${st.nTiles} tiles; weights leaves + model id in ${st.leavesMs.toFixed(0)} ms`);
+  window.porwNode = {
+    info: () => ({ nTiles: st.nTiles, neurons: st.hdr.neurons, synapses: st.hdr.synapses, modelId: hex(st.modelId), mepId: hex(st.mep.mepId),
+                   steps, fetchMs, leavesMs: st.leavesMs, backend: node.k.backend, hc: navigator.hardwareConcurrency }),
+    challenge: (chHex, seed) => { const r = node.challenge(st.mep.mepId, Uint8Array.from(chHex.match(/../g).map((h) => parseInt(h, 16))), { stimulusSeed: seed });
+      const c = r.claim; return { claim: { schemeDigest: hex(c.schemeDigest), mepId: hex(c.mepId), modelId: hex(c.modelId), partialsRoot: hex(c.partialsRoot),
+        coverageBytes: c.coverageBytes, challenge: hex(c.challenge), deviceId: hex(c.deviceId), execDigest: hex(c.execDigest), stimulusSeed: c.stimulusSeed },
+        claimHash: hex(r.claimHash), signature: hex(r.signature), address: hex(r.address), timings: r.timings }; },
+    open: (t) => { const o = node.open(st.mep.mepId, t); return { tileIdx: o.tileIdx, position: o.position, tile: hex(o.tile), sketch: o.sketch,
+      partialsProof: o.partialsProof.map(hex), weightsProof: o.weightsProof.map(hex) }; },
+  };
+  window.__ready = true;
+} catch (err) { window.__error = String(err && err.stack || err); log("ERROR " + window.__error); }
+</script>

@@ -4,12 +4,17 @@
   "description": "",
   "main": "porw.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node test_wasm.mjs && node test_node.mjs - && node test_swarm.mjs",
+    "build": "./build.sh"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@noble/hashes": "^2.4.0",
+    "@noble/secp256k1": "^3.2.0",
     "playwright": "^1.63.0"
-  }
+  },
+  "type": "module",
+  "private": true
 }

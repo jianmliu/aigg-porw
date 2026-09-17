@@ -40,3 +40,26 @@ model resident and complete a full, bit-exact PoRW audit in ~44 ms — inside a
 100 ms slot with headroom. It does **not** by itself make residency a sound
 mining basis (see `web/porw-browser/README.md`: DRAM-vs-SSD envelope, network
 jitter, no TEE); it establishes that the *audit* side is feasible in-browser.
+
+## Full node loop (added later): `flywire-521mib-node-loop.json`
+
+`web/porw-browser/run_node_browser.mjs`: the page is the prover (resident 521 MiB
+model, keccak-scheme commitments, signed claims, tile openings, integer SpMV
+inference); this process is an independent verifier (noble-only checks, sampled
+openings, redundant re-execution with its own kernel). Single-thread wasm on the
+main thread (no workers yet in the node path).
+
+| item | measured |
+|---|---|
+| fetch 546 MB payload over localhost | ~0.95 s |
+| weights leaves + model id (133,329 keccaks over 4104 B), one-time | ~7.4 s |
+| verifier's independent model id (pure-JS keccak, one-time) | ~23.7 s |
+| per slot: sketch / partials commit / inference (54.5M syn × 2 steps) | ~135–175 / ~335–370 / ~430–650 ms ≈ **0.9–1.2 s** |
+| 16 sampled openings served (cached Merkle trees, O(log n)) | **16–18 ms** (was 5.7 s rebuilding the tree per proof) |
+| redundant re-execution in Node (same wasm) | ~0.8–0.9 s |
+| claim signature recovery, sampled verdicts, MEP match | all pass, all `no_fraud` |
+
+Per-slot cost is dominated by the keccak-scheme partials commitment and the
+inference, not by the sketch; workers would parallelize the first two ≈ 4× on 4
+cores. Deterministic fields (model id, MEP id, claim encoding) reproduce anywhere;
+timings are this host/browser only.

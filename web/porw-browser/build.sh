@@ -7,5 +7,5 @@ CC="${CC:-clang}"
 "$CC" --target=wasm32 -O3 -msimd128 -mbulk-memory -nostdlib -std=c11 -Wall -Wextra \
   -Wl,--no-entry -Wl,--export=__heap_base \
   -Wl,--initial-memory=1048576 -Wl,--max-memory=4294967296 \
-  -o sketch.wasm sketch_wasm.c
+  -o sketch.wasm sketch_wasm.c commit_wasm.c spmv_wasm.c
 ls -l sketch.wasm

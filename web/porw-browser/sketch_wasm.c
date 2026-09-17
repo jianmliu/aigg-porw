@@ -133,3 +133,6 @@ void *porw_alloc(uint32_t n) {
 }
 
 EXPORT("porw_reset_heap") void porw_reset_heap(void) { heap_top = (uintptr_t)&__heap_base; }
+/* mark/release: reclaim scratch allocated after a mark; the resident model below it is untouched */
+EXPORT("porw_heap_mark") uint32_t porw_heap_mark(void) { if (heap_top == 0) heap_top = (uintptr_t)&__heap_base; return (uint32_t)heap_top; }
+EXPORT("porw_heap_release") void porw_heap_release(uint32_t mark) { heap_top = mark; }

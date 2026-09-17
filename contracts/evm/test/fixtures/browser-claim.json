@@ -1,0 +1,20 @@
+{
+  "schemeDigest": "0x718b2eb3b33a6d18d904363ee1cc2fb797e344af10132ebfd93aef8d5d72e4b4",
+  "mepId": "0xc9f03f6c060f0e5c4dee10b6b70b1d929459cd0b460e55696a5b0a3e0b5f94c9",
+  "modelId": "0x5f211398ffba40b1877be94ec838f9f5cdd67b6e5229e28e77e4104bda37a0e8",
+  "partialsRoot": "0x42bc21aee5b3caa31b9c284ac170157b32000bb854b76a53b10732719585bc5d",
+  "coverageBytes": 2162688,
+  "challenge": "0xd3a0e2a1b61e87bd2b55e70d354122078350dedb3688ae4b88ad19ded3429e56",
+  "deviceId": "0x8dd832049319556c1cd22ed66ae790d07fea25830a6151c2f0a9879b3ef61305",
+  "execDigest": "0x9c02a1abb660292c6441f133f0060d0dc3e947281b6e130bcd7450ee11857adb",
+  "stimulusSeed": 1,
+  "mep": {
+    "name": "flywire-female",
+    "execKind": "0xddaf2a689a2584c585650d196bb1e58103b5b610cf8b087c1cc2ca3c67afb6fc",
+    "steps": 3,
+    "clampQ16": 65536
+  },
+  "claimHash": "0xf5a791e6e3e16aec6d5190d466df9e194dd191fcdcdaa541f09e05c5e6085dbc",
+  "signature": "0xa321de6ca3f52d9610a7f6514ce2da088ac7cb44114b0bb282a36eba0c9477180f48585a98595557e6fee5016fe5bd5f0c70f4e349edebceaaa5f92ac1e431ef1c",
+  "signer": "0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a"
+}
