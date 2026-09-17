@@ -38,9 +38,9 @@ pytestmark = pytest.mark.skipif(
 CHALLENGE = "00" * 31 + "2a"
 
 
-def _run(coverage_fraction):
+def _run(coverage_fraction, attest="none"):
     p = payload_mod.synthesize("test-fly", neurons=2500, synapses=25000)
-    return run(p, challenge_hex=CHALLENGE, coverage_fraction=coverage_fraction, seed=3)
+    return run(p, challenge_hex=CHALLENGE, coverage_fraction=coverage_fraction, seed=3, attest=attest)
 
 
 def test_end_to_end_sparse_coverage_all_checks_pass():
@@ -72,6 +72,40 @@ def test_payload_is_deterministic_and_tile_aligned():
     tiles_b = b.buf.reshape(n, TILE_BYTES)
     root_b = commit.merkle_root([commit.weights_leaf(i, tiles_b[i].tobytes()) for i in range(n)])
     assert root_a == root_b
+
+
+def test_mock_execution_attestation_binds_residency_and_execution():
+    r = _run(0.6, attest="mock")
+    ea = r["execution_attestation"]
+    assert ea is not None
+    assert ea["is_hardware"] is False
+    assert ea["verified_by"] == "mock"
+    assert ea["binds_verified"] is True
+    # the residency<->execution tie: a proof cannot be rebound to another model
+    assert ea["rebind_to_other_model_rejected"] is True
+    assert r["residency_ok"] is True
+    assert r["all_checks_pass"] is True
+
+
+def test_attestation_report_data_binds_model_id():
+    from demo.fly_brain.attest import ExecutionTranscript, MockCpuTeeAdapter, TDX_REPORT_DATA_OFFSET
+
+    model_a = b"\x11" * 32
+    model_b = b"\x22" * 32
+    ch = bytes.fromhex(CHALLENGE)
+    req = b"\xaa" * 32
+    resp = b"\xbb" * 32
+    adapter = MockCpuTeeAdapter()
+    t_a = ExecutionTranscript(model_a, ch, req, resp)
+    proof, quote = adapter.attest(t_a)
+    # verifies for the same transcript
+    assert adapter.verify(proof, quote, t_a) is True
+    # the report_data carries the transcript digest, which binds the model id
+    rd = bytes.fromhex(proof.report_data.removeprefix("0x"))
+    assert rd[:32] == t_a.digest()
+    # a transcript over a different model id does not verify against this quote
+    t_b = ExecutionTranscript(model_b, ch, req, resp)
+    assert adapter.verify(proof, quote, t_b) is False
 
 
 def test_checkpoint_source_uses_exact_bytes(tmp_path):

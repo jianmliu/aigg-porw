@@ -38,6 +38,17 @@ The synthetic payload is a connectome-**scaled** byte buffer, clearly labeled
 `source: synthetic` in the report — drop in the published FlyWire export with
 `--checkpoint` to prove residency of the real model.
 
+## Optional: TEE-CPU execution proof
+
+PoRW proves residency, not that a request was executed. `--attest mock` adds a
+CPU-TEE (Intel TDX / AMD SEV-SNP) execution-proof layer that binds an execution
+transcript over the **same** `model_id` into an attestation `report_data`, so
+one proof ties execution to the exact resident model. The mock stage exercises
+the seam only (`is_hardware: false`); the staged path to real TDX quotes and
+DCAP verification — reusing ai3-inference `packages/verify` — is in
+[`ROADMAP-tee-cpu.md`](ROADMAP-tee-cpu.md). A CPU TEE attests CPU inference and
+orchestration, not GPU kernels; that boundary is stated in the roadmap.
+
 ## Run
 
 ```sh
@@ -49,6 +60,10 @@ gpu/triton/.venv/bin/python -m demo.fly_brain.run_demo --json
 cd gpu/triton
 TRITON_INTERPRET=1 .venv/bin/python -m demo.fly_brain.run_demo \
   --name smoke --neurons 3000 --synapses 30000 --coverage-fraction 0.6
+
+# add the mock TEE-CPU execution-proof layer
+TRITON_INTERPRET=1 .venv/bin/python -m demo.fly_brain.run_demo \
+  --name smoke --neurons 3000 --synapses 30000 --coverage-fraction 0.6 --attest mock
 ```
 
 Run from `gpu/triton/` (so the `demo` and `porw_sketch` packages resolve), or

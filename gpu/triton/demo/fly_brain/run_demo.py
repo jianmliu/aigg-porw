@@ -80,7 +80,7 @@ def _sweep_sketches(torch, device: str, buf_t, slot_seed: int, tile_ids_np: np.n
     return out, time.perf_counter() - start
 
 
-def run(payload, *, challenge_hex: str, coverage_fraction: float, seed: int) -> dict:
+def run(payload, *, challenge_hex: str, coverage_fraction: float, seed: int, attest: str = "none") -> dict:
     from .payload import Payload  # noqa: F401  (type reference)
 
     torch, device = _select_device()
@@ -220,13 +220,46 @@ def run(payload, *, challenge_hex: str, coverage_fraction: float, seed: int) -> 
         report["non_inclusion"] = {"challenged_tile": None, "verified": None,
                                    "note": "full coverage: no uncovered tile to challenge"}
 
-    report["all_checks_pass"] = bool(
+    # --- optional TEE-CPU execution attestation (composition layer) ---------
+    # PoRW above proves residency; this binds an execution transcript (over the
+    # SAME model_id) into a CPU-TEE attestation. Mock stage only — see attest.py.
+    if attest == "mock":
+        from .attest import ExecutionTranscript, MockCpuTeeAdapter
+        import hashlib as _hl
+
+        request_digest = _hl.blake2b(b"demo-request:sketch-the-fly-brain", digest_size=32).digest()
+        response_digest = _hl.blake2b(
+            b"demo-response:" + model_id + partials_root, digest_size=32
+        ).digest()
+        transcript = ExecutionTranscript(model_id, challenge, request_digest, response_digest)
+        adapter = MockCpuTeeAdapter()
+        proof, quote = adapter.attest(transcript)
+        attest_ok = adapter.verify(proof, quote, transcript)
+        # Rebinding to a different model must fail (the residency<->execution tie).
+        wrong = ExecutionTranscript(bytes(32), challenge, request_digest, response_digest)
+        rebind_rejected = not adapter.verify(proof, quote, wrong)
+        report["execution_attestation"] = {
+            **proof.summary(),
+            "binds_verified": attest_ok,
+            "rebind_to_other_model_rejected": rebind_rejected,
+            "transcript_digest": "0x" + transcript.digest().hex(),
+        }
+    else:
+        report["execution_attestation"] = None
+
+    residency_ok = bool(
         sweep_matches_reference
         and opening_ok
         and honest_verdict == "no_fraud"
         and tampered_verdict == "fraud"
         and report["non_inclusion"]["verified"] in (True, None)
     )
+    exec_att = report["execution_attestation"]
+    execution_ok = exec_att is None or (
+        exec_att["binds_verified"] and exec_att["rebind_to_other_model_rejected"]
+    )
+    report["residency_ok"] = residency_ok
+    report["all_checks_pass"] = residency_ok and execution_ok
     return report
 
 
@@ -248,6 +281,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--coverage-fraction", type=float, default=1.0)
     ap.add_argument("--challenge", default="00" * 31 + "2a", help="32-byte hex challenge")
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--attest", choices=("none", "mock"), default="none",
+                    help="add a TEE-CPU execution-proof layer (mock stage)")
     ap.add_argument("--json", action="store_true", help="emit JSON only")
     args = ap.parse_args(argv)
 
@@ -267,6 +302,7 @@ def main(argv: list[str] | None = None) -> int:
         challenge_hex=args.challenge,
         coverage_fraction=args.coverage_fraction,
         seed=args.seed,
+        attest=args.attest,
     )
 
     if args.json:
@@ -294,6 +330,12 @@ def _print_summary(r: dict) -> None:
     print(f"  opening       tile {o['audited_tile']} -> verified={o['verified']}")
     print(f"  fraud proof   tile {f['tile']} -> honest={f['honest_verdict']} tampered={f['tampered_verdict']}")
     print(f"  non-inclusion challenged={ni['challenged_tile']} -> verified={ni['verified']}")
+    ea = r.get("execution_attestation")
+    if ea is not None:
+        hw = "hardware" if ea["is_hardware"] else "MOCK (not hardware)"
+        print(f"  exec attest   {ea['verified_by']} [{hw}]  image={ea['image_measurement'][:18]}...")
+        print(f"                binds={ea['binds_verified']}  rebind-rejected={ea['rebind_to_other_model_rejected']}")
+    print(f"  residency     {'OK' if r['residency_ok'] else 'FAIL'}")
     print(f"  ALL CHECKS    {'PASS' if r['all_checks_pass'] else 'FAIL'}")
 
 
