@@ -141,6 +141,42 @@ def synthesize(
     return Payload(name, neurons, synapses, "synthetic", _pad_to_tiles(raw))
 
 
+@dataclass(frozen=True)
+class Connectome:
+    """The synapse/neuron arrays decoded back from a synthetic payload."""
+
+    neurons: int
+    synapses: int
+    pre: np.ndarray  # uint32 [synapses]
+    post: np.ndarray  # uint32 [synapses]
+    weight: np.ndarray  # float64 [synapses] in [0, 1)
+
+
+def decode_synapses(payload: Payload) -> Connectome:
+    """Re-parse a synthetic payload's header + synapse block from its bytes.
+
+    Reads the resident bytes back into (pre, post, weight) arrays so a CPU
+    "inference" over the connectome genuinely touches the resident weights.
+    Only valid for ``synthesize``-produced payloads (checkpoints have no known
+    layout).
+    """
+    if payload.source != "synthetic":
+        raise ValueError("decode_synapses only supports synthetic payloads")
+    raw = payload.buf.tobytes()
+    if raw[: len(MAGIC)] != MAGIC:
+        raise ValueError("bad payload magic")
+    neurons, synapses, name_len = struct.unpack_from("<QQH", raw, len(MAGIC))
+    off = len(MAGIC) + struct.calcsize("<QQH") + name_len
+    off += neurons * NEURON_RECORD
+    syn = np.frombuffer(raw, dtype=np.uint8, count=synapses * SYNAPSE_RECORD, offset=off)
+    syn = syn.reshape(synapses, SYNAPSE_RECORD)
+    pre = syn[:, 0:4].copy().view(np.uint32).reshape(-1)
+    post = syn[:, 4:8].copy().view(np.uint32).reshape(-1)
+    wpat = syn[:, 8:10].copy().view(np.uint16).reshape(-1)
+    weight = wpat.astype(np.float64) / 65535.0
+    return Connectome(neurons, synapses, pre, post, weight)
+
+
 def from_checkpoint(path: str | Path, name: str | None = None) -> Payload:
     """Use the exact bytes of a real checkpoint as the resident weights.
 

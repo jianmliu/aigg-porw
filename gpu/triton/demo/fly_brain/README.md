@@ -38,6 +38,29 @@ The synthetic payload is a connectome-**scaled** byte buffer, clearly labeled
 `source: synthetic` in the report — drop in the published FlyWire export with
 `--checkpoint` to prove residency of the real model.
 
+## Pure-CPU end-to-end stack (residency + execution, no GPU)
+
+`pure_cpu_e2e.py` composes both halves of a verifiable-compute claim over the
+same content-addressed model, with no GPU in the loop:
+
+- **A. residency** (cryptographic, no TEE): the model bytes mlocked resident in
+  DRAM, stream-audited at the measured DRAM bandwidth under a fresh challenge,
+  full PoRW proof loop; and
+- **B. execution** (CPU TEE): a deterministic connectome propagation run over
+  the resident synapse bytes, its transcript bound to the same `model_id` and
+  attested by the CPU-TEE adapter (mock stage).
+
+Both halves carry the same `model_id`, so the attestation cannot be about a
+different model than the one proven resident.
+
+```sh
+cd gpu/triton
+# full FlyWire scale
+.venv/bin/python -m demo.fly_brain.pure_cpu_e2e --slot-ms 100 --repeats 5
+# small run
+.venv/bin/python -m demo.fly_brain.pure_cpu_e2e --name smoke --neurons 5000 --synapses 50000
+```
+
 ## Optional: TEE-CPU execution proof
 
 PoRW proves residency, not that a request was executed. `--attest mock` adds a
