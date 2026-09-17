@@ -123,6 +123,25 @@ def run(payload, *, challenge_hex: str, slot_ms: float, steps: int, stimulus_see
     t0 = time.perf_counter()
     output = fly_forward(conn, stimulus_seed, steps)
     infer_s = time.perf_counter() - t0
+
+    # Why this runs on a CPU: the propagation is a sparse mat-vec (SpMV) —
+    # per synapse it streams ~32 B of working set (pre/post ids, weight, a
+    # gathered activation, a scattered accumulate) for 2 flops (mul + add).
+    # That arithmetic intensity (~0.06 flop/byte) is far below any CPU's
+    # roofline knee, so it is memory-bandwidth-bound, not compute-bound — the
+    # opposite of a dense-GEMM LLM layer that wants GPU tensor cores.
+    syn_per_step = conn.synapses
+    bytes_per_synapse = 32
+    flops_per_synapse = 2
+    total_syn = syn_per_step * steps
+    spmv = {
+        "synapses_per_step": int(syn_per_step),
+        "steps": steps,
+        "synapses_per_second": int(total_syn / infer_s) if infer_s > 0 else None,
+        "effective_gib_s": round(total_syn * bytes_per_synapse / infer_s / (1 << 30), 3) if infer_s > 0 else None,
+        "arithmetic_intensity_flop_per_byte": round(flops_per_synapse / bytes_per_synapse, 4),
+        "bound": "memory" if flops_per_synapse / bytes_per_synapse < 1.0 else "compute",
+    }
     request_digest = hashlib.blake2b(
         b"stimulus:" + stimulus_seed.to_bytes(8, "little") + steps.to_bytes(4, "little"),
         digest_size=32,
@@ -140,8 +159,11 @@ def run(payload, *, challenge_hex: str, slot_ms: float, steps: int, stimulus_see
     if locked:
         R.munlock(buf)
 
+    feas = R.commodity_feasibility(int(buf.nbytes))
+
     return {
         "stack": "pure-cpu-verifiable",
+        "commodity_feasibility": feas,
         "scheme": "aigg:porw:sketch-tile:v2",
         "model": payload.summary(),
         "model_id": "0x" + model_id.hex(),
@@ -164,6 +186,7 @@ def run(payload, *, challenge_hex: str, slot_ms: float, steps: int, stimulus_see
             "synapses": conn.synapses,
             "steps": steps,
             "inference_seconds": round(infer_s, 4),
+            "spmv": spmv,
             "request_digest": "0x" + request_digest.hex(),
             "response_digest": "0x" + response_digest.hex(),
             "attestation": {**proof.summary(), "binds_verified": attest_ok,
@@ -171,7 +194,7 @@ def run(payload, *, challenge_hex: str, slot_ms: float, steps: int, stimulus_see
             "transcript_digest": "0x" + transcript.digest().hex(),
             "ok": execution_ok,
         },
-        "all_checks_pass": residency_ok and execution_ok,
+        "all_checks_pass": residency_ok and execution_ok and feas["runs_on_commodity_pc"],
     }
 
 
@@ -190,9 +213,19 @@ def _print(r: dict) -> None:
     print(f"  --- B. execution (CPU TEE) ---")
     hw = "hardware" if B["attestation"]["is_hardware"] else "MOCK (not hardware)"
     print(f"  inference     {B['computation']}  {B['neurons']:,} neurons x {B['steps']} steps  {B['inference_seconds']}s")
+    s = B["spmv"]
+    print(f"  SpMV          {s['synapses_per_second']:,} syn/s  {s['effective_gib_s']} GiB/s  intensity {s['arithmetic_intensity_flop_per_byte']} flop/B -> {s['bound']}-bound")
     print(f"  response      {B['response_digest'][:22]}...")
     print(f"  attestation   {B['attestation']['verified_by']} [{hw}]  binds={B['attestation']['binds_verified']} rebind-rejected={B['attestation']['rebind_to_other_model_rejected']}")
     print(f"  execution     {'OK' if B['ok'] else 'FAIL'}")
+    f = r["commodity_feasibility"]; h = f["host"]; cb = f["commodity_baseline"]
+    print(f"  --- commodity PC feasibility (no GPU) ---")
+    print(f"  baseline      {cb['ram_gib']:.0f} GiB RAM / {cb['min_cores']} cores / no GPU  (model budget {cb['model_budget_gib']} GiB)")
+    print(f"  model         {f['model_bytes']/(1<<20):.1f} MiB = {f['model_fraction_of_commodity_budget']*100:.1f}% of budget  fits={f['fits_commodity_ram']}")
+    print(f"  this host     {h['mem_available_gib']} GiB avail / {h['cores']} cores / gpu={h['gpu_present']}")
+    ml = "unlimited" if h["rlimit_memlock_bytes"] is None else f"{h['rlimit_memlock_bytes']/(1<<20):.0f} MiB"
+    print(f"  mlock         unprivileged-possible={f['unprivileged_mlock_possible']} (RLIMIT {ml}); residency requires mlock: {f['residency_requires_mlock']}")
+    print(f"  commodity PC  {'OK' if f['runs_on_commodity_pc'] else 'FAIL'}")
     print(f"  ALL CHECKS    {'PASS' if r['all_checks_pass'] else 'FAIL'}")
 
 

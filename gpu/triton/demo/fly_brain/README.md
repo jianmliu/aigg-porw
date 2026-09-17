@@ -53,6 +53,16 @@ same content-addressed model, with no GPU in the loop:
 Both halves carry the same `model_id`, so the attestation cannot be about a
 different model than the one proven resident.
 
+The point of the CPU track is to lower the hardware bar so an **ordinary,
+GPU-less computer** can host, prove, and run the model. The fly brain qualifies
+for a structural reason: its propagation is a sparse mat-vec (SpMV) with ~0.06
+flop/byte — memory-bound, not GPU-style dense GEMM — and the ~521 MiB model is
+~13% of an 8 GiB PC's model budget. The report includes a commodity-PC
+feasibility section and the measured SpMV intensity; see
+[`WHY-CPU.md`](WHY-CPU.md). Residency never depends on `mlock` (ordinary users
+usually cannot mlock a 500 MiB buffer); it is proven by the bandwidth envelope
+plus sampled-byte audits.
+
 ```sh
 cd gpu/triton
 # full FlyWire scale

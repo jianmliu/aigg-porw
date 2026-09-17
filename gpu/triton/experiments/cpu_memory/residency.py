@@ -119,6 +119,77 @@ def measure_dram_bandwidth(
     )
 
 
+# A modest "ordinary computer" baseline: what a typical laptop/desktop with no
+# GPU offers. The fly brain must clear this with headroom to make the claim
+# "an ordinary computer can host, prove, and run it".
+COMMODITY_RAM_BYTES = 8 * (1 << 30)
+COMMODITY_MIN_CORES = 2
+# Leave most of RAM for the OS and the application: budget half of it for the
+# resident model.
+COMMODITY_MODEL_BUDGET_FRACTION = 0.5
+
+
+def commodity_feasibility(model_bytes: int) -> dict:
+    """Can an ordinary, GPU-less computer host and prove this model?
+
+    Reports the host's actual resources and, separately, whether the model
+    clears a fixed commodity baseline (8 GiB RAM, 2 cores, no GPU). It also
+    reports whether an *unprivileged* user could mlock the model under the
+    current RLIMIT_MEMLOCK — on most laptops that limit is small (8 MiB or
+    less), so mlock will NOT be available to ordinary users. Residency does
+    not depend on mlock: it is proven by the bandwidth envelope + audit; mlock
+    is only an extra non-swappability hardening when available.
+    """
+    import os
+
+    mem_total = mem_avail = None
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemTotal:"):
+                mem_total = int(line.split()[1]) * 1024
+            elif line.startswith("MemAvailable:"):
+                mem_avail = int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    cores = os.cpu_count() or 1
+    soft, _hard = resource.getrlimit(resource.RLIMIT_MEMLOCK)
+    unprivileged_mlock_ok = soft == resource.RLIM_INFINITY or model_bytes <= soft
+    has_gpu = False
+    try:
+        import torch  # noqa: F401
+
+        has_gpu = bool(__import__("torch").cuda.is_available())
+    except Exception:
+        has_gpu = False
+
+    budget = int(COMMODITY_RAM_BYTES * COMMODITY_MODEL_BUDGET_FRACTION)
+    fits_commodity_ram = model_bytes <= budget
+    fits_this_host = mem_avail is None or model_bytes <= mem_avail * 0.8
+
+    return {
+        "commodity_baseline": {
+            "ram_gib": COMMODITY_RAM_BYTES / (1 << 30),
+            "min_cores": COMMODITY_MIN_CORES,
+            "gpu_required": False,
+            "model_budget_gib": round(budget / (1 << 30), 2),
+        },
+        "host": {
+            "mem_total_gib": round(mem_total / (1 << 30), 2) if mem_total else None,
+            "mem_available_gib": round(mem_avail / (1 << 30), 2) if mem_avail else None,
+            "cores": cores,
+            "gpu_present": has_gpu,
+            "rlimit_memlock_bytes": None if soft == resource.RLIM_INFINITY else int(soft),
+        },
+        "model_bytes": int(model_bytes),
+        "model_fraction_of_commodity_budget": round(model_bytes / budget, 4),
+        "fits_commodity_ram": fits_commodity_ram,
+        "fits_this_host_ram": fits_this_host,
+        "unprivileged_mlock_possible": unprivileged_mlock_ok,
+        "residency_requires_mlock": False,
+        "runs_on_commodity_pc": bool(fits_commodity_ram and cores >= COMMODITY_MIN_CORES),
+    }
+
+
 def envelope(coverage_bytes: int, bandwidth_gib_s: float, slot_ms: float) -> dict:
     """PoRW bandwidth envelope: can the covered bytes be streamed within a slot?
 

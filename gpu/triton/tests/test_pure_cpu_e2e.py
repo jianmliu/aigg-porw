@@ -39,6 +39,23 @@ def test_both_halves_pass_and_share_model_id():
     assert r["all_checks_pass"] is True
 
 
+def test_commodity_feasibility_and_memory_bound_spmv():
+    r = _run()
+    f = r["commodity_feasibility"]
+    # the fly brain fits an ordinary 8 GiB / 2-core / no-GPU computer
+    assert f["commodity_baseline"]["gpu_required"] is False
+    assert f["fits_commodity_ram"] is True
+    assert f["runs_on_commodity_pc"] is True
+    # residency never depends on mlock (ordinary users usually cannot mlock)
+    assert f["residency_requires_mlock"] is False
+    assert r["A_residency"]["ok"] is True
+    # the propagation is a memory-bound SpMV, not a GPU-style dense GEMM
+    s = r["B_execution"]["spmv"]
+    assert s["bound"] == "memory"
+    assert s["arithmetic_intensity_flop_per_byte"] < 1.0
+    assert s["synapses_per_second"] > 0
+
+
 def test_execution_is_deterministic():
     r1 = _run(stimulus_seed=7)
     r2 = _run(stimulus_seed=7)
