@@ -1,0 +1,55 @@
+# Fruit-fly-brain PoRW end-to-end demo
+
+A demonstration that runs the full Proof of Resident Weights scheme-v2 loop
+against a real, content-addressable model payload held resident on the GPU.
+
+It is a **demo target**, not a production service: it exercises the residency
+proof math end to end on a recognizable open model. It does not add custody,
+staking, rewards, or consensus (those are out of this repository's scope).
+
+## What it does
+
+1. **Payload** ([`payload.py`](payload.py)) — the fruit-fly connectome as a
+   content-addressable weight buffer. Either a real checkpoint's exact bytes
+   (`--checkpoint`), or a deterministic connectome-scaled stand-in seeded by
+   the model name (default: FlyWire adult-brain scale, ~139,255 neurons /
+   ~54.5M synapses). The buffer is padded to whole 4 KiB tiles; the weights
+   Merkle root is the model id.
+2. **Residency + sweep** — the bytes are placed resident on the device and the
+   covered tiles are sketched by the GPU sweep kernel, cross-checked
+   bit-for-bit against the NumPy reference.
+3. **Commit** — weights Merkle root (model id) and coverage-ordered partials
+   root.
+4. **Audit** — a committed opening (the audited tile is really committed), a
+   tile fraud proof (honest commitment → NoFraud, lying commitment over the
+   same honest weights → Fraud), and a non-inclusion proof for an uncovered
+   tile (sparse / MoE-style coverage).
+
+## What it proves — and what it does not
+
+- **Proves:** the exact model weight bytes were resident on the device and the
+  device answered byte-level audits over them under a fresh public challenge.
+- **Does not prove:** that the brain computes anything, or that a user
+  inference request was executed. Inference execution is out of PoRW scope; the
+  sketch is an algebraic consistency check, not a collision-resistant or
+  execution proof. See the repository research-limitations notes.
+
+The synthetic payload is a connectome-**scaled** byte buffer, clearly labeled
+`source: synthetic` in the report — drop in the published FlyWire export with
+`--checkpoint` to prove residency of the real model.
+
+## Run
+
+```sh
+# Native GPU (A100): full FlyWire-scale payload, dense coverage.
+gpu/triton/.venv/bin/python -m demo.fly_brain.run_demo --json
+
+# CPU correctness run (no GPU): small payload, interpreter mode, coverage gap
+# so the non-inclusion path is exercised.
+cd gpu/triton
+TRITON_INTERPRET=1 .venv/bin/python -m demo.fly_brain.run_demo \
+  --name smoke --neurons 3000 --synapses 30000 --coverage-fraction 0.6
+```
+
+Run from `gpu/triton/` (so the `demo` and `porw_sketch` packages resolve), or
+add that directory to `PYTHONPATH`. Exit code is non-zero if any check fails.
