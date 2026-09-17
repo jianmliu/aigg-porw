@@ -19,23 +19,36 @@
     "max_rss_delta_bytes": 0
   },
   "dram_bandwidth": {
-    "read_gib_s": 10.807,
-    "reference_sketch_gib_s_median": 0.086,
-    "reference_sketch_gib_s_best": 0.086,
-    "reference_sketch_seconds_median": 5.943422,
+    "read_gib_s_single_core": 11.658,
+    "read_gib_s_aggregate": 41.632,
+    "simd_backend": "avx2",
+    "simd_threads": 4,
+    "simd_sketch_gib_s_median": 28.05,
+    "simd_sketch_gib_s_best": 33.488,
+    "simd_sketch_seconds_median": 0.018132,
+    "simd_fraction_of_aggregate_read": 0.674,
+    "reference_sketch_gib_s": 0.102,
     "repeats": 5
+  },
+  "audit_envelope": {
+    "slot_ms": 100.0,
+    "bandwidth_gib_s": 28.05,
+    "bytes_per_slot": 3011845816,
+    "coverage_bytes": 546115584,
+    "coverage_fits_slot": true,
+    "max_model_mib_per_slot": 2872.3
   },
   "envelope": {
     "slot_ms": 100.0,
-    "bandwidth_gib_s": 10.807,
-    "bytes_per_slot": 1160392789,
+    "bandwidth_gib_s": 41.632,
+    "bytes_per_slot": 4470201961,
     "coverage_bytes": 546115584,
     "coverage_fits_slot": true,
-    "max_model_mib_per_slot": 1106.6
+    "max_model_mib_per_slot": 4263.1
   },
   "weights_root": "0x65682031739f6d9f67fd2b6d4d4438a97a11b76074b0041b90cbe4580eb92c32",
   "partials_root": "0x42a47eb1766e8743e6a3c9b411d244101709f127ad0219c738ba7816fe05a840",
-  "commit_seconds": 1.005,
+  "commit_seconds": 0.843,
   "sweep_matches_reference": true,
   "opening_verified": true,
   "fraud_honest_verdict": "no_fraud",

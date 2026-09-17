@@ -80,42 +80,103 @@ def sketch_stream(buf: np.ndarray, slot_seed: int, chunk_tiles: int = 4096) -> n
 class BandwidthResult:
     bytes_streamed: int
     repeats: int
+    # unoptimized NumPy reference sketch (compute/allocation-bound)
     seconds_median: float
     seconds_best: float
     gib_s_median: float
     gib_s_best: float
+    # single-threaded streaming read (one core's pull)
     baseline_read_gib_s: float
+    # aggregate streaming read across all cores (the honest memory ceiling for
+    # a threaded kernel); equals baseline when the SIMD library is unavailable
+    read_gib_s_aggregate: float = 0.0
+    # CPU SIMD sketch kernel (bit-exact, threaded); None when unavailable
+    simd_backend: str | None = None
+    simd_threads: int = 0
+    simd_seconds_median: float | None = None
+    simd_gib_s_median: float | None = None
+    simd_gib_s_best: float | None = None
 
 
 def measure_dram_bandwidth(
     buf: np.ndarray, slot_seed: int, repeats: int = 5, chunk_tiles: int = 4096
 ) -> BandwidthResult:
-    """Time the streaming sketch over the resident buffer, plus a pure-read
-    baseline (summing the raw bytes as u64) for context."""
-    sketch_stream(buf, slot_seed, chunk_tiles)  # warm caches / allocations
-    times = []
-    for _ in range(repeats):
-        t0 = time.perf_counter()
-        sketch_stream(buf, slot_seed, chunk_tiles)
-        times.append(time.perf_counter() - t0)
-    times.sort()
-    med = times[len(times) // 2]
-    best = times[0]
+    """Time the sketch over the resident buffer three ways.
+
+    - the unoptimized NumPy reference (rate is scale-invariant, so it is timed
+      once on at most a 64 MiB tile-aligned prefix to keep large runs quick);
+    - the CPU SIMD kernel (bit-exact, threaded) over the whole buffer, timed
+      ``repeats`` times — this is the verifiable audit rate;
+    - a streaming-read baseline, single-threaded (one core) and aggregate
+      (all cores), which is the honest memory ceiling for a threaded kernel.
+    """
     gib = buf.nbytes / (1 << 30)
 
+    # reference: bounded prefix, single timing
+    ref_bytes = min(buf.nbytes, (64 << 20) // TILE_BYTES * TILE_BYTES)
+    ref_view = np.ascontiguousarray(buf[:ref_bytes])
+    sketch_stream(ref_view, slot_seed, chunk_tiles)  # warm
+    t0 = time.perf_counter()
+    sketch_stream(ref_view, slot_seed, chunk_tiles)
+    ref_s = time.perf_counter() - t0
+    ref_gib_s = (ref_bytes / (1 << 30)) / ref_s if ref_s > 0 else 0.0
+    # express as time-equivalent over the full buffer for the seconds fields
+    ref_full_s = gib / ref_gib_s if ref_gib_s > 0 else 0.0
+
+    # single-core streaming read
     u64 = buf.view("<u8")
     b0 = time.perf_counter()
     _ = int(u64.sum())
     base_s = time.perf_counter() - b0
+    base_gib_s = gib / base_s if base_s > 0 else 0.0
+
+    simd_backend = None
+    simd_threads = 0
+    simd_med = simd_best = None
+    agg_gib_s = base_gib_s
+    try:
+        from . import simd as _simd
+
+        if _simd.available():
+            import os
+
+            simd_backend = _simd.backend()
+            simd_threads = os.cpu_count() or 1
+            _simd.sketch_tiles_simd(buf, slot_seed)  # warm
+            ts = []
+            for _ in range(repeats):
+                t0 = time.perf_counter()
+                _simd.sketch_tiles_simd(buf, slot_seed)
+                ts.append(time.perf_counter() - t0)
+            ts.sort()
+            simd_med, simd_best = ts[len(ts) // 2], ts[0]
+            # aggregate read: same threading as the kernel
+            _simd.read_sum(buf)  # warm
+            rs = []
+            for _ in range(max(3, repeats)):
+                t0 = time.perf_counter()
+                _simd.read_sum(buf)
+                rs.append(time.perf_counter() - t0)
+            rs.sort()
+            agg_s = rs[len(rs) // 2]
+            agg_gib_s = gib / agg_s if agg_s > 0 else base_gib_s
+    except Exception:
+        simd_backend = None
 
     return BandwidthResult(
         bytes_streamed=int(buf.nbytes),
         repeats=repeats,
-        seconds_median=round(med, 6),
-        seconds_best=round(best, 6),
-        gib_s_median=round(gib / med, 3),
-        gib_s_best=round(gib / best, 3),
-        baseline_read_gib_s=round(gib / base_s, 3) if base_s > 0 else 0.0,
+        seconds_median=round(ref_full_s, 6),
+        seconds_best=round(ref_full_s, 6),
+        gib_s_median=round(ref_gib_s, 3),
+        gib_s_best=round(ref_gib_s, 3),
+        baseline_read_gib_s=round(base_gib_s, 3),
+        read_gib_s_aggregate=round(agg_gib_s, 3),
+        simd_backend=simd_backend,
+        simd_threads=simd_threads,
+        simd_seconds_median=round(simd_med, 6) if simd_med is not None else None,
+        simd_gib_s_median=round(gib / simd_med, 3) if simd_med else None,
+        simd_gib_s_best=round(gib / simd_best, 3) if simd_best else None,
     )
 
 

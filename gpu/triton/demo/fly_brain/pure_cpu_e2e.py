@@ -85,9 +85,16 @@ def run(payload, *, challenge_hex: str, slot_ms: float, steps: int, stimulus_see
     # ---- A. residency (mlock + DRAM bandwidth + PoRW proof loop) -----------
     locked = R.mlock(buf)
     bw = R.measure_dram_bandwidth(buf, slot_seed, repeats=repeats, chunk_tiles=chunk_tiles)
-    sketches = R.sketch_stream(buf, slot_seed, chunk_tiles).astype(np.uint32)
+    if bw.simd_backend is not None:
+        from experiments.cpu_memory import simd as _simd
+
+        sketches = _simd.sketch_tiles_simd(buf, slot_seed)
+    else:
+        sketches = R.sketch_stream(buf, slot_seed, chunk_tiles).astype(np.uint32)
     coverage_bytes = n_tiles * TILE_BYTES
-    env = R.envelope(coverage_bytes, bw.baseline_read_gib_s, slot_ms)
+    env = R.envelope(coverage_bytes, bw.read_gib_s_aggregate, slot_ms)
+    audit_rate = bw.simd_gib_s_median if bw.simd_gib_s_median else bw.gib_s_median
+    audit_env = R.envelope(coverage_bytes, audit_rate, slot_ms)
 
     weights_leaves = [commit.weights_leaf(int(t), tiles[t].tobytes()) for t in range(n_tiles)]
     weights_root = commit.merkle_root(weights_leaves)
@@ -115,7 +122,8 @@ def run(payload, *, challenge_hex: str, slot_ms: float, steps: int, stimulus_see
         audit_tile, canonical, lied, audit_tile, commit.merkle_proof(lied_leaves, audit_tile), wproof,
     )
     residency_ok = bool(
-        opening_ok and honest == "no_fraud" and tampered == "fraud" and env["coverage_fits_slot"]
+        opening_ok and honest == "no_fraud" and tampered == "fraud"
+        and env["coverage_fits_slot"] and audit_env["coverage_fits_slot"]
     )
 
     # ---- B. execution over the resident weights + CPU-TEE attestation ------
@@ -172,9 +180,15 @@ def run(payload, *, challenge_hex: str, slot_ms: float, steps: int, stimulus_see
         "A_residency": {
             "resident_bytes": int(buf.nbytes),
             "mlocked": locked,
-            "dram_read_gib_s": bw.baseline_read_gib_s,
+            "dram_read_gib_s": bw.read_gib_s_aggregate,
+            "dram_read_gib_s_single_core": bw.baseline_read_gib_s,
+            "simd_backend": bw.simd_backend,
+            "simd_threads": bw.simd_threads,
+            "simd_sketch_gib_s": bw.simd_gib_s_median,
+            "simd_sketch_ms": round(1000 * bw.simd_seconds_median, 1) if bw.simd_seconds_median else None,
             "reference_sketch_gib_s": bw.gib_s_median,
             "envelope": env,
+            "audit_envelope": audit_env,
             "opening_verified": bool(opening_ok),
             "fraud_honest_verdict": honest,
             "fraud_tampered_verdict": tampered,
@@ -206,8 +220,12 @@ def _print(r: dict) -> None:
     print(f"  challenge     {r['challenge']}  -> slot_seed {r['slot_seed']}")
     print(f"  --- A. residency (cryptographic, no TEE) ---")
     print(f"  resident      {A['resident_bytes']:,} B  mlocked={A['mlocked']}")
-    print(f"  DRAM read     {A['dram_read_gib_s']} GiB/s (residency ceiling)")
+    print(f"  DRAM read     {A['dram_read_gib_s']} GiB/s aggregate ({A['dram_read_gib_s_single_core']} single-core)  (residency ceiling)")
+    if A["simd_backend"]:
+        print(f"  SIMD sketch   {A['simd_sketch_gib_s']} GiB/s [{A['simd_backend']}, {A['simd_threads']} thr]  {A['simd_sketch_ms']} ms per full verifiable audit")
     print(f"  envelope      slot {e['slot_ms']}ms -> {e['max_model_mib_per_slot']} MiB/slot  fits={e['coverage_fits_slot']}")
+    ae = A["audit_envelope"]
+    print(f"  audit env.    verifiable sketch covers {ae['max_model_mib_per_slot']} MiB/slot  fits={ae['coverage_fits_slot']}")
     print(f"  proof loop    opening={A['opening_verified']} honest={A['fraud_honest_verdict']} tampered={A['fraud_tampered_verdict']}")
     print(f"  residency     {'OK' if A['ok'] else 'FAIL'}")
     print(f"  --- B. execution (CPU TEE) ---")

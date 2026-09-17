@@ -55,8 +55,15 @@ def run(payload, *, challenge_hex: str, slot_ms: float, repeats: int, chunk_tile
 
     bw = R.measure_dram_bandwidth(buf, slot_seed, repeats=repeats, chunk_tiles=chunk_tiles)
 
-    # Full-coverage residency claim: sketch every tile.
-    sketches = R.sketch_stream(buf, slot_seed, chunk_tiles).astype(np.uint32)
+    # Full-coverage residency claim: sketch every tile. Use the SIMD kernel
+    # when available (bit-exact; the sampled cross-check below then compares
+    # SIMD against the NumPy reference), else the streaming reference.
+    if bw.simd_backend is not None:
+        from experiments.cpu_memory import simd as _simd
+
+        sketches = _simd.sketch_tiles_simd(buf, slot_seed)
+    else:
+        sketches = R.sketch_stream(buf, slot_seed, chunk_tiles).astype(np.uint32)
     # Reference cross-check on a sample of tiles (full recompute is redundant
     # with sketch_stream's own equality test, so sample to keep the run quick).
     tiles = buf.reshape(n_tiles, TILE_BYTES)
@@ -71,7 +78,11 @@ def run(payload, *, challenge_hex: str, slot_ms: float, repeats: int, chunk_tile
     # the device read every covered byte within the slot), i.e. the pure-read
     # rate — NOT the reference sketch's compute rate, which is a separate,
     # unoptimized-implementation metric reported below.
-    env = R.envelope(coverage_bytes, bw.baseline_read_gib_s, slot_ms)
+    env = R.envelope(coverage_bytes, bw.read_gib_s_aggregate, slot_ms)
+    # Audit envelope: can the *verifiable* sketch (not just a raw read) cover
+    # every byte within the slot? Uses the SIMD kernel's measured rate.
+    audit_rate = bw.simd_gib_s_median if bw.simd_gib_s_median else bw.gib_s_median
+    audit_env = R.envelope(coverage_bytes, audit_rate, slot_ms)
 
     # Commit.
     t_commit = time.perf_counter()
@@ -120,16 +131,27 @@ def run(payload, *, challenge_hex: str, slot_ms: float, repeats: int, chunk_tile
             "max_rss_delta_bytes": int(rss_after - rss_before),
         },
         "dram_bandwidth": {
-            # residency ceiling: pure streaming read of every resident byte
-            "read_gib_s": bw.baseline_read_gib_s,
-            # reference verification cost: the unoptimized NumPy sketch rate
-            # (compute/allocation-bound, not memory-bound — an optimized CPU
-            # SIMD kernel would be far higher; this is the reference impl)
-            "reference_sketch_gib_s_median": bw.gib_s_median,
-            "reference_sketch_gib_s_best": bw.gib_s_best,
-            "reference_sketch_seconds_median": bw.seconds_median,
+            # residency ceiling: streaming read of every resident byte —
+            # single core, and aggregate across all cores (the honest ceiling
+            # for a threaded kernel)
+            "read_gib_s_single_core": bw.baseline_read_gib_s,
+            "read_gib_s_aggregate": bw.read_gib_s_aggregate,
+            # verifiable audit rate: the bit-exact CPU SIMD sketch kernel
+            "simd_backend": bw.simd_backend,
+            "simd_threads": bw.simd_threads,
+            "simd_sketch_gib_s_median": bw.simd_gib_s_median,
+            "simd_sketch_gib_s_best": bw.simd_gib_s_best,
+            "simd_sketch_seconds_median": bw.simd_seconds_median,
+            "simd_fraction_of_aggregate_read": (
+                round(bw.simd_gib_s_median / bw.read_gib_s_aggregate, 3)
+                if bw.simd_gib_s_median and bw.read_gib_s_aggregate else None
+            ),
+            # unoptimized NumPy reference (compute/allocation-bound; kept for
+            # scale, timed on a bounded prefix)
+            "reference_sketch_gib_s": bw.gib_s_median,
             "repeats": bw.repeats,
         },
+        "audit_envelope": audit_env,
         "envelope": env,
         "weights_root": "0x" + weights_root.hex(),
         "partials_root": "0x" + partials_root.hex(),
@@ -154,9 +176,14 @@ def _print(r: dict) -> None:
     print(f"  payload       {m['n_tiles']:,} tiles  {m['mib_total']} MiB")
     print(f"  model id      {r['model_id']}")
     print(f"  resident      {res['resident_bytes']:,} B  mlocked={res['mlocked']}")
-    print(f"  DRAM read     {bw['read_gib_s']} GiB/s  (residency ceiling)")
-    print(f"  ref sketch    {bw['reference_sketch_gib_s_median']} GiB/s  (unoptimized NumPy reference)")
+    print(f"  DRAM read     {bw['read_gib_s_single_core']} GiB/s single-core, {bw['read_gib_s_aggregate']} GiB/s aggregate (residency ceiling)")
+    if bw["simd_backend"]:
+        print(f"  SIMD sketch   {bw['simd_sketch_gib_s_median']} GiB/s  [{bw['simd_backend']}, {bw['simd_threads']} threads]  "
+              f"= {100*bw['simd_fraction_of_aggregate_read']:.0f}% of aggregate read  ({1000*bw['simd_sketch_seconds_median']:.0f} ms per full audit)")
+    print(f"  ref sketch    {bw['reference_sketch_gib_s']} GiB/s  (unoptimized NumPy reference)")
     print(f"  envelope      slot {env['slot_ms']}ms -> {env['max_model_mib_per_slot']} MiB/slot  fits={env['coverage_fits_slot']}")
+    ae = r["audit_envelope"]
+    print(f"  audit env.    verifiable sketch covers {ae['max_model_mib_per_slot']} MiB/slot  fits={ae['coverage_fits_slot']}")
     print(f"  commit        {r['commit_seconds']}s  ref-match={r['sweep_matches_reference']}")
     print(f"  opening       verified={r['opening_verified']}")
     print(f"  fraud proof   honest={r['fraud_honest_verdict']} tampered={r['fraud_tampered_verdict']}")

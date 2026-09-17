@@ -1,2 +1,3 @@
 __pycache__/
 *.pyc
+experiments/cpu_memory/simd/.build/

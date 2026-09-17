@@ -26,10 +26,18 @@ with no GPU in the loop.
 - **DRAM read bandwidth** (the residency ceiling): the pure streaming-read rate
   over every resident byte. This is the physically meaningful number for the
   envelope — can the device read all covered bytes within a slot.
-- **Reference sketch rate**: the unoptimized NumPy sketch's compute rate. It is
-  compute/allocation-bound, **not** a memory-bandwidth number; an optimized CPU
-  SIMD kernel would be far higher. Reported separately so the two are never
-  conflated.
+- **SIMD verifiable audit rate**: the bit-exact CPU SIMD sketch kernel
+  (`simd/`, AVX2 + scalar fallback, multi-core). This is the rate at which the
+  *verifiable* sketch covers the model — ~25–33 GiB/s on four cores, ~16–21 ms
+  per full audit of the 521 MiB fly brain (about two-thirds of the aggregate
+  read ceiling). The honest ceiling to compare it against
+  is the **aggregate** multi-core streaming read, measured the same threaded
+  way (a single core cannot pull the whole memory system's bandwidth).
+- **Reference sketch rate**: the unoptimized NumPy sketch, compute/allocation-
+  bound, ~0.08 GiB/s. Kept for scale and timed on a bounded prefix; never the
+  residency bandwidth number.
+- **Audit envelope**: coverage ÷ SIMD rate ≤ slot — can the verifiable sketch
+  (not just a raw read) cover every byte within the slot.
 - **Envelope**: bandwidth × slot ⇒ how large a model can be covered per slot.
 - **Proof loop**: weights root (model id) + partials root, a committed opening,
   and honest/lying tile fraud verdicts.

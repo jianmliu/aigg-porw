@@ -25,12 +25,19 @@ everywhere for the same payload:
 
 ## Measured (host-specific, non-deterministic)
 
-- DRAM streaming-read bandwidth (residency ceiling): ~10.8–11.0 GiB/s
-- reference NumPy sketch rate: ~0.08 GiB/s — this is the unoptimized reference
-  implementation's compute rate, **not** a memory-bandwidth number; an
-  optimized CPU SIMD kernel would be far higher
-- envelope at a 100 ms slot: ~1.1 GiB streamable/slot, so the 521 MiB model
-  clears the residency bandwidth envelope
+- DRAM streaming-read bandwidth (residency ceiling): ~11 GiB/s on a single
+  core; **~31–42 GiB/s aggregate** across all four cores, measured with the
+  same threading as the kernel (the honest ceiling for a threaded sketch)
+- **SIMD verifiable sketch** (bit-exact, AVX2, 4 threads): ~25–28 GiB/s —
+  roughly two-thirds of the aggregate read ceiling — i.e. a full verifiable
+  audit of the 521 MiB model in **~18–21 ms**. Run-to-run spread is a shared
+  cloud VM's normal variance, not a scheme property.
+- reference NumPy sketch rate: ~0.08–0.10 GiB/s — the unoptimized reference
+  implementation's compute rate, **not** a memory-bandwidth number; kept for
+  scale and timed on a bounded prefix
+- bandwidth envelope at a 100 ms slot: ~3 GiB streamable/slot; **audit
+  envelope** (verifiable sketch, not just a raw read): ~2.5–2.9 GiB/slot — the
+  521 MiB model clears both with ~5× headroom
 
 ## What this shows
 

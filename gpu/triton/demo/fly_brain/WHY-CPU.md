@@ -38,7 +38,9 @@ From `pure_cpu_e2e.py` at full FlyWire scale:
 | | value | meaning |
 |---|---|---|
 | resident model | 520.8 MiB, 133,329 tiles | fits an 8 GiB PC easily |
-| DRAM streaming read | ~10.7–11.0 GiB/s | residency bandwidth ceiling |
+| DRAM streaming read | ~11 GiB/s single core; ~31–42 GiB/s aggregate (4 cores) | residency bandwidth ceiling |
+| SIMD verifiable sketch | ~9 GiB/s (1 thr) / ~25–33 GiB/s (4 thr), ~16–21 ms per full audit | bit-exact; ~×100–×400 over reference |
+| audit envelope, 100 ms slot | ~2.5–2.9 GiB/slot | the verifiable sketch clears it ~5× |
 | residency envelope, 100 ms slot | ~1.1 GiB/slot | the model clears it |
 | connectome propagation | 139,255 neurons, 108M synapses/s | 2 steps in ~1.0 s on 4 cores |
 | SpMV effective bandwidth | ~3.2 GiB/s | memory-bound, as predicted |
@@ -54,11 +56,14 @@ From `pure_cpu_e2e.py` at full FlyWire scale:
    is fine: residency is proven by the bandwidth envelope + sampled-byte audits,
    not by mlock. mlock is an optional extra non-swappability hardening; the
    report records whether it was available and never gates on it.
-2. **The reference sketch is slow on purpose.** The NumPy sketch (~0.08 GiB/s)
-   is an unoptimized reference; it is compute/allocation-bound and is *not* the
-   residency bandwidth number. The residency ceiling is the streaming-read rate.
-   An optimized CPU SIMD sketch kernel is the natural next step and would raise
-   the sketch rate by an order of magnitude or more without changing the scheme.
+2. **The reference sketch is slow; the SIMD kernel is not.** The NumPy sketch
+   (~0.08 GiB/s) is an unoptimized reference, compute/allocation-bound, and is
+   *not* the residency bandwidth number. The bit-exact CPU SIMD kernel
+   (`experiments/cpu_memory/simd/`) runs the same scheme at ~9 GiB/s on one core
+   and ~25–33 GiB/s on four — a full verifiable audit of the 521 MiB model in
+   **~16–21 ms**. The honest memory ceiling for that threaded kernel is the
+   *aggregate* multi-core streaming-read rate (~31–42 GiB/s here), measured the
+   same threaded way; the sketch reaches about two-thirds of it.
 
 ## What this does and does not claim
 
