@@ -18,7 +18,10 @@ Wiring (see `test/Mesh.t.sol` `setUp`): deploy `PorwVerifierKeccak`, `MEPRegistr
 
 Fixtures for the tests come from real browser-node runs:
 `web/porw-browser/export_fixtures.mjs test/fixtures/mesh.json 100 1 42` (epoch blocks,
-epoch, prevrandao — the claim is signed over the contract's derived challenge).
+epoch, prevrandao — the claim is signed over the contract's derived challenge). It writes
+the JSON for humans and the **typed Solidity libraries** the tests use
+(`test/fixtures/MeshFixtures.sol`, `BrowserClaimFixture.sol`), so no `vm.readFile` /
+`fs_permissions` is needed and the release-pinned `foundry.toml` stays untouched.
 
 Pilot simplifications, stated: the beacon is `keccak(prevrandao, blockNumber)` recorded
 once per epoch (production: PoT randomness / VRF); `eligibleVotes` and `executors`
