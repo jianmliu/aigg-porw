@@ -23,15 +23,16 @@ try {
     pool = await createPool({ wasmBytes: await (await fetch("./porw-shared.wasm")).arrayBuffer(), workers }); kernel = pool.kernel; }
   else kernel = await loadKernel("./sketch.wasm");
   const node = new PorwNode(kernel, { privHex: "0x" + "33".repeat(32), pool });
-  const st = await node.loadModel(q.get("name") || "flywire-female", payload, { steps });
+  const st = await node.loadModel(q.get("name") || "flywire-female", payload, { steps }); // exec kind follows the payload version (v2 -> int-lif)
   log(`payload ${payload.length} B fetched in ${fetchMs.toFixed(0)} ms; ${st.nTiles} tiles; weights leaves + model id in ${st.leavesMs.toFixed(0)} ms`);
   window.porwNode = {
     info: () => ({ nTiles: st.nTiles, neurons: st.hdr.neurons, synapses: st.hdr.synapses, modelId: hex(st.modelId), mepId: hex(st.mep.mepId),
-                   steps, fetchMs, leavesMs: st.leavesMs, backend: node.k.backend, hc: navigator.hardwareConcurrency, workers, iso: crossOriginIsolated, sorted: st.csr.sorted }),
+                   steps, exec: st.exec, fetchMs, leavesMs: st.leavesMs, backend: node.k.backend, hc: navigator.hardwareConcurrency, workers, iso: crossOriginIsolated, sorted: st.csr.sorted }),
     challenge: async (chHex, seed) => { const r = await node.challenge(st.mep.mepId, Uint8Array.from(chHex.match(/../g).map((h) => parseInt(h, 16))), { stimulusSeed: seed });
       const c = r.claim; return { claim: { schemeDigest: hex(c.schemeDigest), mepId: hex(c.mepId), modelId: hex(c.modelId), partialsRoot: hex(c.partialsRoot),
         coverageBytes: c.coverageBytes, challenge: hex(c.challenge), deviceId: hex(c.deviceId), execDigest: hex(c.execDigest), stimulusSeed: c.stimulusSeed },
-        claimHash: hex(r.claimHash), signature: hex(r.signature), address: hex(r.address), timings: r.timings }; },
+        claimHash: hex(r.claimHash), signature: hex(r.signature), address: hex(r.address), timings: r.timings,
+        result: { execRoot: hex(r.result.execRoot), initStateRoot: r.result.initStateRoot ? hex(r.result.initStateRoot) : null, stimulated: r.result.stimulated } }; },
     open: (t) => { const o = node.open(st.mep.mepId, t); return { tileIdx: o.tileIdx, position: o.position, tile: hex(o.tile), sketch: o.sketch,
       partialsProof: o.partialsProof.map(hex), weightsProof: o.weightsProof.map(hex) }; },
   };

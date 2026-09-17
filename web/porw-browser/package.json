@@ -4,7 +4,7 @@
   "description": "",
   "main": "porw.js",
   "scripts": {
-    "test": "node test_wasm.mjs && node test_node.mjs - && node test_swarm.mjs && node test_pool.mjs && node test_dispute.mjs",
+    "test": "node test_wasm.mjs && node test_node.mjs - && node test_swarm.mjs && node test_pool.mjs && node test_dispute.mjs && node test_lif.mjs",
     "build": "./build.sh"
   },
   "keywords": [],

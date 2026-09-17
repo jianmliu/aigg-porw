@@ -6,6 +6,8 @@ import http from "node:http"; import fs from "node:fs"; import path from "node:p
 import { loadKernelFromBytes, TILE_BYTES } from "./porw.js";
 import { makeMep } from "./mep.js";
 import * as Vf from "./verifier.js";
+import { decodeHeader } from "./model.js";
+import { lifExecKind } from "./lif.js";
 import * as V from "./verify.js";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const a = Object.fromEntries(process.argv.slice(2).reduce((acc, v, i, arr) => { if (v.startsWith("--")) acc.push([v.slice(2), arr[i + 1] && !arr[i + 1].startsWith("--") ? arr[i + 1] : "1"]); return acc; }, []));
@@ -25,19 +27,20 @@ await new Promise((r) => server.listen(0, "127.0.0.1", r)); const port = server.
 // verifier's independent view of the model: MEP from the public bytes (noble keccak, no wasm)
 let t0 = performance.now(); const nT = Math.floor(payload.length / TILE_BYTES); const lv = [];
 for (let t = 0; t < nT; t++) lv.push(V.weightsLeaf(t, payload.subarray(t * TILE_BYTES, (t + 1) * TILE_BYTES)));
-const mep = makeMep({ name: "flywire-female", modelId: V.merkleRoot(lv), steps }); const verifierModelMs = performance.now() - t0;
+const hdr = decodeHeader(payload); const isLif = hdr.version === 2; // v2 payloads (real FlyWire export) run `aigg:exec:int-lif:v1`
+const mep = makeMep({ name: hdr.name, modelId: V.merkleRoot(lv), steps, execKind: isLif ? lifExecKind() : undefined }); const verifierModelMs = performance.now() - t0;
 
 const { chromium } = await import("playwright");
 const launch = { headless: true, args: ["--no-sandbox", "--js-flags=--max-old-space-size=4096"] };
 if (process.env.PW_CHROMIUM) launch.executablePath = process.env.PW_CHROMIUM;
 const browser = await chromium.launch(launch); const page = await browser.newPage();
 page.on("pageerror", (e) => process.stderr.write("[pageerror] " + e.message + "\n"));
-await page.goto(`http://127.0.0.1:${port}/node_page.html?steps=${steps}&workers=${workers}`);
+await page.goto(`http://127.0.0.1:${port}/node_page.html?steps=${steps}&workers=${workers}&name=${encodeURIComponent(hdr.name)}`);
 await page.waitForFunction(() => window.__ready === true || window.__error, null, { timeout: 15 * 60 * 1000 });
 const err = await page.evaluate(() => window.__error); if (err) { console.error(err); process.exit(1); }
 const info = await page.evaluate(() => window.porwNode.info());
 const out = { info, verifierModelMs, mepMatches: info.mepId === V.hex(mep.mepId), rounds: [] };
-console.log(`page: ${info.nTiles} tiles, ${info.neurons} neurons / ${info.synapses} synapses, backend ${info.backend}, hc ${info.hc}, workers ${info.workers}, crossOriginIsolated ${info.iso}, post-sorted ${info.sorted}`);
+console.log(`page: ${info.nTiles} tiles, ${info.neurons} neurons / ${info.synapses} synapses, exec ${info.exec}, backend ${info.backend}, hc ${info.hc}, workers ${info.workers}, crossOriginIsolated ${info.iso}, post-sorted ${info.sorted}`);
 console.log(`load: fetch ${info.fetchMs.toFixed(0)} ms, weights leaves + model id + CSR commitments ${info.leavesMs.toFixed(0)} ms (one-time) | verifier independent model id ${verifierModelMs.toFixed(0)} ms, MEP match=${out.mepMatches}`);
 const kernel = await loadKernelFromBytes(fs.readFileSync(path.join(here, "sketch.wasm")));
 for (let r = 0; r < rounds; r++) {
@@ -48,9 +51,9 @@ for (let r = 0; r < rounds; r++) {
   const sample = Vf.sampleTiles(ch, nT, samples); t0 = performance.now();
   const opens = await page.evaluate((ts) => ts.map((t) => window.porwNode.open(t)), sample); const openMs = performance.now() - t0;
   const verdicts = opens.map((o) => Vf.verifyOpening({ ...o, tile: V.unhex(o.tile), partialsProof: o.partialsProof.map(V.unhex), weightsProof: o.weightsProof.map(V.unhex) }, R.claim, vc.slotSeed, nT).verdict);
-  t0 = performance.now(); const re = Vf.reexecute(kernel, payload, R.claim, mep); const reMs = performance.now() - t0;
+  t0 = performance.now(); const re = isLif ? Vf.reexecuteLif(kernel, payload, R.claim, mep) : Vf.reexecute(kernel, payload, R.claim, mep); const reMs = performance.now() - t0;
   const t = resp.timings; const slotMs = t.sketchMs + t.commitMs + t.inferMs + (t.disputeCommitMs || 0);
-  out.rounds.push({ claimOk: vc.ok, signer: V.hex(vc.signer), verdicts, reexecMatches: re.matches, timings: t, slotMs, openMs, reMs });
+  out.rounds.push({ claimOk: vc.ok, signer: V.hex(vc.signer), verdicts, reexecMatches: re.matches, timings: t, slotMs, openMs, reMs, execDigest: V.hex(R.claim.execDigest), result: resp.result });
   console.log(`round ${r + 1}: claim ok=${vc.ok} | sketch ${t.sketchMs.toFixed(0)} + commit ${t.commitMs.toFixed(0)} + infer ${t.inferMs.toFixed(0)} + dispute-commit ${(t.disputeCommitMs || 0).toFixed(0)} = ${slotMs.toFixed(0)} ms per slot | ${sample.length} openings ${verdicts.every((v) => v === "no_fraud") ? "all no_fraud" : verdicts.join(",")} (${openMs.toFixed(0)} ms) | re-exec match=${re.matches} (${reMs.toFixed(0)} ms)`);
 }
 await browser.close(); server.close();

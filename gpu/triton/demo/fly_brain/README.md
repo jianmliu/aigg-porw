@@ -79,6 +79,34 @@ Workers in headless Chromium on a 4-core machine — see
 [`web/porw-browser/`](../../../../web/porw-browser/README.md) for the PoC,
 measurements, and the honest limits of using browser residency for rewards.
 
+## The real brain: FlyWire v783 export + deterministic integer LIF
+
+`flywire_export.py` turns the public FlyWire FAFB v783 release into a PoRW payload
+(`FLYBRAINv2`): 139,255 proofread neurons (record = FlyWire root id), 2,700,513
+synapse records with ≥ 5 synapses aggregated over neuropils, weight = signed synapse
+count (sign from the presynaptic neuron's `top_nt`: GABA/glutamate −, others +; Dale's
+law), records sorted by post neuron. 28 MB, deterministic (sha256 and `model_id` in
+`spec-cache/conformance/exec/int-lif-v1/`).
+
+```sh
+# sources: Zenodo 10676866 (CC-BY-4.0) + flyconnectome/flywire_annotations
+curl -L -o proofread_connections_783.feather "https://zenodo.org/api/records/10676866/files/proofread_connections_783.feather/content"
+curl -L -o proofread_root_ids_783.npy       "https://zenodo.org/api/records/10676866/files/proofread_root_ids_783.npy/content"
+curl -L -o annotations.tsv "https://raw.githubusercontent.com/flyconnectome/flywire_annotations/main/supplemental_files/Supplemental_file1_neuron_annotations.tsv"
+pip install pyarrow
+python demo/fly_brain/flywire_export.py --connections proofread_connections_783.feather --root-ids proofread_root_ids_783.npy \
+       --annotations annotations.tsv --out flywire-783-min5.bin --name flywire-fafb-v783-min5      # ~16 s
+```
+
+The execution kind `aigg:exec:int-lif:v1` (`web/porw-browser/lif_wasm.c`, `lif.js`,
+`int_lif.py`, `contracts/evm/src/mesh/LifRowCheck.sol`) is a fixed-point port of the
+whole-brain leaky integrate-and-fire model of Shiu et al. 2024 (dt 0.1 ms, τ_m 20 ms,
+τ_syn 5 ms, 7 mV threshold, 2.2 ms refractory, 0.275 mV per synapse, 150 Hz drive of a
+stimulus set). All integer, so wasm, numpy, JS and Solidity agree bit for bit — checked
+for 500 steps on the real export — and a wrong result can be narrowed to one synapse
+term on-chain. See `web/porw-browser/README.md` and `contracts/evm/DESIGN-cross-audit.md`
+§5c for the commitments, measurements and honest limits.
+
 ## Optional: TEE-CPU execution proof
 
 PoRW proves residency, not that a request was executed. `--attest mock` adds a

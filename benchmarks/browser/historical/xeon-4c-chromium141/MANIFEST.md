@@ -89,3 +89,19 @@ workers and only the upper levels on the main thread halves the commit costs.
 Openings stay ~16–19 ms for 16 tiles (cached trees). All pool-path outputs are
 bit-identical to the single-thread path (`test_pool.mjs`); all rounds `no_fraud`,
 re-execution digests match. Timings are this host/browser only.
+
+## Addendum — the real FlyWire brain, integer LIF (`flywire-783-min5-lif-node-loop-w4.json`)
+
+`run_node_browser.mjs --payload flywire-783-min5.bin --steps 100 --workers 4` on the
+FlyWire FAFB v783 export (139,255 neurons, 2,700,513 signed records, 28 MB, 6,866 tiles;
+`aigg:exec:int-lif:v1`, commit stride 10). Headless Chromium 141, 4 Web Workers over one
+shared memory, this process as the verifier:
+
+| per slot (100 steps = 10 ms of brain time) | sketch | partials commit | inference | state commits (11 roots) | **total** |
+|---|---|---|---|---|---|
+| 4 workers | 4 ms | 7–8 ms | 318–347 ms | 1354–1390 ms | **~1.7 s** |
+
+All three rounds: claim verifies, 16 sampled tile openings `no_fraud` (17 ms), the
+verifier's own re-execution (single thread, no commitments) reproduces the spike-count
+digest in ~0.9–1.1 s. Deterministic fields (`model_id`, `mep_id`, `execDigest`,
+`execRoot`, `initStateRoot`) are in the JSON and match the Node run in `benchmarks/lif/`.

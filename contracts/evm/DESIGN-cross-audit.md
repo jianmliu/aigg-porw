@@ -189,6 +189,48 @@ per doubling):
 A full dispute for a 139k-neuron model is ≈ 18 children rounds × 2 parties plus the
 row and term calls — on the order of 4–5M gas total, paid by the loser's slash.
 
+## 5c. Second execution kind: `aigg:exec:int-lif:v1` (real FlyWire brain, integer LIF)
+
+The SpMV kind is a propagation stand-in. Research use needs a validated neuron model on
+the real connectome, so a second execution kind is implemented end to end
+(`web/porw-browser/lif_wasm.c`, `lif.js`, `int_lif.py`, `src/mesh/LifRowCheck.sol`):
+
+- **Model bytes**: payload v2 from `demo/fly_brain/flywire_export.py` — the public
+  FlyWire FAFB v783 release (Zenodo 10676866): 139,255 proofread neurons, 2,700,513
+  post-sorted synapse records with ≥ 5 synapses, weight = signed synapse count (sign =
+  presynaptic neurotransmitter, GABA/glutamate inhibitory, Dale's law), neuron record
+  = FlyWire root id. 28 MB; `model_id` in `spec-cache/conformance/exec/int-lif-v1/`.
+- **Rule**: a fixed-point port of the whole-brain LIF of Shiu et al. 2024 (dt 0.1 ms,
+  τ_m 20 ms, τ_syn 5 ms, threshold 7 mV, refractory 2.2 ms, 0.275 mV/synapse, 150 Hz
+  Poisson-like drive of stimulated neurons — here a hash-driven deterministic
+  process). State per neuron: `(v i32, g i32, refr u16, flags u16, count u32)`;
+  everything is integer with floor shifts and int32 saturation, so wasm == numpy ==
+  JS == Solidity bit for bit (500 steps of the real brain checked against numpy;
+  the on-chain rule checked on transition vectors covering every branch).
+- **MEP encoding unchanged**: `execKind = keccak("aigg:exec:int-lif:v1" ‖ 6 × uint32
+  params)` pins the parameter set; the fifth `mep_id` field is the **commit stride**
+  instead of a clamp.
+- **Task input**: a stimulus set (sorted neuron ids) ⇒ `state_0` (flags only) ⇒
+  `initStateRoot`, which anyone derives from the ids and the task carries as
+  `inputCommit`. Residency claims use the canonical set (`fmix32(i·G + seed) % 1000 == 0`).
+- **Commitments**: state roots every `stride` steps and at the last step (segment
+  roots); `execRoot = merkle(segmentRoots)`; `execDigest = keccak(LE32 n ‖ spike counts)`.
+  Per-step trees are *not* committed: on dispute the parties reveal the per-step roots
+  of the first differing segment, each chain bound by its last root equalling the
+  committed segment root and its first predecessor being the agreed previous segment
+  root (`dispute.js: refineSegment`). Measured on the real brain (4-core, Node, pool ×4):
+  4 ms/step inference, ~116 ms per committed state root; stride 10 ⇒ ~1.6 s per
+  100-step (10 ms brain-time) claim; research mode without commitments 9 ms/step
+  single-thread (≈ 90 s per second of brain time per tab).
+- **Dispute**: segment → step (refinement) → neuron (state-tree bisection) → **row
+  check** `state_s[i] == transition(state_{s-1}[i], lastPartialSum, i, s, seed)` →
+  **single term** `w_k · spiked_{s-1}[pre_k]` with signed partial sums; the previous
+  state openings verify against the agreed previous-step root. `LifRowCheck.sol`
+  implements `transition` and the state leaf for the contract; wiring it into
+  `ExecutionDisputes` (exec-kind dispatch on `MEP.execKind`, signed sums, state leaves,
+  the segment-refinement phase, `initStateRoot` from `Task.inputCommit`) is the
+  remaining contract work — the JS adjudicator (`adjudicateLif`) is the reference.
+
 ## 6. Economics (deployment choices, token-neutral)
 
 - Per-epoch, per-MEP fixed budget; "raw volume is not a reward multiplier" (AI3 pilot

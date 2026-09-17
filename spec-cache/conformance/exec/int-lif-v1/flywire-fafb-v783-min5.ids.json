@@ -1,0 +1,11 @@
+{
+ "name": "flywire-fafb-v783-min5",
+ "version": 2,
+ "neurons": 139255,
+ "synapses": 2700513,
+ "tiles": 6866,
+ "modelId": "0x9747cc81830375103eae957a93d3800875223c17bdc6399f5783be62a19da93a",
+ "execKind": "0x0c387b3972c70c927c1f37f69ba2b8183ab1d666641f4aa33f46e6cbeda888d9",
+ "steps": 100,
+ "mepId": "0x9b7dc2ba02a04ed1be9519d00d53323d581c0b496764c28edc071d8c841bef49"
+}

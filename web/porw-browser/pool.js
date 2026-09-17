@@ -15,11 +15,16 @@ export async function createPool({ wasmBytes, workers, initialPages = 256, maxim
   const ws = [];
   for (let i = 0; i < workers; i++) {
     const w = await spawn(); const stackTop = k.alloc(STACK_BYTES) + STACK_BYTES; // stack grows down
-    await new Promise((res, rej) => { w.on((m) => (m.type === "ready" ? res() : rej(new Error(m.error)))); w.post({ type: "init", wasmBytes, memory, stackTop }); });
-    ws.push(w);
+    const pending = new Map(); let ready = null;
+    w.on((m) => { // one dispatcher per worker (no per-job listeners)
+      if (m.type === "ready" || (m.type === "error" && !m.id)) { if (ready) { m.type === "ready" ? ready.res() : ready.rej(new Error(m.error)); ready = null; } return; }
+      const p = pending.get(m.id); if (!p) return; pending.delete(m.id); m.type === "done" ? p.res(m.rc) : p.rej(new Error(m.error));
+    });
+    await new Promise((res, rej) => { ready = { res, rej }; w.post({ type: "init", wasmBytes, memory, stackTop }); });
+    w.pending = pending; ws.push(w);
   }
   let nextId = 1;
-  const runOn = (w, op, args) => new Promise((res, rej) => { const id = nextId++; w.on((m) => { if (m.id !== id) return; m.type === "done" ? res(m.rc) : rej(new Error(m.error)); }); w.post({ type: "run", id, op, args }); });
+  const runOn = (w, op, args) => new Promise((res, rej) => { const id = nextId++; w.pending.set(id, { res, rej }); w.post({ type: "run", id, op, args }); });
   return {
     kernel: k, memory, workers: ws.length,
     /** split [0,total) into contiguous ranges and run op(...argsFor(first, count)) on each worker in parallel */

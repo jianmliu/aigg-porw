@@ -1,0 +1,30 @@
+{
+  "name": "flywire-fafb-v783-min5",
+  "format": "FLYBRAINv2",
+  "bytes": 28123136,
+  "tiles": 6866,
+  "neurons": 139255,
+  "synapse_records": 2700513,
+  "connection_rows_in": 16847997,
+  "min_syn": 5,
+  "total_synapses_kept": 34153566,
+  "excitatory_records": 1649150,
+  "inhibitory_records": 1051363,
+  "sign_source": {
+    "neuron_top_nt": 2700475,
+    "connection_nt_argmax": 38,
+    "default_excitatory": 0
+  },
+  "max_abs_weight": 2405,
+  "max_in_degree": 5080,
+  "sha256": "fd246cc2c0ac74e8928cf5b0012c5d4c48a0a03475595213b301f85f5fe4e1da",
+  "sources": {
+    "connections": "proofread_connections_783.feather",
+    "root_ids": "proofread_root_ids_783.npy",
+    "annotations": "annotations.tsv",
+    "zenodo": "10.5281/zenodo.10676866",
+    "license": "CC-BY-4.0"
+  },
+  "sign_rule": "pre-neuron top_nt (Dale); gaba/glutamate -> -1, else +1 (Shiu et al. 2024)",
+  "export_seconds": 15.5
+}

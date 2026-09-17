@@ -1,0 +1,233 @@
+{
+ "execKind": "0x0c387b3972c70c927c1f37f69ba2b8183ab1d666641f4aa33f46e6cbeda888d9",
+ "params": {
+  "dtTauMQ16": 328,
+  "dtTauSQ16": 1311,
+  "threshQ16": 458752,
+  "wUnitQ16": 18022,
+  "refract": 22,
+  "extPQ32": 64424509
+ },
+ "vectors": [
+  {
+   "kind": "stim",
+   "i": 0,
+   "step": 21,
+   "seed": 3,
+   "I": "0",
+   "before": {
+    "v": 0,
+    "g": 0,
+    "refr": 0,
+    "flags": 1,
+    "count": 1
+   },
+   "after": {
+    "v": 0,
+    "g": 0,
+    "refr": 0,
+    "flags": 1,
+    "count": 1
+   },
+   "leafAfter": "0xeb2019d71598a0ee999b52d787f0e62ff71dea9ff6e5671b01b0898005ef848a"
+  },
+  {
+   "kind": "sub",
+   "i": 1,
+   "step": 21,
+   "seed": 3,
+   "I": "24",
+   "before": {
+    "v": 0,
+    "g": 0,
+    "refr": 0,
+    "flags": 0,
+    "count": 0
+   },
+   "after": {
+    "v": 2164,
+    "g": 432528,
+    "refr": 0,
+    "flags": 0,
+    "count": 0
+   },
+   "leafAfter": "0x9b30023262dd12e158efa0da67cf1d89825ec749bcd0aa4c63949adb9827be49"
+  },
+  {
+   "kind": "sub",
+   "i": 7,
+   "step": 21,
+   "seed": 3,
+   "I": "26",
+   "before": {
+    "v": 0,
+    "g": 0,
+    "refr": 0,
+    "flags": 0,
+    "count": 0
+   },
+   "after": {
+    "v": 2345,
+    "g": 468572,
+    "refr": 0,
+    "flags": 0,
+    "count": 0
+   },
+   "leafAfter": "0x3480b49bd31bfdc08e6abab5990721b2dce2aadac33a6d7ef7d2969d3b90182b"
+  },
+  {
+   "kind": "stim",
+   "i": 11,
+   "step": 21,
+   "seed": 3,
+   "I": "0",
+   "before": {
+    "v": 0,
+    "g": 388338,
+    "refr": 0,
+    "flags": 1,
+    "count": 1
+   },
+   "after": {
+    "v": 0,
+    "g": 380570,
+    "refr": 0,
+    "flags": 1,
+    "count": 1
+   },
+   "leafAfter": "0xf696ca704acfdae89f87b9ccd3738b25352794090be773660c89ce1ebad14fbc"
+  },
+  {
+   "kind": "neg",
+   "i": 27,
+   "step": 24,
+   "seed": 3,
+   "I": "-49",
+   "before": {
+    "v": -67162,
+    "g": -613801,
+    "refr": 0,
+    "flags": 0,
+    "count": 0
+   },
+   "after": {
+    "v": -74257,
+    "g": -1484600,
+    "refr": 0,
+    "flags": 0,
+    "count": 0
+   },
+   "leafAfter": "0xfac32e01433e2c0c7f97d7b20bc7fece7e9d80fcc74945d986249296a32a6a1c"
+  },
+  {
+   "kind": "neg",
+   "i": 54,
+   "step": 24,
+   "seed": 3,
+   "I": "-9",
+   "before": {
+    "v": 4293,
+    "g": 167034,
+    "refr": 0,
+    "flags": 0,
+    "count": 0
+   },
+   "after": {
+    "v": 4278,
+    "g": 1495,
+    "refr": 0,
+    "flags": 0,
+    "count": 0
+   },
+   "leafAfter": "0xf401e0fdc38fe46d629c56398d17aac8931b3589260a9891fc1d1e0286f37574"
+  },
+  {
+   "kind": "refr",
+   "i": 2689,
+   "step": 39,
+   "seed": 3,
+   "I": "0",
+   "before": {
+    "v": 0,
+    "g": 2253912,
+    "refr": 21,
+    "flags": 0,
+    "count": 1
+   },
+   "after": {
+    "v": 0,
+    "g": 2208825,
+    "refr": 20,
+    "flags": 0,
+    "count": 1
+   },
+   "leafAfter": "0xed739b530e32cf16bef9aaa5b0d419ac366dabb3203277c15a0827fddaa86355"
+  },
+  {
+   "kind": "refr",
+   "i": 2689,
+   "step": 42,
+   "seed": 3,
+   "I": "0",
+   "before": {
+    "v": 0,
+    "g": 2121338,
+    "refr": 18,
+    "flags": 0,
+    "count": 1
+   },
+   "after": {
+    "v": 0,
+    "g": 2078903,
+    "refr": 17,
+    "flags": 0,
+    "count": 1
+   },
+   "leafAfter": "0x4dfd3f3b776e68d3d12fa0919de78abd85ae9fc74410e05e2b193c248757569b"
+  },
+  {
+   "kind": "spike",
+   "i": 4888,
+   "step": 48,
+   "seed": 3,
+   "I": "0",
+   "before": {
+    "v": 453227,
+    "g": 2757616,
+    "refr": 0,
+    "flags": 0,
+    "count": 0
+   },
+   "after": {
+    "v": 0,
+    "g": 2702452,
+    "refr": 22,
+    "flags": 2,
+    "count": 1
+   },
+   "leafAfter": "0x87ed827439a58c4ea95956771b43f7ff77d5f0935f96c4ccfd480db49d93b533"
+  },
+  {
+   "kind": "spike",
+   "i": 284,
+   "step": 51,
+   "seed": 3,
+   "I": "57",
+   "before": {
+    "v": 450213,
+    "g": 1334245,
+    "refr": 0,
+    "flags": 0,
+    "count": 0
+   },
+   "after": {
+    "v": 0,
+    "g": 2334809,
+    "refr": 22,
+    "flags": 2,
+    "count": 1
+   },
+   "leafAfter": "0x99d66b83f6c3ca7932f276d3b3a872c1b3f08cec1b1a16d9f3c34ee85236c081"
+  }
+ ]
+}

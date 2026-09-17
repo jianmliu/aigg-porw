@@ -15,17 +15,19 @@ aigg-spec conformance vectors, and the claim is verified on-chain.
 | `sketch_wasm.c` | scheme-v2 tile sketch, WASM **SIMD128** + scalar fallback; deterministic test-payload filler; bump allocator with mark/release |
 | `commit_wasm.c` | **keccak256** (freestanding keccak-f[1600]); weights/partials leaves; Merkle root/proof; **cached trees** (O(log n) proofs); **block-parallel tree build**; slot-seed derivation — scheme `aigg:porw:sketch-tile-keccak:v1` |
 | `spmv_wasm.c` | deterministic **integer fixed-point SpMV** (`aigg:exec:int-spmv-q16:v1`) over the packed synapse records in place; unsigned Q16, hard clamp |
+| `lif_wasm.c` / `lif.js` / `int_lif.py` | **`aigg:exec:int-lif:v1`**: deterministic integer leaky integrate-and-fire on the **real FlyWire brain** (payload v2 from `demo/fly_brain/flywire_export.py`; Shiu et al. 2024 parameters in fixed point); scatter, CSR-range and post-sorted row kernels, signed partial sums, 16-byte state leaves; JS transition rule + exec-kind digest; numpy reference |
 | `dispute_wasm.c` | execution-dispute commitments: per-step activation leaves, CSR build (counting sort by post), CSR chunk leaves (64 records/leaf), rowStart leaves, CSR-ordered partial sums; row-parallel inference (`…_csr_range`, and `…_rows_direct` when records are published post-sorted) |
 | `pool.js` / `pool_worker.js` | **shared-memory worker pool**: one resident copy in a shared `WebAssembly.Memory`, N instances of `porw-shared.wasm` (each with its own stack region) computing disjoint ranges in place; browser Workers (needs cross-origin isolation) or Node `worker_threads` |
 | `porw.js` / `model.js` | wasm glue (Node + browser), payload header decode, tree/SpMV wrappers, tree-node access for bisection |
-| `mep.js` | Model Execution Profiles — one per released brain (female FlyWire, male CNS, …): `mep_id = keccak(scheme ‖ model_id ‖ exec kind ‖ steps ‖ clamp)` |
+| `mep.js` | Model Execution Profiles — one per released brain (female FlyWire, male CNS, …): `mep_id = keccak(scheme ‖ model_id ‖ exec kind ‖ steps ‖ clamp-or-stride)` |
 | `claim.js` | EVM-packed claim encoding, secp256k1 signing / `ecrecover`-compatible recovery (noble) |
-| `node.js` | `PorwNode`: multi-model residency, per-MEP signed claims (residency + execution digest), tile openings, dispute openings (activation / rowStart / CSR chunk / partial sums / tree nodes) |
+| `node.js` | `PorwNode`: multi-model residency, per-MEP signed claims (residency + execution digest), tile openings, dispute openings (activation / rowStart / CSR chunk / partial sums / tree nodes); LIF path with segment roots every `commitStride` steps, checkpoint + replay for openings |
 | `verify.js` / `verifier.js` / `dispute.js` | **independent** verifier (noble keccak only, never the wasm): claim checks, sampled openings, sketch recomputation, redundant re-execution, and the execution dispute (step → neuron bisection → row check → synapse bisection → one-term check) |
 | `swarm.js` | mesh coordination: stake-weighted **index sortition** (the contract rule), redundancy sets, backups, auditors, majority settlement |
 | `index.html` + `worker.js` | audit-throughput PoC (per-worker slices, no shared memory) |
 | `node_page.html` + `run_node_browser.mjs` | the full node loop in headless Chromium (optionally with the pool) and this process as the verifier |
-| `synth.js` | JS payload synthesizer (same layout as the Python demo; records post-sorted by default) |
+| `synth.js` | JS payload synthesizers (v1 as the Python demo; v2 with signed counts for the LIF tests) |
+| `bench_lif_node.mjs` / `model_id.mjs` | full-brain LIF measurement (single thread, pool, research mode); model / MEP ids of a payload file |
 | `test_*.mjs`, `crosscheck.py`, `int_spmv.py` | tests and Python cross-checks |
 | `../../contracts/evm/test/BrowserClaim.t.sol` | the node's claim verified **on-chain** (`mep_id`, claim hash, `ecrecover`) |
 
@@ -35,7 +37,11 @@ aigg-spec conformance vectors, and the claim is verified on-chain.
 cd web/porw-browser
 ./build.sh          # sketch.wasm (own memory) + porw-shared.wasm (imported shared memory)
 npm install
-npm test            # test_wasm (keccak fixture, trees) · test_node (2 MEPs, fraud) · test_swarm · test_pool · test_dispute
+npm test            # test_wasm (keccak fixture, trees) · test_node (2 MEPs, fraud) · test_swarm · test_pool · test_dispute · test_lif
+# the real brain: export it (see demo/fly_brain/README.md), then
+node test_lif.mjs flywire-783-min5.bin ../../spec-cache/conformance/exec/int-lif-v1/flywire-fafb-v783-min5.int-lif-v1.seed7-500steps.numpy.json
+node bench_lif_node.mjs flywire-783-min5.bin 100 4 out.json
+PW_CHROMIUM=/path/to/chrome node run_node_browser.mjs --payload flywire-783-min5.bin --steps 100 --workers 4   # v2 payload -> int-lif
 
 # audit-throughput PoC
 PW_CHROMIUM=/path/to/chrome node run_browser.mjs --mib 521 --workers 4
@@ -67,6 +73,15 @@ PW_CHROMIUM=/path/to/chrome node run_node_browser.mjs --payload flywire-female-s
   **divergent synapse term** with the record (CSR chunk proof), row bounds
   (rowStart proofs) and input activation (previous-step root or stimulus rule);
   swapping roles still blames the liar; two honest executors never dispute.
+- **Integer LIF on the real brain** (`test_lif.mjs`): wasm scatter == wasm post-sorted
+  rows == numpy for 500 steps of the FlyWire v783 export (bit-identical state
+  trajectories, 1,927 spikes / 620 active neurons at 50 ms from 151 stimulated); JS
+  `transition` == kernel for sampled neurons; `initStateRoot` derivable from the
+  stimulus id list alone; segment roots replayed from checkpoints match; a lie in the
+  state is caught by the LIF row check, a consistent lie in the signed partial sums at
+  the single synapse term; segment refinement finds the step and rejects an unbound
+  chain; the exec-kind digest and the transition rule match `LifRowCheck.sol`
+  (`forge test --match-contract LifRowCheckTest`, vectors covering every branch).
 - **On-chain**: `forge test` recomputes `mep_id` and the claim hash and `ecrecover`s
   the signer.
 - **Mesh**: sortition deterministic, stake-weighted, excludes ineligible instances and
@@ -83,6 +98,12 @@ the dispute commitments:
 | 4 workers, unsorted | 38 | 219 | 672 | 472 | **1401** | 8.3 s |
 | 4 workers, post-sorted | 51 | 247 | 85 | 465 | **848** | 6.5 s |
 | 4 workers, post-sorted, parallel trees | ~55 | ~130 | ~70 | ~250 | **~480–540** | 5.7 s |
+
+**Real FlyWire brain, integer LIF** (139,255 neurons, 2.70M signed records ≥ 5 synapses,
+28 MB, `benchmarks/lif/`): Node 22, this host — inference 9.4 ms/step single thread,
+2.9 ms/step on the 4-worker pool; one committed state root 362 ms single / 116 ms pool;
+with stride 10 a 100-step claim (10 ms of brain time) takes 5.0 s single / **1.6 s** pool;
+research mode (no commitments) 9.0 ms/step ⇒ ~90 s per second of brain time per tab.
 
 16 sampled openings: 16–19 ms (cached trees). Two findings worth keeping: a CSR
 permutation makes every synapse read a random access into the 545 MB payload, so
@@ -103,5 +124,12 @@ The settlement design that consumes these artifacts is
   is verified, stake-gated execution units.
 - **Contracts**: implemented in `contracts/evm/src/mesh/` and tested end to end on
   fixtures exported from this node (`export_fixtures.mjs` → `test/Mesh.t.sol`).
-- **Not yet**: gossip transport (libp2p/WebRTC); wallet (EIP-712) signing; a
-  deployment script and a live-chain run.
+- **LIF caveats**: the rule is a fixed-point *port* of Shiu et al. 2024, not their
+  Brian2 code — forward-Euler membrane update, hash-driven stimulus instead of true
+  Poisson, floor shifts (a neuron can rest at −1 LSB), no synaptic delays. Results
+  are reproducible and disputable, not a biological calibration; calibrating against
+  the published model is research work on top of this substrate.
+- **Not yet**: `ExecutionDisputes` dispatch for the LIF kind (`LifRowCheck.sol` is
+  the rule; the JS `adjudicateLif` + `refineSegment` are the reference); gossip
+  transport (libp2p/WebRTC); wallet (EIP-712) signing; a deployment script and a
+  live-chain run.

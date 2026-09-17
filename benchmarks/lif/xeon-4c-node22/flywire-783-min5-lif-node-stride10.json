@@ -1,0 +1,41 @@
+{
+ "payload": "flywire-783-min5.bin",
+ "neurons": 139255,
+ "synapses": 2700513,
+ "steps": 100,
+ "workers": 4,
+ "single": {
+  "loadMs": 1166.9278339999998,
+  "slotMs": 4994.506362,
+  "timings": {
+   "sketchMs": 8.52522799999997,
+   "commitMs": 17.996036000000004,
+   "inferMs": 942.2605189999988,
+   "disputeCommitMs": 3976.072756
+  },
+  "modelId": "0x9747cc81830375103eae957a93d3800875223c17bdc6399f5783be62a19da93a",
+  "mepId": "0x9b7dc2ba02a04ed1be9519d00d53323d581c0b496764c28edc071d8c841bef49",
+  "execDigest": "0x688bc39090799eb7cdc6b5a320fd73829ace11a8a3f09effbda5c0cacf0fdf08",
+  "execRoot": "0xad381cb99aad7f3712ca39ef3d6e91f494763facf9107aa2d6a016dec381829d",
+  "initStateRoot": "0xaf3822bb9a2850c28b793778b2edcac5e21947b10dad7a1a4fab6520f38bd656"
+ },
+ "pool": {
+  "loadMs": 400.20016600000054,
+  "slotMs": 1562.7223609999992,
+  "timings": {
+   "sketchMs": 10.47838800000045,
+   "commitMs": 7.289748000000145,
+   "inferMs": 292.86297000000013,
+   "disputeCommitMs": 1216.6269309999998
+  },
+  "identical": true
+ },
+ "research": {
+  "steps": 1000,
+  "ms": 8954.362114,
+  "msPerStep": 8.954362114,
+  "secondsPerBrainSecond": 89.54362114,
+  "spikes": 6321,
+  "activeNeurons": 1156
+ }
+}

@@ -60,3 +60,49 @@ export function adjudicate({ n, nChunks, chunk, csrRoot, rowRoot, synapseRoot, p
   if (okA === okB) return { loser: null, reason: okA ? "both terms consistent (divergence earlier?)" : "both terms wrong", checks };
   return { loser: okA ? "B" : "A", reason: `term at CSR position ${kStar} (${rec.pre}->${i}, w=${rec.w}, act_pre=${actPre})`, checks };
 }
+
+// ---- `aigg:exec:int-lif:v1` variant: segment roots (every commitStride steps) -> per-step refinement ->
+// neuron bisection; the row check is the LIF transition ----
+/** Segment refinement: both parties post the per-step roots of the first differing segment. Each chain must
+ *  end at the party's committed segment root (binding); the previous segment root (or initStateRoot) is agreed.
+ *  Returns the first differing step and the agreed previous-step root, or blames a party whose chain is unbound. */
+export function refineSegment({ seg, stride, steps, prevAgreed, segRootA, segRootB, rootsA, rootsB }) {
+  const s0 = seg * stride, s1 = Math.min(s0 + stride, steps), len = s1 - s0;
+  const boundA = rootsA.length === len && V.eq(rootsA[len - 1], segRootA), boundB = rootsB.length === len && V.eq(rootsB[len - 1], segRootB);
+  if (boundA !== boundB) return { loser: boundA ? "B" : "A", reason: "per-step chain not bound to the committed segment root" };
+  if (!boundA) return { loser: null, reason: "both chains unbound" };
+  for (let j = 0; j < len; j++) if (!V.eq(rootsA[j], rootsB[j])) return { loser: null, step: s0 + j + 1, prevRoot: j ? rootsA[j - 1] : prevAgreed };
+  return { loser: null, reason: "chains identical (segment roots cannot differ)" };
+}
+// The per-step commitment is the state tree (stateLeaf); the agreed previous root is state_{s*-1}'s root
+// (initStateRoot for s* = 1, computed by everyone from the task's stimulus set). Partial sums are signed.
+import * as L from "./lif.js";
+export function adjudicateLif({ n, nChunks, chunk, csrRoot, rowRoot, synapseRoot, prevRoot, seed, step, i,
+                                rowStart, rowEnd, chunkOpen, prevOpen, preOpen, partyA, partyB }) {
+  const checks = {};
+  checks.synapseRoot = V.eq(V.synapseRootOf(csrRoot, rowRoot), synapseRoot);
+  checks.rowBounds = V.merkleVerifyCounted(rowRoot, V.rowStartLeaf(i, rowStart.value), i, n + 1, rowStart.proof)
+                  && V.merkleVerifyCounted(rowRoot, V.rowStartLeaf(i + 1, rowEnd.value), i + 1, n + 1, rowEnd.proof);
+  checks.prevOpen = prevOpen.i === i && V.merkleVerifyCounted(prevRoot, L.stateLeaf(i, prevOpen.state), i, n, prevOpen.proof);
+  if (!checks.synapseRoot || !checks.rowBounds || !checks.prevOpen) return { loser: null, reason: "bad commitments/openings", checks };
+  const k0 = rowStart.value, k1 = rowEnd.value, len = k1 - k0;
+  const rowCheck = (p) => p.sums.length === len && L.sameState(L.transition(prevOpen.state, len ? p.sums[len - 1] : 0n, i, step, seed), p.claimed);
+  checks.rowA = rowCheck(partyA); checks.rowB = rowCheck(partyB);
+  if (checks.rowA !== checks.rowB) return { loser: checks.rowA ? "B" : "A", reason: "claimed state inconsistent with the LIF transition of own partial sums", checks };
+  if (!checks.rowA) return { loser: null, reason: "both rows inconsistent", checks };
+  const j = firstDivergentTerm(partyA.sums, partyB.sums);
+  if (j < 0) return { loser: null, reason: "partial sums identical (state cannot differ)", checks };
+  const kStar = k0 + j; checks.kStar = kStar;
+  const c = Math.floor(kStar / chunk); checks.chunkIdx = c === chunkOpen.c;
+  checks.chunkProof = V.merkleVerifyCounted(csrRoot, V.csrChunkLeaf(chunkOpen.c, chunkOpen.records), chunkOpen.c, nChunks, chunkOpen.proof);
+  if (!checks.chunkIdx || !checks.chunkProof) return { loser: null, reason: "bad chunk opening", checks };
+  const rec = L.recordSigned(chunkOpen.records.subarray((kStar - chunkOpen.k0) * 10, (kStar - chunkOpen.k0) * 10 + 10));
+  checks.recordPost = rec.post === i;
+  checks.preProof = preOpen.i === rec.pre && V.merkleVerifyCounted(prevRoot, L.stateLeaf(preOpen.i, preOpen.state), preOpen.i, n, preOpen.proof);
+  if (!checks.recordPost || !checks.preProof) return { loser: null, reason: "bad input state opening", checks };
+  const term = BigInt(rec.w) * BigInt(L.spiked(preOpen.state)); checks.term = term.toString();
+  const okA = partyA.sums[j] === (j ? partyA.sums[j - 1] : 0n) + term, okB = partyB.sums[j] === (j ? partyB.sums[j - 1] : 0n) + term;
+  checks.termA = okA; checks.termB = okB;
+  if (okA === okB) return { loser: null, reason: okA ? "both terms consistent (divergence earlier?)" : "both terms wrong", checks };
+  return { loser: okA ? "B" : "A", reason: `term at CSR position ${kStar} (${rec.pre}->${i}, w=${rec.w}, spiked_pre=${L.spiked(preOpen.state)})`, checks };
+}

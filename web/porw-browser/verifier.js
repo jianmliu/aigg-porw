@@ -53,3 +53,18 @@ export function reexecute(kernel, payloadBytes, claim, mep) {
   const digest = keccak_256(new Uint8Array(a.buffer, a.byteOffset, a.byteLength));
   return { digest, matches: V.eq(digest, claim.execDigest) };
 }
+
+// Redundant re-execution of an `aigg:exec:int-lif:v1` run (no commitments): counts digest must match.
+import { countsDigest } from "./lif.js";
+export function reexecuteLif(kernel, payloadBytes, claim, mep, { stimulusIds = null } = {}) {
+  const k = kernel, e = k.exports; const m = k.mark();
+  const bufPtr = k.put(payloadBytes); const hdr = decodeHeader(payloadBytes); const n = hdr.neurons;
+  if (hdr.version !== 2) throw new Error("int-lif needs a v2 payload");
+  let cur = k.alloc(n * 16), nxt = k.alloc(n * 16); const acc = k.alloc(n * 8), counts = k.alloc(n * 4);
+  if (stimulusIds) { const p = k.alloc(stimulusIds.length * 4); k.u32(p, stimulusIds.length).set(stimulusIds); if (e.porw_lif_state0_set(cur, n >>> 0, p, stimulusIds.length >>> 0) !== 0) throw new Error("state0"); }
+  else e.porw_lif_state0_canonical(cur, n >>> 0, claim.stimulusSeed >>> 0);
+  for (let s = 1; s <= mep.steps; s++) { const rc = e.porw_lif_step(bufPtr + hdr.synOffset, hdr.synapses >>> 0, cur, nxt, acc, n >>> 0, s >>> 0, claim.stimulusSeed >>> 0); if (rc !== 0) throw new Error("lif rc=" + rc); [cur, nxt] = [nxt, cur]; }
+  e.porw_lif_counts(cur, n >>> 0, counts);
+  const c = new Uint32Array(k.u32(counts, n)); const digest = countsDigest(c); k.release(m);
+  return { digest, matches: V.eq(digest, claim.execDigest), counts: c };
+}
