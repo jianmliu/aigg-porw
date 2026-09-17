@@ -6,10 +6,12 @@ import fs from "node:fs";
 import { loadKernelFromBytes, TILE_BYTES, treeWidths } from "./porw.js";
 import { PorwNode } from "./node.js";
 import { synthesizePayload } from "./synth.js";
-import { signHash, addressOf } from "./claim.js";
+import { signHash, addressOf, keypair } from "./claim.js";
 import * as V from "./verify.js";
 import * as D from "./dispute.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
+import * as E from "./eip712.js";
+import { domains, walletAndSession, CHAIN_ID, CM_ADDR, MK_ADDR, REG_ADDR, DELEGATION_EXPIRY } from "./export_fixtures_common.js";
 
 const [out, epochBlocksArg, epochArg, prevrandaoArg] = process.argv.slice(2);
 const EPOCH_BLOCKS = Number(epochBlocksArg || 100), EPOCH = Number(epochArg || 1), PREVRANDAO = BigInt(prevrandaoArg || 42);
@@ -22,7 +24,7 @@ const wasm = fs.readFileSync(new URL("./sketch.wasm", import.meta.url));
 const payload = synthesizePayload("flywire-female", 4000, 40000); // small so the dispute openings stay test-sized
 const steps = 2, stimulusSeed = 5; const nonces = [9, 10, 11].map((v) => new Uint8Array(32).fill(v));
 
-const mk = async (priv, lie) => { const nd = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + priv.repeat(32) }); if (lie) nd.execLie = lie; const st = await nd.loadModel("flywire-female", payload, { steps }); return { nd, st }; };
+const mk = async (priv, lie) => { const ws = await walletAndSession(String.fromCharCode(priv.charCodeAt(0)) + "a", priv); const nd = new PorwNode(await loadKernelFromBytes(wasm), { privHex: ws.sessionPriv, domains, delegation: ws.delegation }); if (lie) nd.execLie = lie; const st = await nd.loadModel("flywire-female", payload, { steps }); return { nd, st, ws }; };
 const A = await mk("11"); const mep = A.st.mep; const mepId = mep.mepId;
 
 // contract-derived epoch challenge
@@ -41,11 +43,11 @@ const rB = await B.nd.challenge(mepId, challenge, { stimulusSeed });
 // --- residency claim (A, honest) + openings: NoFraud tile from A, Fraud tile from a residency liar ---
 const L = await mk("33"); L.nd.lies.set(`${H(mepId)}:7`, 12345); const rL = await L.nd.challenge(mepId, challenge, { stimulusSeed });
 const opening = (nd, r, t) => { const o = nd.open(mepId, t); return { tileIdx: o.tileIdx, tile: H(o.tile), sTile: o.sketch, partialsIndex: o.position, partialsProof: o.partialsProof.map(H), weightsProof: o.weightsProof.map(H) }; };
-const claimJson = (r) => { const c = r.claim; return { mepId: H(c.mepId), partialsRoot: H(c.partialsRoot), coverageBytes: c.coverageBytes, challenge: H(c.challenge), deviceId: H(c.deviceId), execDigest: H(c.execDigest), stimulusSeed: c.stimulusSeed, signature: H(r.signature), signer: H(r.address) }; };
+const claimJson = (r) => { const c = r.claim; return { mepId: H(c.mepId), partialsRoot: H(c.partialsRoot), coverageBytes: c.coverageBytes, challenge: H(c.challenge), deviceId: H(c.deviceId), execDigest: H(c.execDigest), stimulusSeed: c.stimulusSeed, signature: H(r.signature), signer: H(r.address), digest: H(r.digest), instance: r.delegation.instance }; };
 
 // --- task results signed by A and B: resultHash = keccak("porw-result" || taskId || execDigest || execRoot) ---
 const taskIds = nonces.map((nonce) => keccak_256(cat(mepId, be32(stimulusSeed), nonce)));
-const resultSig = (P, r, taskId) => { const h = keccak_256(cat(new TextEncoder().encode("porw-result"), taskId, r.result.execDigest, r.result.execRoot)); return { execDigest: H(r.result.execDigest), execRoot: H(r.result.execRoot), signature: H(signHash(h, P.nd.key.priv)), signer: H(P.nd.key.address) }; };
+const resultSig = (P, r, taskId) => { const h = E.resultDigest(domains.market, taskId, r.result.execDigest, r.result.execRoot); return { execDigest: H(r.result.execDigest), execRoot: H(r.result.execRoot), signature: H(signHash(h, P.nd.key.priv)), signer: H(P.nd.key.address) }; };
 
 // --- dispute path: step, then the children pairs each party posts, following the contract's rule ---
 const n = A.st.hdr.neurons; const sStar = D.firstDifferingStep(rA.result.actRoots, rB.result.actRoots);
@@ -71,7 +73,8 @@ if (V.rowActivation(lied[len - 1]) !== actB) throw new Error("lied sums inconsis
 const F = ({
   params: { epochBlocks: EPOCH_BLOCKS, epoch: EPOCH, epochStart, prevrandao: Number(PREVRANDAO), beacon: H(beacon), challenge: H(challenge), steps, stimulusSeed, nonces: nonces.map(H), taskIds: taskIds.map(H) },
   mep: { mepId: H(mepId), modelId: H(mep.modelId), schemeDigest: H(mep.schemeDigest), execKind: H(mep.execKind), steps: mep.steps, clampQ16: mep.clampQ16, neurons: n, synapses: A.st.hdr.synapses, synapseRoot: H(rA.result.synapseRoot), csrRoot: H(rA.result.csrRoot), rowRoot: H(rA.result.rowRoot), nTiles: A.st.nTiles },
-  instances: { A: H(A.nd.key.address), B: H(B.nd.key.address), L: H(L.nd.key.address) },
+  instances: { A: A.ws.wallet.address, B: B.ws.wallet.address, L: L.ws.wallet.address }, sessions: { A: H(A.nd.key.address), B: H(B.nd.key.address), L: H(L.nd.key.address) },
+  delegations: { A: A.ws.delegation, B: B.ws.delegation, L: L.ws.delegation }, eip712: { chainId: CHAIN_ID, claimManager: CM_ADDR, market: MK_ADDR, registry: REG_ADDR, expiry: DELEGATION_EXPIRY },
   claimA: claimJson(rA), claimB: claimJson(rB), claimL: claimJson(rL), claimHashA: H(rA.claimHash),
   openingNoFraud: opening(A.nd, rA, 3), openingFraud: opening(L.nd, rL, 7), openingHonestOfLiar: opening(L.nd, rL, 3),
   resultsA: taskIds.map((t) => resultSig(A, rA, t)), resultsB: taskIds.map((t) => resultSig(B, rB, t)),
@@ -119,10 +122,15 @@ library MeshFixtures {
     bytes32 constant MEP_ID = ${M.mepId}; bytes32 constant MODEL_ID = ${M.modelId}; bytes32 constant SCHEME_DIGEST = ${M.schemeDigest}; bytes32 constant EXEC_KIND = ${M.execKind};
     uint32 constant STEPS = ${M.steps}; uint32 constant CLAMP_Q16 = ${M.clampQ16}; uint32 constant NEURONS = ${M.neurons}; uint32 constant SYNAPSES = ${M.synapses};
     bytes32 constant SYNAPSE_ROOT = ${M.synapseRoot}; bytes32 constant CSR_ROOT = ${M.csrRoot}; bytes32 constant ROW_ROOT = ${M.rowRoot}; uint64 constant N_TILES = ${M.nTiles};
-    address constant A = ${checksum(F.instances.A)}; address constant B = ${checksum(F.instances.B)}; address constant L = ${checksum(F.instances.L)};
+    address constant A = ${checksum(F.instances.A)}; address constant B = ${checksum(F.instances.B)}; address constant L = ${checksum(F.instances.L)}; // bonded wallets
+    address constant SESSION_A = ${checksum(F.sessions.A)}; address constant SESSION_B = ${checksum(F.sessions.B)}; address constant SESSION_L = ${checksum(F.sessions.L)}; // delegated tab keys
+    uint256 constant CHAIN_ID = ${F.eip712.chainId}; address constant CLAIM_MANAGER = ${checksum(F.eip712.claimManager)}; address constant MARKET = ${checksum(F.eip712.market)}; address constant REGISTRY = ${checksum(F.eip712.registry)}; uint64 constant DELEGATION_EXPIRY = ${F.eip712.expiry};
+    bytes32 constant CLAIM_DIGEST_A = ${F.claimA.digest};
     uint32 constant S_STAR = ${D.sStar}; uint32 constant ROUNDS = ${D.rounds}; uint32 constant NEURON = ${D.neuron}; uint32 constant ACT_A = ${D.actA}; uint32 constant ACT_B = ${D.actB}; uint32 constant K_STAR = ${D.kStar};
     uint32 constant ROW_START = ${D.rowStart.value}; uint32 constant ROW_END = ${D.rowEnd.value}; uint32 constant CHUNK_C = ${D.chunk.c}; uint32 constant ACT_PRE = ${D.actPre};
 `;
+  const delFn = (name, d) => `    function ${name}() internal pure returns (address instance, address session, uint64 expiry, bytes memory sig) { instance = ${checksum(d.instance)}; session = ${checksum(d.session)}; expiry = ${d.expiry}; sig = hex"${d.sig.slice(2)}"; }\n`;
+  sol += delFn("delegationA", F.delegations.A) + delFn("delegationB", F.delegations.B) + delFn("delegationL", F.delegations.L);
   sol += arr32("nonces", P.nonces) + arr32("taskIds", P.taskIds);
   sol += claimFn("claimA", F.claimA) + claimFn("claimB", F.claimB) + claimFn("claimL", F.claimL);
   sol += openingFn("openingNoFraud", F.openingNoFraud) + openingFn("openingFraud", F.openingFraud) + openingFn("openingHonestOfLiar", F.openingHonestOfLiar);
@@ -141,8 +149,10 @@ library BrowserClaimFixture {
     bytes32 constant EXEC_KIND = ${M.execKind}; uint32 constant STEPS = ${M.steps}; uint32 constant CLAMP_Q16 = ${M.clampQ16};
     bytes32 constant PARTIALS_ROOT = ${c.partialsRoot}; uint64 constant COVERAGE_BYTES = ${c.coverageBytes}; bytes32 constant CHALLENGE = ${c.challenge};
     bytes32 constant DEVICE_ID = ${c.deviceId}; bytes32 constant EXEC_DIGEST = ${c.execDigest}; uint32 constant STIMULUS_SEED = ${c.stimulusSeed};
-    bytes32 constant CLAIM_HASH = ${F.claimHashA}; address constant SIGNER = ${checksum(c.signer)};
+    bytes32 constant CLAIM_HASH = ${F.claimHashA}; bytes32 constant CLAIM_DIGEST = ${c.digest}; address constant SIGNER = ${checksum(c.signer)}; address constant INSTANCE = ${checksum(c.instance)};
+    uint256 constant CHAIN_ID = ${F.eip712.chainId}; address constant CLAIM_MANAGER = ${checksum(F.eip712.claimManager)}; address constant REGISTRY = ${checksum(F.eip712.registry)};
     function signature() internal pure returns (bytes memory) { return hex"${c.signature.slice(2)}"; }
+    function delegation() internal pure returns (address instance, address session, uint64 expiry, bytes memory sig) { instance = ${checksum(F.delegations.A.instance)}; session = ${checksum(F.delegations.A.session)}; expiry = ${F.delegations.A.expiry}; sig = hex"${F.delegations.A.sig.slice(2)}"; }
 }
 `);
 }

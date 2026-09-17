@@ -5,15 +5,17 @@ import { hex, unhex } from "./verify.js";
 import { signHash } from "./claim.js";
 import { topicMep } from "./envelope.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
+import { resultDigest } from "./eip712.js";
 
 const cat = (...p) => { const o = new Uint8Array(p.reduce((s, x) => s + x.length, 0)); let i = 0; for (const x of p) { o.set(x, i); i += x.length; } return o; };
 export const claimToJson = (r) => { const c = r.claim; return { claim: { schemeDigest: hex(c.schemeDigest), mepId: hex(c.mepId), modelId: hex(c.modelId), partialsRoot: hex(c.partialsRoot), coverageBytes: c.coverageBytes, challenge: hex(c.challenge), deviceId: hex(c.deviceId), execDigest: hex(c.execDigest), stimulusSeed: c.stimulusSeed },
-  claimHash: hex(r.claimHash), signature: hex(r.signature), address: hex(r.address), execRoot: hex(r.result.execRoot) }; };
-export const claimFromJson = (j) => ({ claim: Object.fromEntries(Object.entries(j.claim).map(([k, v]) => [k, typeof v === "string" ? unhex(v) : v])), claimHash: unhex(j.claimHash), signature: unhex(j.signature), address: unhex(j.address) });
+  claimHash: hex(r.claimHash), signature: hex(r.signature), address: hex(r.address), execRoot: hex(r.result.execRoot), delegation: r.delegation || null }; };
+export const claimFromJson = (j) => ({ claim: Object.fromEntries(Object.entries(j.claim).map(([k, v]) => [k, typeof v === "string" ? unhex(v) : v])), claimHash: unhex(j.claimHash), signature: unhex(j.signature), address: unhex(j.address), delegation: j.delegation || null });
 export const openingToJson = (o) => ({ tileIdx: o.tileIdx, position: o.position, tile: hex(o.tile), sketch: o.sketch, partialsProof: o.partialsProof.map(hex), weightsProof: o.weightsProof.map(hex) });
 export const openingFromJson = (o) => ({ ...o, tile: unhex(o.tile), partialsProof: o.partialsProof.map(unhex), weightsProof: o.weightsProof.map(unhex) });
-/** TaskMarket.resultHash = keccak("porw-result" || taskId || execDigest || execRoot) */
+/** raw result hash (JS-only tests); with an EIP-712 domain the node signs TaskMarket.resultDigest instead */
 export const resultHash = (taskId32, digest32, root32) => keccak_256(cat(new TextEncoder().encode("porw-result"), taskId32, digest32, root32));
+export const resultSigningHash = (domain, taskId32, digest32, root32) => (domain ? resultDigest(domain, taskId32, digest32, root32) : resultHash(taskId32, digest32, root32));
 
 export class NodeService {
   constructor(node, client, { maxTilesPerRequest = 64 } = {}) { this.node = node; this.client = client; this.maxTiles = maxTilesPerRequest; this.served = { openings: 0, tasks: 0 }; this.unsubs = []; }
@@ -38,9 +40,9 @@ export class NodeService {
       const p = env.payload; if (env.mepId !== id || typeof p.taskId !== "string") return null;
       const ids = Array.isArray(p.stimulusIds) ? Uint32Array.from(p.stimulusIds) : null;
       const r = await this.node.challenge(mepId, unhex(p.taskId), { stimulusSeed: p.stimulusSeed >>> 0, stimulusIds: ids }); // the task id doubles as the (irrelevant) sketch challenge
-      const h = resultHash(unhex(p.taskId), r.result.execDigest, r.result.execRoot);
+      const h = resultSigningHash(this.node.domains?.market, unhex(p.taskId), r.result.execDigest, r.result.execRoot);
       this.served.tasks++;
-      return { type: "result", payload: { taskId: p.taskId, execDigest: hex(r.result.execDigest), execRoot: hex(r.result.execRoot), signature: hex(signHash(h, this.node.key.priv)) } };
+      return { type: "result", payload: { taskId: p.taskId, execDigest: hex(r.result.execDigest), execRoot: hex(r.result.execRoot), signature: hex(signHash(h, this.node.key.priv)), delegation: this.node.delegation || null } };
     }));
   }
   /** on-chain fallback: the exact IPoRWClaimManager.Opening the instance submits itself via respondOpening */

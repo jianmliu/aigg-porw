@@ -18,7 +18,10 @@ export function sampleTiles(challenge32, nTiles, k) {
   return [...out];
 }
 
-export function verifyClaim(resp, mep, expectedChallenge) {
+import { claimDigest, verifyDelegation } from "./eip712.js";
+/** `domain`: verify the EIP-712 signature (contract path); otherwise the raw claim hash (JS-only tests).
+ *  `delegation` + `blockNumber`: resolve a session-key signer to its bonded instance (r.instance). */
+export function verifyClaim(resp, mep, expectedChallenge, { domain = null, blockNumber = 0 } = {}) {
   const c = resp.claim, r = { ok: true, reasons: [] };
   const fail = (m) => { r.ok = false; r.reasons.push(m); };
   if (!V.eq(c.schemeDigest, mep.schemeDigest)) fail("scheme digest");
@@ -27,9 +30,11 @@ export function verifyClaim(resp, mep, expectedChallenge) {
   if (!V.eq(c.challenge, expectedChallenge)) fail("challenge");
   if (!V.eq(claimHash(c), resp.claimHash)) fail("claim hash");
   let addr = null;
-  try { addr = recoverAddress(resp.claimHash, resp.signature); } catch { addr = null; } // malformed signature == invalid, never a crash
+  try { addr = recoverAddress(domain ? claimDigest(domain, c) : resp.claimHash, resp.signature); } catch { addr = null; } // malformed signature == invalid, never a crash
   if (!addr || !V.eq(addr, resp.address)) fail("signature");
   r.signer = addr; r.slotSeed = V.slotSeed(c.challenge, c.deviceId);
+  r.instance = addr ? V.hex(addr) : null;
+  if (addr && resp.delegation) { const inst = verifyDelegation(resp.delegation.domain || domain, resp.delegation, V.hex(addr), blockNumber); if (!inst) fail("delegation"); r.instance = inst; }
   return r;
 }
 

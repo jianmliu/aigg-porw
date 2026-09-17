@@ -15,16 +15,17 @@ const be64 = (n) => { const b = new Uint8Array(8); new DataView(b.buffer).setBig
 export const claimIdOf = (addr20, mepId32, epoch) => keccak_256(cat(addr20, mepId32, be64(epoch)));
 
 export class Auditor {
-  constructor(client, mep, expectedChallenge, { epoch = 1, samples = 16, timeoutMs = 4000 } = {}) {
-    this.client = client; this.mep = mep; this.challenge = expectedChallenge; this.epoch = epoch; this.samples = samples; this.timeoutMs = timeoutMs; this.audits = [];
+  constructor(client, mep, expectedChallenge, { epoch = 1, samples = 16, timeoutMs = 4000, domain = null, blockNumber = 0 } = {}) {
+    this.client = client; this.mep = mep; this.challenge = expectedChallenge; this.epoch = epoch; this.samples = samples; this.timeoutMs = timeoutMs; this.audits = []; this.domain = domain; this.blockNumber = blockNumber;
   }
   watch() { return this.client.subscribe(topicMep(hex(this.mep.mepId)), (env) => { if (env.type === "claim") this.audits.push(this.audit(env)); }); }
   async audit(env) {
     const R = claimFromJson(env.payload); const out = { from: env.from, claimHash: env.payload.claimHash, claim: R.claim, ok: false, verdicts: [], escalation: null };
-    const vc = Vf.verifyClaim(R, this.mep, this.challenge); out.claimOk = vc.ok; out.reasons = vc.reasons;
+    const vc = Vf.verifyClaim(R, this.mep, this.challenge, { domain: this.domain, blockNumber: this.blockNumber }); out.claimOk = vc.ok; out.reasons = vc.reasons;
     if (!vc.ok || hex(vc.signer) !== env.from.toLowerCase()) { out.escalation = { kind: "invalid-claim", reasons: vc.reasons }; return out; } // an unsigned/mismatched claim never reaches the chain
+    out.instance = vc.instance; // the bonded wallet (the signer itself, or the wallet that delegated this session key)
     const nTiles = R.claim.coverageBytes / V.TILE_BYTES; const tiles = Vf.sampleTiles(this.challenge, nTiles, this.samples);
-    const claimId = hex(claimIdOf(vc.signer, this.mep.mepId, this.epoch));
+    const claimId = hex(claimIdOf(unhex(vc.instance), this.mep.mepId, this.epoch));
     let resp; try { resp = await this.client.request(env.from, "open-request", env.mepId, { tiles }, { timeoutMs: this.timeoutMs, responseType: "open-response" }); }
     catch (e) { out.escalation = { kind: "unresponsive", action: "challengeOpening", claimId, tiles, note: "deposit-backed on-chain challenge; the instance answers with respondOpening or is slashed on timeout" }; return out; }
     const openings = (resp.payload.openings || []).map(openingFromJson); const byTile = new Map(openings.map((o) => [o.tileIdx, o]));

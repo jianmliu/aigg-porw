@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import "../interfaces/PorwMesh.sol";
 import "./InstanceRegistry.sol";
 import "./PoRWClaimManager.sol";
+import "./PorwEIP712.sol";
 
 interface IDisputeOpener { function openDispute(bytes32 taskId, address a, address b) external; }
 
@@ -17,13 +18,14 @@ contract TaskMarket is ITaskMarket {
     PoRWClaimManager public immutable claimManager;
     address public disputes;
     address public owner;
+    bytes32 public immutable DOMAIN_SEPARATOR; // EIP-712: results are signed as typed data (wallet or delegated session key)
 
     struct StoredTask { Task t; address client; uint64 epoch; uint64 postedAt; bool exists; bool settled; bool disputed; }
     mapping(bytes32 => StoredTask) public tasks;
     mapping(bytes32 => mapping(address => Result)) internal results;
     mapping(bytes32 => mapping(address => bool)) public submitted;
 
-    constructor(IMEPRegistry m, InstanceRegistry i, PoRWClaimManager cm, uint64 taskTimeout) { meps = m; instances = i; claimManager = cm; TASK_TIMEOUT = taskTimeout; owner = msg.sender; }
+    constructor(IMEPRegistry m, InstanceRegistry i, PoRWClaimManager cm, uint64 taskTimeout) { meps = m; instances = i; claimManager = cm; TASK_TIMEOUT = taskTimeout; owner = msg.sender; DOMAIN_SEPARATOR = PorwEIP712.domainSeparator(address(this)); }
     function setDisputes(address d) external { require(msg.sender == owner && disputes == address(0), "set"); disputes = d; }
 
     function postTask(Task calldata t, bytes32 nonce) external payable returns (bytes32 taskId) {
@@ -57,7 +59,8 @@ contract TaskMarket is ITaskMarket {
         for (uint256 k = 0; k < n; k++) out[k] = chosen[k];
     }
 
-    function resultHash(bytes32 taskId, bytes32 execDigest, bytes32 execRoot) public pure returns (bytes32) { return keccak256(abi.encodePacked("porw-result", taskId, execDigest, execRoot)); }
+    /// @notice the EIP-712 digest an executor signs for a result
+    function resultDigest(bytes32 taskId, bytes32 execDigest, bytes32 execRoot) public view returns (bytes32) { return PorwEIP712.digest(DOMAIN_SEPARATOR, PorwEIP712.resultStructHash(taskId, execDigest, execRoot)); }
     function resultOf(bytes32 taskId, address who) external view returns (bytes32 execDigest, bytes32 execRoot) { Result storage r = results[taskId][who]; return (r.execDigest, r.execRoot); }
     function taskInfo(bytes32 taskId) external view returns (bytes32 mepId, uint32 stimulusSeed, address client) { StoredTask storage st = tasks[taskId]; return (st.t.mepId, st.t.stimulusSeed, st.client); }
     /// @notice the task's input commitment (int-lif: initStateRoot over state_0 derived from the stimulus set)
@@ -66,7 +69,7 @@ contract TaskMarket is ITaskMarket {
     function submitResult(bytes32 taskId, Result calldata r, bytes calldata signature) external {
         StoredTask storage st = tasks[taskId];
         require(st.exists && !st.settled, "task");
-        address signer = _recover(resultHash(taskId, r.execDigest, r.execRoot), signature);
+        address signer = instances.resolve(PorwEIP712.recover(resultDigest(taskId, r.execDigest, r.execRoot), signature));
         require(signer != address(0) && _isExecutor(taskId, signer), "not an executor");
         require(!submitted[taskId][signer], "submitted");
         results[taskId][signer] = r; submitted[taskId][signer] = true;
@@ -117,11 +120,4 @@ contract TaskMarket is ITaskMarket {
     function _same(bytes32 taskId, address a, address b) internal view returns (bool) { return results[taskId][a].execDigest == results[taskId][b].execDigest && results[taskId][a].execRoot == results[taskId][b].execRoot; }
     function _firstSubmitted(bytes32 taskId, address[] memory ex) internal view returns (uint256) { for (uint256 i = 0; i < ex.length; i++) if (submitted[taskId][ex[i]]) return i; revert("none"); }
     function _isExecutor(bytes32 taskId, address who) internal view returns (bool) { address[] memory ex = executors(taskId); for (uint256 i = 0; i < ex.length; i++) if (ex[i] == who) return true; return false; }
-    function _recover(bytes32 h, bytes calldata sig) internal pure returns (address) {
-        if (sig.length != 65) return address(0);
-        bytes32 r; bytes32 s; uint8 v;
-        assembly { r := calldataload(sig.offset) s := calldataload(add(sig.offset, 32)) v := byte(0, calldataload(add(sig.offset, 64))) }
-        if (v < 27) v += 27;
-        return ecrecover(h, v, r, s);
-    }
 }

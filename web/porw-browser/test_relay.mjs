@@ -11,7 +11,9 @@ import * as Vf from "./verifier.js";
 import { startRelay } from "./relay.js";
 import { RelayClient } from "./relay_client.js";
 import { seal, verifyEnvelope, canonical, topicMep } from "./envelope.js";
-import { NodeService, openingFromJson, claimToJson, resultHash } from "./node_service.js";
+import { NodeService, openingFromJson, claimToJson, resultSigningHash } from "./node_service.js";
+import * as E from "./eip712.js";
+import { domains, walletAndSession } from "./export_fixtures_common.js";
 import { Auditor } from "./auditor.js";
 let fails = 0; const check = (n, ok) => { console.log((ok ? "  ok   " : "  FAIL ") + n); if (!ok) fails++; };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -33,19 +35,23 @@ const aHex = V.hex(A.address);
 // ---- relays: two honest, one that censors instance A ----
 const R1 = await startRelay({ name: "r1" }), R2 = await startRelay({ name: "r2" }), R3 = await startRelay({ name: "r3-censor", censor: (from) => from === aHex });
 // instance A: fans out to r1 + r2 (+ r3, which drops it)
-const nodeA = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "11".repeat(32) }); await nodeA.loadModel("relay-test", payload, { steps });
+// instance A = wallet WA (bonded) + delegated session key 0x11.. (the tab); claims/results are EIP-712 typed data
+const wsA = await walletAndSession("1a", "11");
+const nodeA = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "11".repeat(32), domains, delegation: wsA.delegation }); await nodeA.loadModel("relay-test", payload, { steps });
 const cA = new RelayClient([R1.url, R2.url, R3.url], A); check(`instance connects to ${await cA.connect()} relays`, cA.socks.filter((s) => s.open).length === 3);
 const svc = new NodeService(nodeA, cA); svc.serve(mep.mepId);
 // auditor U on r1 + r2
-const cU = new RelayClient([R1.url, R2.url], U); await cU.connect(); const aud = new Auditor(cU, mep, challenge, { samples: 16, timeoutMs: 3000 }); aud.watch();
+const cU = new RelayClient([R1.url, R2.url], U); await cU.connect(); const aud = new Auditor(cU, mep, challenge, { samples: 16, timeoutMs: 3000, domain: domains.claimManager, blockNumber: 100 }); aud.watch();
 const { r: rA } = await svc.announce(mep.mepId, challenge, { stimulusSeed: 1 });
 await sleep(300); check("auditor received the claim exactly once (deduped across relays)", aud.audits.length === 1 && cU.duplicates >= 1);
 const a1 = await aud.audits[0];
 check(`claim verified; ${a1.verdicts.length} sampled openings over the relay all no_fraud`, a1.claimOk && a1.ok && a1.verdicts.length === 16 && a1.verdicts.every((v) => v.verdict === "no_fraud"));
+check("EIP-712 claim signed by the session key resolves to the bonded wallet (claimId keyed by the wallet)", a1.from === aHex && a1.instance === wsA.wallet.address.toLowerCase());
 check("relay r3 censored the instance's traffic; r1/r2 forwarded it", R3.stats.censored > 0 && R1.stats.forwarded > 0 && R2.stats.forwarded > 0);
 
 // ---- a residency liar is caught through the relay and escalated with on-chain calldata ----
-const nodeL = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "33".repeat(32) }); await nodeL.loadModel("relay-test", payload, { steps });
+const wsL = await walletAndSession("3a", "33");
+const nodeL = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "33".repeat(32), domains, delegation: wsL.delegation }); await nodeL.loadModel("relay-test", payload, { steps });
 const liedTile = Vf.sampleTiles(challenge, nTiles, 16)[3]; nodeL.lies.set(`${mepHex}:${liedTile}`, 777);
 const cL = new RelayClient([R1.url], Lk); await cL.connect(); const svcL = new NodeService(nodeL, cL); svcL.serve(mep.mepId);
 await svcL.announce(mep.mepId, challenge, { stimulusSeed: 1 }); await sleep(300); const a2 = await aud.audits[1];
@@ -63,10 +69,10 @@ check(`liar's claim verifies but the sampled lied tile ${liedTile} is fraud`, a2
   check("a spoofed sender never reaches the auditor", aud.audits.length === before); cX.close(); }
 
 // ---- censorship: one censoring relay is tolerated; all-censoring relays trigger the on-chain fallback ----
-const cU2 = new RelayClient([R3.url, R2.url], U2); await cU2.connect(); const aud2 = new Auditor(cU2, mep, challenge, { samples: 8, timeoutMs: 3000 }); aud2.watch();
+const cU2 = new RelayClient([R3.url, R2.url], U2); await cU2.connect(); const aud2 = new Auditor(cU2, mep, challenge, { samples: 8, timeoutMs: 3000, domain: domains.claimManager, blockNumber: 100 }); aud2.watch();
 await svc.announce(mep.mepId, challenge, { stimulusSeed: 1 }); await sleep(300);
 check("auditor behind a censoring relay + an honest one still audits A", aud2.audits.length === 1 && (await aud2.audits[0]).ok);
-const cU3 = new RelayClient([R3.url], U3); await cU3.connect(); const aud3 = new Auditor(cU3, mep, challenge, { samples: 8, timeoutMs: 800 }); aud3.watch();
+const cU3 = new RelayClient([R3.url], U3); await cU3.connect(); const aud3 = new Auditor(cU3, mep, challenge, { samples: 8, timeoutMs: 800, domain: domains.claimManager, blockNumber: 100 }); aud3.watch();
 await svc.announce(mep.mepId, challenge, { stimulusSeed: 1 }); await sleep(300);
 check("auditor behind only the censoring relay never sees A's claim", aud3.audits.length === 0);
 { const cArel = new RelayClient([R3.url], A); await cArel.connect(); // A reachable only through the censor: the auditor's direct request times out
@@ -78,8 +84,8 @@ check("auditor behind only the censoring relay never sees A's claim", aud3.audit
 // ---- a task over the relay: announce -> signed result (valid for TaskMarket.submitResult) ----
 const cC = new RelayClient([R2.url], C); await cC.connect();
 const taskId = new Uint8Array(32).fill(0x77); const resp = await cC.request(aHex, "task-announce", mepHex, { taskId: V.hex(taskId), stimulusSeed: 9 }, { timeoutMs: 8000, responseType: "result" });
-const rp = resp.payload; const h = resultHash(taskId, V.unhex(rp.execDigest), V.unhex(rp.execRoot));
-check("result envelope from A; signature recovers A over TaskMarket.resultHash", resp.from === aHex && V.eq(recoverAddress(h, V.unhex(rp.signature)), A.address));
+const rp = resp.payload; const h = resultSigningHash(domains.market, taskId, V.unhex(rp.execDigest), V.unhex(rp.execRoot));
+check("result envelope from A; EIP-712 signature recovers the session key over TaskMarket.resultDigest, delegation -> wallet", resp.from === aHex && V.eq(recoverAddress(h, V.unhex(rp.signature)), A.address) && E.verifyDelegation(domains.registry, rp.delegation, aHex, 100) === wsA.wallet.address.toLowerCase());
 const re = Vf.reexecute(await loadKernelFromBytes(wasm), payload, { stimulusSeed: 9, execDigest: V.unhex(rp.execDigest) }, mep); check("client re-executes the task and matches the relayed execDigest", re.matches);
 console.log(`relay stats: r1 ${JSON.stringify(R1.stats)} | r2 ${JSON.stringify(R2.stats)} | r3(censor) ${JSON.stringify(R3.stats)} | auditor U: received ${cU.received}, duplicates ${cU.duplicates}, rejected ${cU.rejected}`);
 for (const c of [cA, cU, cL, cU2, cU3, cC]) c.close(); await Promise.all([R1.close(), R2.close(), R3.close()]);

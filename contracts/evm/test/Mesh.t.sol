@@ -12,9 +12,11 @@ import "../src/mesh/ExecutionDisputes.sol";
 import { MeshFixtures as FX } from "./fixtures/MeshFixtures.sol";
 
 /// End-to-end settlement driven by fixtures the browser node produced (web/porw-browser/export_fixtures.mjs
-/// -> test/fixtures/MeshFixtures.sol): MEP registration, bonding, epoch beacon, signed residency claims,
-/// opening challenges (NoFraud / Fraud / Invalid / timeout), beacon-sortitioned tasks with signed results,
-/// and the execution dispute resolved three ways (single-term check, row check, timeout).
+/// -> test/fixtures/MeshFixtures.sol): MEP registration, bonding, epoch beacon, EIP-712 residency claims
+/// signed by delegated session keys (the tab's key; the wallet signed one Delegation), opening challenges
+/// (NoFraud / Fraud / Invalid / timeout), beacon-sortitioned tasks with typed-data results, and the
+/// execution dispute resolved three ways (single-term check, row check, timeout). Contracts are deployed
+/// at the fixed addresses the fixtures' EIP-712 domains name (deployCodeTo), chain id 31337.
 contract MeshTest is Test {
     PorwVerifierKeccak verifier; MEPRegistry meps; InstanceRegistry inst; PoRWClaimManager cm; TaskMarket market; ExecutionDisputes disp;
     bytes32 mepId; address A = FX.A; address B = FX.B; address L = FX.L;
@@ -23,11 +25,12 @@ contract MeshTest is Test {
     receive() external payable {}
 
     function setUp() public {
+        vm.chainId(FX.CHAIN_ID);
         verifier = new PorwVerifierKeccak();
         meps = new MEPRegistry();
-        inst = new InstanceRegistry(1 ether, 20);
-        cm = new PoRWClaimManager(meps, inst, verifier, FX.EPOCH_BLOCKS, WINDOW, DEPOSIT, SLASH);
-        market = new TaskMarket(meps, inst, cm, 50);
+        deployCodeTo("InstanceRegistry.sol:InstanceRegistry", abi.encode(uint256(1 ether), uint64(20)), FX.REGISTRY); inst = InstanceRegistry(FX.REGISTRY);
+        deployCodeTo("PoRWClaimManager.sol:PoRWClaimManager", abi.encode(meps, inst, verifier, FX.EPOCH_BLOCKS, WINDOW, DEPOSIT, SLASH), FX.CLAIM_MANAGER); cm = PoRWClaimManager(FX.CLAIM_MANAGER);
+        deployCodeTo("TaskMarket.sol:TaskMarket", abi.encode(meps, inst, cm, uint64(50)), FX.MARKET); market = TaskMarket(payable(FX.MARKET));
         disp = new ExecutionDisputes(meps, inst, market, ROUND, SLASH);
         inst.setClaimManager(address(cm)); inst.setSlasher(address(disp), true); market.setDisputes(address(disp));
 
@@ -39,6 +42,11 @@ contract MeshTest is Test {
 
         bytes32[] memory ids = new bytes32[](1); ids[0] = mepId;
         for (uint256 i = 0; i < 3; i++) { address who = i == 0 ? A : i == 1 ? B : L; vm.deal(who, 10 ether); vm.prank(who); inst.bond{value: 2 ether}(ids); }
+        // each wallet delegated its tab's session key once (EIP-712 Delegation, submitted by anyone)
+        (address ia, address sa, uint64 ea, bytes memory ga) = FX.delegationA(); inst.delegateBySig(ia, sa, ea, ga);
+        (address ib, address sb, uint64 eb, bytes memory gb) = FX.delegationB(); inst.delegateBySig(ib, sb, eb, gb);
+        (address il, address sl, uint64 el, bytes memory gl) = FX.delegationL(); inst.delegateBySig(il, sl, el, gl);
+        assertEq(inst.resolve(FX.SESSION_A), A, "session A -> wallet A"); assertEq(inst.resolve(A), A, "a wallet resolves to itself"); assertEq(inst.resolve(address(0xdead)), address(0));
 
         // epoch 1 beacon exactly as the fixture derived it
         vm.roll(FX.EPOCH_START); vm.difficulty(FX.PREVRANDAO);
@@ -91,6 +99,26 @@ contract MeshTest is Test {
         (IPoRWClaimManager.Claim memory c, bytes memory sig,) = FX.claimA();
         c.challenge = keccak256("other"); vm.expectRevert(bytes("challenge")); cm.submitClaim(c, sig);
         (c, sig,) = FX.claimA(); sig[10] ^= 0x01; vm.expectRevert(bytes("not bonded")); cm.submitClaim(c, sig);
+    }
+    function test_claim_is_eip712_typed_data_by_the_session_key_stored_under_the_wallet() public {
+        (IPoRWClaimManager.Claim memory c, bytes memory sig, address signer) = FX.claimA();
+        assertEq(cm.claimDigest(c), FX.CLAIM_DIGEST_A, "digest == the node's EIP-712 digest");
+        assertEq(signer, FX.SESSION_A, "signed by the tab's session key");
+        bytes32 id = cm.submitClaim(c, sig);
+        assertEq(id, cm.claimIdOf(A, mepId, 1), "claim keyed by the bonded wallet, not the session key");
+        // a revoked delegation no longer carries claims
+        vm.roll(block.number + 1); vm.prank(A); inst.revokeSessionKey(FX.SESSION_A);
+        (IPoRWClaimManager.Claim memory c2, bytes memory s2,) = FX.claimA(); vm.expectRevert(bytes("not bonded")); cm.submitClaim(c2, s2);
+    }
+    function test_delegation_rules() public {
+        (address ia, address sa, uint64 ea, bytes memory ga) = FX.delegationA();
+        vm.expectRevert(bytes("taken")); vm.prank(B); inst.setSessionKey(sa, ea);              // B cannot claim A's session key
+        vm.expectRevert(bytes("delegation sig")); inst.delegateBySig(B, sa, ea, ga);           // A's signature does not bind B
+        vm.expectRevert(bytes("session")); vm.prank(A); inst.setSessionKey(B, ea);             // a bonded wallet cannot be someone's session key
+        vm.expectRevert(bytes("expired")); vm.prank(A); inst.setSessionKey(address(0x77), uint64(block.number));
+        vm.prank(A); inst.setSessionKey(address(0x77), uint64(block.number + 5)); assertEq(inst.resolve(address(0x77)), A);
+        vm.roll(block.number + 6); assertEq(inst.resolve(address(0x77)), address(0), "expired session resolves to nobody");
+        ia; // silence
     }
 
     // ---- tasks: sortition, results, settlement into a dispute ----
@@ -169,5 +197,12 @@ contract MeshTest is Test {
         vm.prank(A); disp.revealRoots(taskId, FX.actRootsA());
         vm.prank(B); disp.revealRoots(taskId, FX.actRootsB());
         vm.prank(A); vm.expectRevert(bytes("not children")); disp.postChildren(taskId, bytes32(uint256(1)), bytes32(uint256(2)));
+    }
+    function test_dispute_moves_through_the_delegated_session_key() public {
+        bytes32 taskId = postAndSubmit(0);
+        vm.prank(FX.SESSION_A); disp.revealRoots(taskId, FX.actRootsA()); // the tab acts for wallet A
+        vm.prank(address(0xbad)); vm.expectRevert(bytes("party")); disp.revealRoots(taskId, FX.actRootsB());
+        vm.prank(FX.SESSION_B); disp.revealRoots(taskId, FX.actRootsB());
+        (, , , , , , , uint32 step, , , , , , ,) = disp.disputes(taskId); assertEq(step, FX.S_STAR);
     }
 }

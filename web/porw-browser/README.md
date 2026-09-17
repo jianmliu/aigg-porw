@@ -21,6 +21,8 @@ aigg-spec conformance vectors, and the claim is verified on-chain.
 | `porw.js` / `model.js` | wasm glue (Node + browser), payload header decode, tree/SpMV wrappers, tree-node access for bisection |
 | `mep.js` | Model Execution Profiles — one per released brain (female FlyWire, male CNS, …): `mep_id = keccak(scheme ‖ model_id ‖ exec kind ‖ steps ‖ clamp-or-stride)` |
 | `claim.js` | EVM-packed claim encoding, secp256k1 signing / `ecrecover`-compatible recovery (noble) |
+| `eip712.js` | **EIP-712** typed data (`Claim`, `Result`, `Delegation`): hand-coded digests, `eth_signTypedData_v4` JSON + a generic `hashTypedData` (the wallet's view), local / injected (EIP-1193) wallets, session-key delegation |
+| `run_wallet_browser.mjs` | a Chromium tab with an injected wallet (simulated outside the page): one `Delegation` prompt, then session-key-signed claims over the relay |
 | `node.js` | `PorwNode`: multi-model residency, per-MEP signed claims (residency + execution digest), tile openings, dispute openings (activation / rowStart / CSR chunk / partial sums / tree nodes); LIF path with segment roots every `commitStride` steps, checkpoint + replay for openings |
 | `verify.js` / `verifier.js` / `dispute.js` | **independent** verifier (noble keccak only, never the wasm): claim checks, sampled openings, sketch recomputation, redundant re-execution, and the execution dispute (step → neuron bisection → row check → synapse bisection → one-term check) |
 | `swarm.js` | mesh coordination: stake-weighted **index sortition** (the contract rule), redundancy sets, backups, auditors, majority settlement |
@@ -41,7 +43,8 @@ aigg-spec conformance vectors, and the claim is verified on-chain.
 cd web/porw-browser
 ./build.sh          # sketch.wasm (own memory) + porw-shared.wasm (imported shared memory)
 npm install
-npm test            # test_wasm · test_node · test_swarm · test_pool · test_dispute · test_lif · test_relay (2 honest + 1 censoring relay)
+npm test            # test_wasm · test_node · test_swarm · test_pool · test_dispute · test_lif · test_eip712 · test_relay
+PW_CHROMIUM=/path/to/chrome node run_wallet_browser.mjs     # injected wallet: one Delegation prompt, session-key claims
 PW_CHROMIUM=/path/to/chrome node run_relay_browser.mjs      # the tab announces, serves audits and a task over two relays
 # the real brain: export it (see demo/fly_brain/README.md), then
 node test_lif.mjs flywire-783-min5.bin ../../spec-cache/conformance/exec/int-lif-v1/flywire-fafb-v783-min5.int-lif-v1.seed7-500steps.numpy.json
@@ -134,6 +137,10 @@ The settlement design that consumes these artifacts is
   Poisson, floor shifts (a neuron can rest at −1 LSB), no synaptic delays. Results
   are reproducible and disputable, not a biological calibration; calibrating against
   the published model is research work on top of this substrate.
+- **EIP-712 + session keys** (`test_eip712.mjs`, `BrowserClaim.t.sol`, `Mesh.t.sol`): node
+  digests == generic typed-data hashing == Solidity; claims/results signed by a delegated
+  session key resolve to the bonded wallet on-chain and off-chain; wrong domain / chain,
+  expired or revoked delegation rejected; a wallet prompts once (Delegation) in Chromium.
 - **Relay transport** (`test_relay.mjs`): envelopes verify / reject tampering, spoofing,
   staleness; the auditor receives each claim once across relays; 16 openings audited
   through the relay; a residency liar caught and escalated with the exact
@@ -148,5 +155,4 @@ The settlement design that consumes these artifacts is
 - **Transport**: stage-1 bonded relays (`RelayRegistry.sol`); relays affect liveness
   only, and silence is answered on-chain. Stage 2 (libp2p gossipsub over WebRTC) reuses
   the same envelopes.
-- **Not yet**: wallet (EIP-712) signing; a deployment script and a live-chain run;
-  libp2p transport.
+- **Not yet**: a deployment script and a live-chain run; libp2p transport.

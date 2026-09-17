@@ -10,6 +10,8 @@ import * as V from "./verify.js";
 import * as D from "./dispute.js";
 import * as L from "./lif.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
+import * as E from "./eip712.js";
+import { domains, walletAndSession, CHAIN_ID, CM_ADDR, MK_ADDR, REG_ADDR, DELEGATION_EXPIRY } from "./export_fixtures_common.js";
 
 const [out, epochBlocksArg, epochArg, prevrandaoArg] = process.argv.slice(2);
 const EPOCH_BLOCKS = Number(epochBlocksArg || 100), EPOCH = Number(epochArg || 1), PREVRANDAO = BigInt(prevrandaoArg || 42);
@@ -22,7 +24,7 @@ const wasm = fs.readFileSync(new URL("./sketch.wasm", import.meta.url));
 const payload = synthesizePayloadV2("lif-mesh", 4000, 120000);
 const steps = 40, stride = 10, stimulusSeed = 5; const nonces = [21, 22, 23].map((v) => new Uint8Array(32).fill(v));
 const stimulusIds = Uint32Array.from({ length: 300 }, (_, j) => j * 7);
-const mk = async (priv, lie) => { const nd = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + priv.repeat(32) }); if (lie) nd.execLie = lie; const st = await nd.loadModel("lif-mesh", payload, { steps, commitStride: stride }); return { nd, st }; };
+const mk = async (priv, lie) => { const ws = await walletAndSession(priv[0] + "a", priv); const nd = new PorwNode(await loadKernelFromBytes(wasm), { privHex: ws.sessionPriv, domains, delegation: ws.delegation }); if (lie) nd.execLie = lie; const st = await nd.loadModel("lif-mesh", payload, { steps, commitStride: stride }); return { nd, st, ws }; };
 const A = await mk("11"); const mep = A.st.mep, mepId = mep.mepId, n = A.st.hdr.neurons;
 const epochStart = EPOCH * EPOCH_BLOCKS; const beacon = keccak_256(cat(be256(PREVRANDAO), be256(epochStart))); const challenge = keccak_256(cat(beacon, mepId));
 
@@ -41,7 +43,7 @@ const B2 = await mk("22", { step: sLie, neuron, delta: 40, kind: "input" }); // 
 const rB1 = await B1.nd.challenge(mepId, challenge, { stimulusSeed, stimulusIds }), rB2 = await B2.nd.challenge(mepId, challenge, { stimulusSeed, stimulusIds });
 if (!V.eq(rA.result.initStateRoot, rB1.result.initStateRoot)) throw new Error("initStateRoot");
 const taskIds = nonces.map((nonce) => keccak_256(cat(mepId, be32(stimulusSeed), nonce)));
-const resultSig = (P, r, taskId) => { const h = keccak_256(cat(new TextEncoder().encode("porw-result"), taskId, r.result.execDigest, r.result.execRoot)); return { execDigest: H(r.result.execDigest), execRoot: H(r.result.execRoot), signature: H(signHash(h, P.nd.key.priv)), signer: H(P.nd.key.address) }; };
+const resultSig = (P, r, taskId) => { const h = E.resultDigest(domains.market, taskId, r.result.execDigest, r.result.execRoot); return { execDigest: H(r.result.execDigest), execRoot: H(r.result.execRoot), signature: H(signHash(h, P.nd.key.priv)), signer: H(P.nd.key.address) }; };
 
 // dispute path: segment -> refine -> bisection (per liar) -> row -> term
 const segStar = D.firstDifferingStep(rA.result.actRoots, rB1.result.actRoots) - 1; if (segStar !== Math.floor((sLie - 1) / stride)) throw new Error("segment");
@@ -71,7 +73,8 @@ const so = (o) => ({ ...o.state, proof: o.proof.map(H) });
 const F = {
   params: { epochBlocks: EPOCH_BLOCKS, epoch: EPOCH, epochStart, prevrandao: Number(PREVRANDAO), beacon: H(beacon), challenge: H(challenge), steps, stride, stimulusSeed, nonces: nonces.map(H), taskIds: taskIds.map(H), stimulusIds: Array.from(stimulusIds) },
   mep: { mepId: H(mepId), modelId: H(mep.modelId), schemeDigest: H(mep.schemeDigest), execKind: H(mep.execKind), steps: mep.steps, clampQ16: mep.clampQ16, neurons: n, synapses: A.st.hdr.synapses, synapseRoot: H(rA.result.synapseRoot), csrRoot: H(rA.result.csrRoot), rowRoot: H(rA.result.rowRoot) },
-  instances: { A: H(A.nd.key.address), B: H(B1.nd.key.address) }, claimA: claimJson(claimA), claimB: claimJson(claimB),
+  instances: { A: A.ws.wallet.address, B: B1.ws.wallet.address }, sessions: { A: H(A.nd.key.address), B: H(B1.nd.key.address) }, delegations: { A: A.ws.delegation, B: B1.ws.delegation },
+  eip712: { chainId: CHAIN_ID, claimManager: CM_ADDR, market: MK_ADDR, registry: REG_ADDR, expiry: DELEGATION_EXPIRY }, claimA: claimJson(claimA), claimB: claimJson(claimB),
   initStateRoot: H(rA.result.initStateRoot), resultsA: taskIds.map((t) => resultSig(A, rA, t)), resultsB: [resultSig(B2, rB2, taskIds[0]), resultSig(B1, rB1, taskIds[1]), resultSig(B1, rB1, taskIds[2])],
   dispute: { segStar, sStar: sLie, neuron, inDegree: len, kStar, segRootsA: rA.result.actRoots.map(H), segRootsB1: rB1.result.actRoots.map(H), segRootsB2: rB2.result.actRoots.map(H),
     stepRootsA: segA.roots.map(H), stepRootsB1: segB1.roots.map(H), stepRootsB2: segB2.roots.map(H), rounds: bis1.pa.length,
@@ -109,13 +112,17 @@ library LifMeshFixtures {
     bytes32 constant MEP_ID = ${M.mepId}; bytes32 constant MODEL_ID = ${M.modelId}; bytes32 constant SCHEME_DIGEST = ${M.schemeDigest}; bytes32 constant EXEC_KIND = ${M.execKind};
     uint32 constant STEPS = ${M.steps}; uint32 constant STRIDE = ${M.clampQ16}; uint32 constant NEURONS = ${M.neurons}; uint32 constant SYNAPSES = ${M.synapses};
     bytes32 constant SYNAPSE_ROOT = ${M.synapseRoot}; bytes32 constant CSR_ROOT = ${M.csrRoot}; bytes32 constant ROW_ROOT = ${M.rowRoot}; bytes32 constant INIT_STATE_ROOT = ${F.initStateRoot};
-    address constant A = ${checksum(F.instances.A)}; address constant B = ${checksum(F.instances.B)};
+    address constant A = ${checksum(F.instances.A)}; address constant B = ${checksum(F.instances.B)}; // bonded wallets
+    address constant SESSION_A = ${checksum(F.sessions.A)}; address constant SESSION_B = ${checksum(F.sessions.B)};
+    uint256 constant CHAIN_ID = ${F.eip712.chainId}; address constant CLAIM_MANAGER = ${checksum(F.eip712.claimManager)}; address constant MARKET = ${checksum(F.eip712.market)}; address constant REGISTRY = ${checksum(F.eip712.registry)};
     uint32 constant SEG_STAR = ${Dd.segStar}; uint32 constant S_STAR = ${Dd.sStar}; uint32 constant ROUNDS = ${Dd.rounds}; uint32 constant NEURON = ${Dd.neuron}; uint32 constant K_STAR = ${Dd.kStar};
     uint32 constant ROW_START = ${Dd.rowStart.value}; uint32 constant ROW_END = ${Dd.rowEnd.value}; uint32 constant CHUNK_C = ${Dd.chunk.c}; uint32 constant PRE = ${Dd.pre.i}; bytes32 constant PREV_ROOT = ${Dd.prevRoot};
     function stateA() internal pure returns (LifRowCheck.State memory) { return ${stateLit(Dd.stateA)}; }
     function stateB1() internal pure returns (LifRowCheck.State memory) { return ${stateLit(Dd.stateB1)}; }
     function stateB2() internal pure returns (LifRowCheck.State memory) { return ${stateLit(Dd.stateB2)}; }
 `;
+  const delFn = (name, d) => `    function ${name}() internal pure returns (address instance, address session, uint64 expiry, bytes memory sig) { instance = ${checksum(d.instance)}; session = ${checksum(d.session)}; expiry = ${d.expiry}; sig = hex"${d.sig.slice(2)}"; }\n`;
+  sol += delFn("delegationA", F.delegations.A) + delFn("delegationB", F.delegations.B);
   sol += arr32("nonces", P.nonces) + arr32("taskIds", P.taskIds) + claimFn("claimA", F.claimA) + claimFn("claimB", F.claimB);
   F.resultsA.forEach((r, i) => { sol += resultFn(`resultA${i}`, r); }); F.resultsB.forEach((r, i) => { sol += resultFn(`resultB${i}`, r); });
   sol += arr32("segRootsA", Dd.segRootsA) + arr32("segRootsB1", Dd.segRootsB1) + arr32("segRootsB2", Dd.segRootsB2) + arr32("stepRootsA", Dd.stepRootsA) + arr32("stepRootsB1", Dd.stepRootsB1) + arr32("stepRootsB2", Dd.stepRootsB2);

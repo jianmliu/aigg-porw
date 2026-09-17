@@ -17,7 +17,8 @@ library PorwMeshHash {
         internal pure returns (bytes32)
     { return keccak256(abi.encodePacked(schemeDigest, modelId, execKind, steps, clampQ16)); }
 
-    /// @dev residency claim hash, signed raw by the instance (EIP-712 in wallet deployments)
+    /// @dev residency claim hash — the raw identifier auditors use off-chain; the on-chain signature is
+    ///      over the EIP-712 Claim digest (PorwEIP712), signed by the wallet or a delegated session key
     function claimHash(
         bytes32 schemeDigest, bytes32 mepId_, bytes32 modelId, bytes32 partialsRoot, uint64 coverageBytes,
         bytes32 challenge, bytes32 deviceId, bytes32 execDigest, uint32 stimulusSeed

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "../interfaces/PorwMesh.sol";
+import "./PorwEIP712.sol";
 
 interface IClaimValidity {
     function hasValidClaim(address instance, bytes32 mepId, uint64 epoch) external view returns (bool);
@@ -26,7 +27,36 @@ contract InstanceRegistry is IInstanceRegistry {
     mapping(bytes32 => address[]) internal instancesOf;
     mapping(bytes32 => mapping(address => bool)) public inMep;
 
-    constructor(uint256 unit, uint64 exitDelay) { UNIT = unit; EXIT_DELAY = exitDelay; owner = msg.sender; }
+    // ---- session keys: a bonded wallet delegates an ephemeral browser key (EIP-712 Delegation) ----
+    bytes32 public immutable DOMAIN_SEPARATOR;
+    struct Delegation { address instance; uint64 expiry; }
+    mapping(address => Delegation) public delegations; // session -> (instance, expiry block)
+    event SessionKeySet(address indexed instance, address indexed session, uint64 expiry);
+
+    constructor(uint256 unit, uint64 exitDelay) { UNIT = unit; EXIT_DELAY = exitDelay; owner = msg.sender; DOMAIN_SEPARATOR = PorwEIP712.domainSeparator(address(this)); }
+
+    function setSessionKey(address session, uint64 expiry) external { _setSession(msg.sender, session, expiry); }
+    /// @notice anyone may submit the wallet's signed Delegation (e.g. the tab, through a relayer)
+    function delegateBySig(address instance, address session, uint64 expiry, bytes calldata sig) external {
+        address signer = PorwEIP712.recover(PorwEIP712.digest(DOMAIN_SEPARATOR, PorwEIP712.delegationStructHash(instance, session, expiry)), sig);
+        require(signer != address(0) && signer == instance, "delegation sig");
+        _setSession(instance, session, expiry);
+    }
+    function revokeSessionKey(address session) external { require(delegations[session].instance == msg.sender, "not yours"); delete delegations[session]; emit SessionKeySet(msg.sender, session, 0); }
+    function _setSession(address instance, address session, uint64 expiry) internal {
+        require(session != address(0) && session != instance && bonded[session] == 0, "session");
+        require(expiry > block.number, "expired");
+        require(delegations[session].instance == address(0) || delegations[session].instance == instance, "taken");
+        delegations[session] = Delegation(instance, expiry);
+        emit SessionKeySet(instance, session, expiry);
+    }
+    /// @notice the bonded instance a signer acts for: itself, or the instance that delegated it (unexpired)
+    function resolve(address signer) public view returns (address) {
+        if (bonded[signer] > 0) return signer;
+        Delegation storage d = delegations[signer];
+        if (d.instance != address(0) && block.number <= d.expiry) return d.instance;
+        return address(0);
+    }
 
     function setClaimManager(address cm) external { require(msg.sender == owner && claimManager == address(0), "set"); claimManager = cm; slasher[cm] = true; }
     function setSlasher(address s, bool ok) external { require(msg.sender == owner, "owner"); slasher[s] = ok; }

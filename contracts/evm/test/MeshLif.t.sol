@@ -24,9 +24,12 @@ contract MeshLifTest is Test {
     receive() external payable {}
 
     function setUp() public {
-        verifier = new PorwVerifierKeccak(); meps = new MEPRegistry(); inst = new InstanceRegistry(1 ether, 20);
-        cm = new PoRWClaimManager(meps, inst, verifier, FX.EPOCH_BLOCKS, WINDOW, DEPOSIT, SLASH);
-        market = new TaskMarket(meps, inst, cm, 50); disp = new ExecutionDisputes(meps, inst, market, ROUND, SLASH);
+        vm.chainId(FX.CHAIN_ID);
+        verifier = new PorwVerifierKeccak(); meps = new MEPRegistry();
+        deployCodeTo("InstanceRegistry.sol:InstanceRegistry", abi.encode(uint256(1 ether), uint64(20)), FX.REGISTRY); inst = InstanceRegistry(FX.REGISTRY);
+        deployCodeTo("PoRWClaimManager.sol:PoRWClaimManager", abi.encode(meps, inst, verifier, FX.EPOCH_BLOCKS, WINDOW, DEPOSIT, SLASH), FX.CLAIM_MANAGER); cm = PoRWClaimManager(FX.CLAIM_MANAGER);
+        deployCodeTo("TaskMarket.sol:TaskMarket", abi.encode(meps, inst, cm, uint64(50)), FX.MARKET); market = TaskMarket(payable(FX.MARKET));
+        disp = new ExecutionDisputes(meps, inst, market, ROUND, SLASH);
         inst.setClaimManager(address(cm)); inst.setSlasher(address(disp), true); market.setDisputes(address(disp));
         assertEq(FX.EXEC_KIND, LifRowCheck.execKind(), "the node's exec kind digest == the contract's");
         mepId = meps.registerMEP(IMEPRegistry.MEP({ modelId: FX.MODEL_ID, schemeDigest: FX.SCHEME_DIGEST, execKind: FX.EXEC_KIND, steps: FX.STEPS, clampQ16: FX.STRIDE,
@@ -35,6 +38,8 @@ contract MeshLifTest is Test {
         bytes32[] memory ids = new bytes32[](1); ids[0] = mepId;
         vm.deal(A, 10 ether); vm.prank(A); inst.bond{value: 2 ether}(ids);
         vm.deal(B, 10 ether); vm.prank(B); inst.bond{value: 2 ether}(ids);
+        { (address i1, address s1, uint64 e1, bytes memory g1) = FX.delegationA(); inst.delegateBySig(i1, s1, e1, g1); }
+        { (address i2, address s2, uint64 e2, bytes memory g2) = FX.delegationB(); inst.delegateBySig(i2, s2, e2, g2); }
         vm.roll(FX.EPOCH_START); vm.difficulty(FX.PREVRANDAO);
         assertEq(cm.rollEpoch(), FX.BEACON, "beacon");
         (IPoRWClaimManager.Claim memory ca, bytes memory sa) = FX.claimA(); cm.submitClaim(ca, sa);

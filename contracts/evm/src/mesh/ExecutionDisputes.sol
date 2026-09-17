@@ -72,7 +72,9 @@ contract ExecutionDisputes is IExecutionDisputes {
     function open(bytes32, address, address) external payable { revert("use market"); }
     function bisect(bytes32, uint256, bytes32) external pure { revert("use postChildren"); }
 
-    function _party(bytes32 taskId) internal view returns (Party storage) { require(msg.sender == partyA[taskId] || msg.sender == partyB[taskId], "party"); return parties[taskId][msg.sender]; }
+    /// @dev a party may act through its delegated session key (the tab's key); state is keyed by the instance
+    function _who(bytes32 taskId) internal view returns (address w) { w = instances.resolve(msg.sender); require(w != address(0) && (w == partyA[taskId] || w == partyB[taskId]), "party"); }
+    function _party(bytes32 taskId) internal view returns (Party storage) { return parties[taskId][_who(taskId)]; }
     function _other(bytes32 taskId, address who) internal view returns (address) { return who == partyA[taskId] ? partyB[taskId] : partyA[taskId]; }
 
     // ---- Step phase ----
@@ -83,7 +85,7 @@ contract ExecutionDisputes is IExecutionDisputes {
         uint32 count = ld.lif ? ld.segments : d.steps;
         require(actRoots.length == count && _rootOf(actRoots) == p.execRoot, "execRoot");
         p.actRoots = actRoots; p.revealed = true;
-        Party storage q = parties[taskId][_other(taskId, msg.sender)];
+        Party storage q = parties[taskId][_other(taskId, _who(taskId))];
         if (!q.revealed) return;
         uint32 s = 0; while (s < count && p.actRoots[s] == q.actRoots[s]) s++;
         require(s < count, "no divergence"); // identical roots cannot yield different execRoots
@@ -104,11 +106,11 @@ contract ExecutionDisputes is IExecutionDisputes {
     // ---- Refine phase (int-lif): per-step roots inside the first differing segment ----
     function postStepRoots(bytes32 taskId, bytes32[] calldata roots) external {
         Dispute storage d = disputes[taskId]; LifDispute storage ld = lifs[taskId]; require(d.exists && d.phase == Phase.Refine, "phase");
-        Party storage p = _party(taskId); LifParty storage lp = lifParties[taskId][msg.sender]; require(!lp.refined, "refined");
+        address me = _who(taskId); Party storage p = parties[taskId][me]; LifParty storage lp = lifParties[taskId][me]; require(!lp.refined, "refined");
         uint32 s0 = ld.seg * ld.stride; uint32 len = d.steps - s0 < ld.stride ? d.steps - s0 : ld.stride;
         require(roots.length == len && roots[len - 1] == p.actRoots[ld.seg], "unbound chain"); // must end at the committed segment root
         lp.stepRoots = roots; lp.refined = true;
-        address o = _other(taskId, msg.sender); LifParty storage lq = lifParties[taskId][o];
+        address o = _other(taskId, me); LifParty storage lq = lifParties[taskId][o];
         if (!lq.refined) return;
         uint32 j = 0; while (j < len && lp.stepRoots[j] == lq.stepRoots[j]) j++;
         require(j < len, "no divergence"); // the chains end at different segment roots, so they differ somewhere
@@ -124,7 +126,7 @@ contract ExecutionDisputes is IExecutionDisputes {
         if (2 * d.idx + 1 >= childWidth) require(right == left, "single child"); // duplicate-last
         require(keccak256(bytes.concat(left, right)) == p.node, "not children");
         p.pair = [left, right]; p.posted = true;
-        Party storage q = parties[taskId][_other(taskId, msg.sender)];
+        Party storage q = parties[taskId][_other(taskId, _who(taskId))];
         if (!q.posted) return;
         bool goLeft = p.pair[0] != q.pair[0];
         require(goLeft || p.pair[1] != q.pair[1], "children equal");
@@ -147,7 +149,7 @@ contract ExecutionDisputes is IExecutionDisputes {
     // ---- Row phase (int-lif): claimed state bound to the leaf + signed partial sums ----
     function postRowLif(bytes32 taskId, int32 v, int32 g, uint16 refr, uint16 flags, uint32 count, int64[] calldata sums) external {
         Dispute storage d = disputes[taskId]; require(d.exists && d.phase == Phase.Synapse && lifs[taskId].lif, "phase");
-        Party storage p = _party(taskId); LifParty storage lp = lifParties[taskId][msg.sender]; require(!lp.rowPosted, "posted");
+        address me = _who(taskId); Party storage p = parties[taskId][me]; LifParty storage lp = lifParties[taskId][me]; require(!lp.rowPosted, "posted");
         LifRowCheck.State memory st = LifRowCheck.State(v, g, refr, flags, count);
         require(LifRowCheck.stateLeaf(d.neuron, st) == p.leaf, "leaf");
         require(sums.length <= MAX_IN_DEGREE, "in-degree");

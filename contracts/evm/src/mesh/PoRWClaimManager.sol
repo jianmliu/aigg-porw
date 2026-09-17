@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import "../interfaces/PorwMesh.sol";
 import "../PorwVerifierKeccak.sol";
 import "./InstanceRegistry.sol";
+import "./PorwEIP712.sol";
 
 /// @notice Per-epoch residency claims for browser instances, with on-chain opening challenges
 ///         adjudicated by the keccak-scheme tile fraud proof. The honest path is off-chain
@@ -19,6 +20,7 @@ contract PoRWClaimManager is IPoRWClaimManager {
     IMEPRegistry public immutable meps;
     InstanceRegistry public immutable instances;
     PorwVerifierKeccak public immutable verifier;
+    bytes32 public immutable DOMAIN_SEPARATOR; // EIP-712: claims are signed as typed data (wallet or delegated session key)
 
     struct StoredClaim {
         address instance; bytes32 mepId; uint64 epoch; bytes32 partialsRoot; uint64 coverageBytes;
@@ -32,6 +34,12 @@ contract PoRWClaimManager is IPoRWClaimManager {
 
     constructor(IMEPRegistry m, InstanceRegistry i, PorwVerifierKeccak v, uint64 epochBlocks, uint64 openingWindow, uint256 openingDeposit, uint256 slashAmount) {
         meps = m; instances = i; verifier = v; EPOCH_BLOCKS = epochBlocks; OPENING_WINDOW = openingWindow; OPENING_DEPOSIT = openingDeposit; SLASH_AMOUNT = slashAmount;
+        DOMAIN_SEPARATOR = PorwEIP712.domainSeparator(address(this));
+    }
+    /// @notice the EIP-712 digest a wallet / session key signs for a claim (schemeDigest and modelId come from the MEP)
+    function claimDigest(Claim calldata c) public view returns (bytes32) {
+        IMEPRegistry.MEP memory m = meps.getMEP(c.mepId);
+        return PorwEIP712.digest(DOMAIN_SEPARATOR, PorwEIP712.claimStructHash(m.schemeDigest, c.mepId, m.modelId, c.partialsRoot, c.coverageBytes, c.challenge, c.deviceId, c.execDigest, c.stimulusSeed));
     }
 
     function currentEpoch() public view returns (uint64) { return uint64(block.number) / EPOCH_BLOCKS; }
@@ -54,13 +62,13 @@ contract PoRWClaimManager is IPoRWClaimManager {
         require(c.challenge == epochChallenge(e, c.mepId), "challenge");
         IMEPRegistry.MEP memory m = meps.getMEP(c.mepId);
         require(c.coverageBytes > 0 && c.coverageBytes % 4096 == 0, "coverage");
-        bytes32 h = PorwMeshHash.claimHash(m.schemeDigest, c.mepId, m.modelId, c.partialsRoot, c.coverageBytes, c.challenge, c.deviceId, c.execDigest, c.stimulusSeed);
-        address signer = _recover(h, signature);
-        require(signer != address(0) && instances.isBondedFor(signer, c.mepId), "not bonded");
-        claimId = claimIdOf(signer, c.mepId, e);
+        bytes32 h = PorwEIP712.digest(DOMAIN_SEPARATOR, PorwEIP712.claimStructHash(m.schemeDigest, c.mepId, m.modelId, c.partialsRoot, c.coverageBytes, c.challenge, c.deviceId, c.execDigest, c.stimulusSeed));
+        address instance = instances.resolve(PorwEIP712.recover(h, signature)); // the wallet itself, or its delegated session key
+        require(instance != address(0) && instances.isBondedFor(instance, c.mepId), "not bonded");
+        claimId = claimIdOf(instance, c.mepId, e);
         require(!claims[claimId].exists, "claimed");
-        claims[claimId] = StoredClaim(signer, c.mepId, e, c.partialsRoot, c.coverageBytes, c.challenge, c.deviceId, c.execDigest, c.stimulusSeed, true, true);
-        emit ClaimSubmitted(claimId, signer, c.mepId, e);
+        claims[claimId] = StoredClaim(instance, c.mepId, e, c.partialsRoot, c.coverageBytes, c.challenge, c.deviceId, c.execDigest, c.stimulusSeed, true, true);
+        emit ClaimSubmitted(claimId, instance, c.mepId, e);
     }
 
     function challengeOpening(bytes32 claimId, uint64 tileIdx) external payable {
@@ -108,11 +116,4 @@ contract PoRWClaimManager is IPoRWClaimManager {
         (bool ok,) = ch.challenger.call{value: ch.deposit}(""); require(ok, "refund");
     }
 
-    function _recover(bytes32 h, bytes calldata sig) internal pure returns (address) {
-        if (sig.length != 65) return address(0);
-        bytes32 r; bytes32 s; uint8 v;
-        assembly { r := calldataload(sig.offset) s := calldataload(add(sig.offset, 32)) v := byte(0, calldataload(add(sig.offset, 64))) }
-        if (v < 27) v += 27;
-        return ecrecover(h, v, r, s);
-    }
 }

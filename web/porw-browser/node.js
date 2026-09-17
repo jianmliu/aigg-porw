@@ -7,12 +7,16 @@ import { keccak_256 } from "@noble/hashes/sha3.js";
 import { claimHash, signHash, keypair } from "./claim.js";
 import { makeMep } from "./mep.js";
 import { hex, CSR_CHUNK } from "./verify.js";
+import { claimDigest } from "./eip712.js";
 import { lifExecKind, countsDigest, decodeState, encodeState, transition } from "./lif.js";
 const LIF_STATE = 16, LIF_CHECKPOINT = 32;
 
 export class PorwNode {
   async buildTree(leavesPtr, n, treePtr) { return this.pool ? treeBuildParallel(this.pool, leavesPtr, n, treePtr) : this.k.treeBuildInto(leavesPtr, n, treePtr); }
-  constructor(kernel, { privHex = null, deviceId = null, pool = null } = {}) {
+  /** `domains.claimManager` / `domains.market`: EIP-712 domains (chainId, verifying contract) — claims and results are then
+   *  signed as typed data by this node's key (the wallet itself, or a session key the wallet delegated: `delegation`). */
+  constructor(kernel, { privHex = null, deviceId = null, pool = null, domains = null, delegation = null } = {}) {
+    this.domains = domains; this.delegation = delegation;
     this.k = attachTrees(attachSpmv(kernel, kernel.exports));
     this.pool = pool; // shared-memory worker pool (kernel must be pool.kernel when set)
     this.key = keypair(privHex);
@@ -102,8 +106,8 @@ export class PorwNode {
     }
     const claim = { schemeDigest: st.mep.schemeDigest, mepId: st.mep.mepId, modelId: st.modelId, partialsRoot: st.partialsRoot,
       coverageBytes: n * TILE_BYTES, challenge: challenge32, deviceId: this.deviceId, execDigest: st.execDigest, stimulusSeed };
-    const h = claimHash(claim);
-    return { claim, claimHash: h, signature: signHash(h, this.key.priv), address: this.key.address, timings: t,
+    const h = claimHash(claim); const digest = this.domains?.claimManager ? claimDigest(this.domains.claimManager, claim) : h; // EIP-712 when a domain is configured
+    return { claim, claimHash: h, digest, signature: signHash(digest, this.key.priv), address: this.key.address, delegation: this.delegation, timings: t,
       result: { execDigest: st.execDigest, execRoot: st.execRoot, actRoots: st.actRoots, csrRoot: st.csr.csrTree.root, rowRoot: st.csr.rowTree.root, synapseRoot: st.csr.synapseRoot,
                 initStateRoot: st.initStateRoot || null, stimulated: st.stimulated ?? null } };
   }

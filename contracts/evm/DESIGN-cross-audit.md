@@ -33,7 +33,7 @@ MEP, stake-gated (opening a thousand tabs is free; a bond is not).
 |---|---|---|
 | `model_id` | weights Merkle root (keccak leaves `LE64 tile ‖ tile`) | `commit_wasm.c`, fixture-locked |
 | `mep_id` | `(bytes32 schemeDigest, bytes32 modelId, bytes32 execKind, uint32 steps, uint32 clampQ16)` | `mep.js`; `BrowserClaim.t.sol` |
-| residency claim | `(schemeDigest, mepId, modelId, partialsRoot, uint64 coverageBytes, challenge, deviceId, execDigest, uint32 stimulusSeed)`, secp256k1 signature, `ecrecover` | `claim.js`; `BrowserClaim.t.sol` |
+| residency claim | `(schemeDigest, mepId, modelId, partialsRoot, uint64 coverageBytes, challenge, deviceId, execDigest, uint32 stimulusSeed)`; the raw keccak is the off-chain identifier, the on-chain signature is the **EIP-712** `Claim` digest (§3a), `ecrecover` | `claim.js`; `BrowserClaim.t.sol` |
 | tile opening | `(tileIdx, tile[4096], s_tile, partialsIndex, partialsProof[], weightsProof[])` | `node.js` → `verifyTileFraudProofKeccak` |
 | execution result | `execDigest = keccak(act_final as LE u32[])`; `execRoot = merkle([actRoot[1..steps]])` with `actRoot[s]` over leaves `keccak(LE32 i ‖ LE32 act_s[i])` (§5) | `spmv_wasm.c`, `dispute_wasm.c`, `node.js` |
 | CSR commitments (per model) | `csrRoot` over chunk leaves `keccak(LE32 c ‖ 64 post-sorted records)`, `rowRoot` over `keccak(LE32 i ‖ LE32 rowStart[i])` (n+1 leaves), `synapseRoot = keccak(csrRoot ‖ rowRoot)` | `dispute_wasm.c`, `node.js`, `verify.js` |
@@ -87,6 +87,36 @@ deployable, but each owns its state.
 - **Epoch aggregation** — claims and settled tasks roll into `EpochPoRWRoot`-style
   facts (aggregator untrusted for correctness: it cannot forge signatures or survive
   challenges on a wrong root), consumed read-only by rewards/incentive vaults.
+
+## 3a. Wallet signing (EIP-712) and session keys — implemented
+
+Claims and results are typed data (`PorwEIP712.sol`, `web/porw-browser/eip712.js`): domain
+`{name "PoRW Mesh", version "1", chainId, verifyingContract}` (the claim manager for
+`Claim`, the task market for `Result`, the instance registry for `Delegation`), structs
+`Claim(bytes32 schemeDigest,bytes32 mepId,bytes32 modelId,bytes32 partialsRoot,uint64
+coverageBytes,bytes32 challenge,bytes32 deviceId,bytes32 execDigest,uint32 stimulusSeed)`,
+`Result(bytes32 taskId,bytes32 execDigest,bytes32 execRoot)`,
+`Delegation(address instance,address session,uint64 expiry)`. Signatures are low-s only.
+
+A wallet prompts per signature, and a tab produces one claim per epoch and one result per
+task, so the tab holds an **ephemeral session key** and the bonded wallet signs **one**
+`Delegation` (`eth_signTypedData_v4`), which anyone submits as
+`InstanceRegistry.delegateBySig` (or the wallet calls `setSessionKey`). Every signer is
+resolved by `InstanceRegistry.resolve`: a bonded wallet is itself; a session key maps to
+its instance until `expiry` (block number) or `revokeSessionKey`; a session key can be
+neither a bonded wallet nor already taken. Claims are keyed and slashed by the instance,
+results are attributed to the instance, and dispute moves may be sent from the session
+key. The auditor verifies the delegation off-chain (the claim envelope carries it) and
+keys `claimId` by the wallet.
+
+Verified three ways: the node's hand-coded digests, a generic `hashTypedData` over the
+`eth_signTypedData_v4` JSON (the wallet's view), and Solidity agree (`test_eip712.mjs`,
+`BrowserClaim.t.sol`); the mesh tests deploy the contracts at the fixture domains'
+addresses (`deployCodeTo`, chain id 31337) and run the whole settlement with session-key
+signatures, including a revoked delegation and dispute moves through the session key;
+`run_wallet_browser.mjs` drives a Chromium tab with an injected EIP-1193 wallet simulated
+outside the page: exactly one wallet prompt (`Delegation`), then claims over the relay
+signed by the session key, resolved by the auditor to the wallet.
 
 ## 4. The mesh ("swarm") — coordination without a coordinator
 
