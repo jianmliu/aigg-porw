@@ -59,9 +59,15 @@ export function wrap(e, memory = e.memory) {
     },
     u8: (ptr, n) => new Uint8Array(memory.buffer, ptr >>> 0, n),
     u32: (ptr, n) => new Uint32Array(memory.buffer, ptr >>> 0, n),
-    put: (bytes) => { const p = k.alloc(bytes.length); new Uint8Array(memory.buffer, p, bytes.length).set(bytes); return p; },
-    keccak256: (bytes) => { const m = k.mark(); const p = k.put(bytes); const o = k.alloc(32);
-      e.porw_keccak256(p, bytes.length, o); const r = new Uint8Array(k.u8(o, 32)); k.release(m); return r; },
+    put: (bytes) => {
+      const length = bytes.length, resident = bytes.buffer === memory.buffer, offset = bytes.byteOffset;
+      const p = k.alloc(length);
+      // alloc may grow memory and detach an input view of this same kernel.
+      k.u8(p, length).set(resident ? k.u8(offset, length) : bytes);
+      return p;
+    },
+    keccak256: (bytes) => { const length = bytes.length, m = k.mark(); const p = k.put(bytes); const o = k.alloc(32);
+      e.porw_keccak256(p, length, o); const r = new Uint8Array(k.u8(o, 32)); k.release(m); return r; },
     slotSeed: (challenge32, device32) => { const m = k.mark(); const c = k.put(challenge32), d = k.put(device32);
       const s = e.porw_slot_seed(c, d) >>> 0; k.release(m); return s; },
     // leaves over a resident buffer (bufPtr) — returns a copy (n*32 bytes)

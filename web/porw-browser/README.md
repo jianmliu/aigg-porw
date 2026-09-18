@@ -39,6 +39,7 @@ aigg-spec conformance vectors, and the claim is verified on-chain.
 | `delta.js` / `sample.js` / `test_delta.mjs` | **delta payloads**: v1 = explicit edit list, v2 = procedural (seed + noise model → a synthetic individual, deterministic integer sampler bit-identical in JS and Python), v3 = same-base cross (two parent deltas + seed → a child with real inheritance), in a compact or an **in-place** layout (records keep the base's positions, so one record of a child re-derives from one record of its parents); all: a fine-tune, ablation or synthetic individual of a released brain as a sorted edit list (set / insert / delete records) bound to the base's `model_id`; `applyDelta` rebuilds the target payload byte for byte, so its `model_id` / MEP are those of a directly published payload; `PorwNode.loadDelta(base, delta)`; Python twin `demo/fly_brain/flywire_delta.py` |
 | `bench_lif_node.mjs` / `model_id.mjs` | full-brain LIF measurement (single thread, pool, research mode); model / MEP ids of a payload file |
 | `export_delta_fixtures.mjs` | fixtures for `test/FlyDelta.t.sol`: sampler vectors and an in-place lineage (founders, child, tampered children) with the tile openings of a one-record check |
+| `sample_wasm.c` / `delta_wasm.c` / `delta_wasm.js` | exact Q256 sampling, inheritance and explicit-op merge into resident WASM payloads; JS/Python remain reference implementations |
 | `export_fixtures.mjs` / `export_lif_fixtures.mjs` | typed Solidity fixtures for the on-chain tests from real node runs (SpMV mesh; LIF mesh with a state liar and an input-sum liar) |
 | `test_*.mjs`, `crosscheck.py`, `int_spmv.py` | tests and Python cross-checks |
 | `../../contracts/evm/test/BrowserClaim.t.sol` | the node's claim verified **on-chain** (`mep_id`, claim hash, `ecrecover`) |
@@ -49,7 +50,9 @@ aigg-spec conformance vectors, and the claim is verified on-chain.
 cd web/porw-browser
 ./build.sh          # sketch.wasm (own memory) + porw-shared.wasm (imported shared memory)
 npm install
-npm test            # test_wasm · test_node · test_swarm · test_pool · test_dispute · test_lif · test_eip712 · test_relay · test_relay_keepalive · test_aggregator
+npm test            # includes WASM sampler, resident-delta and Python arithmetic comparisons (python3 required)
+uv run --with numpy --with pycryptodome -- node test_delta_python.mjs # full independent Python v1/v2/v3 apply oracle
+node --expose-gc bench_delta_wasm.mjs /path/to/base.bin # timings, persistent allocations, WASM buffer high-water
 PW_CHROMIUM=/path/to/chrome node run_wallet_browser.mjs     # injected wallet: one Delegation prompt, session-key claims
 PW_CHROMIUM=/path/to/chrome node run_relay_browser.mjs      # the tab announces, serves audits and a task over two relays
 # the real brain: export it (see demo/fly_brain/README.md), then
@@ -62,6 +65,30 @@ PW_CHROMIUM=/path/to/chrome node run_browser.mjs --mib 521 --workers 4
 # full node loop at FlyWire scale; --workers N uses the shared-memory pool (server sends COOP/COEP)
 PW_CHROMIUM=/path/to/chrome node run_node_browser.mjs --payload flywire-female-sorted.bin --steps 2 --samples 16 --rounds 3 --workers 4
 ```
+
+## WASM-resident delta application
+
+`PorwNode.loadDelta` now executes the sampler and record merge in WASM. For repeated individuals, upload a base once and keep its handle:
+
+```js
+let bytes = new Uint8Array(await (await fetch(baseUrl)).arrayBuffer());
+const base = node.loadDeltaBase(bytes); // verifies model_id and base record ordering
+bytes = null; // the handle keeps offsets/metadata, not the original JS payload
+const individual = await node.loadDelta(base, deltaBytes, { resolve, maxSteps: 100 });
+// resolve(idHex) synchronously returns an ancestor delta's bytes for v3.
+```
+
+Existing byte-array calls remain supported. They upload and verify the supplied content each time, deduplicating stored bases by model id; the explicit handle avoids that work. `baseModelId` remains an optional trusted, already-verified identity override. No scheme or payload encoding changes: output bytes, `model_id`, `synapseRoot`, `mep_id` and execution match direct loading.
+
+`sample_wasm.c` implements Q60/Q256 with multiword integers and floor rounding, including full multiply/divide intermediates. It groups records by count using the output array as temporary index links and constructs each distinct CDF once. Its workspace is bounded below 385 KiB, independent of input length. Base records, genotype arrays, record merging and final payload stay in WASM. Small headers, delta ops and ancestor metadata remain in JS; `sample.js` and `delta.js` remain independent reference APIs.
+
+Memory accounting is `sum(base.allocationBytes)` plus `modelMemoryBytes(...)` for each loaded individual. Base bytes are an additional resident allocation; they are not included in the per-individual model estimate. `node.deltaBases` exposes the distinct stored handles. Apply additionally needs a genotype array per resolved ancestor and temporary output space; ancestor traversal is capped at depth 64 and 256 visits. Temporary allocations are reclaimed for reuse after apply, but a WASM buffer that has grown does not shrink. The benchmark reports buffer high-water and a page-rounded scratch upper bound, not process RSS.
+
+Handles belong to one kernel and remain valid only while their allocation remains resident. Do not mutate their payload/identity, manually rewind/reset the heap beneath them, or reuse them after a reset. Low-level `uploadDeltaBase` / `applyDeltaWasm` are synchronous and require exclusive heap access; their C kernels assume JS-validated pointers and capacities. `PorwNode` rejects overlapping async operations on the same `WebAssembly.Memory` so a dispute replay cannot rewind another load's allocations. Await operations before starting another. Failed loads roll back their allocations while preserving earlier models.
+
+The applied output is adopted directly by the node; no full JS result array or second `k.put` is needed. Views are re-created after allocations because `memory.grow` can detach earlier views. Tests cover both standalone and shared kernels, exact JS/Python CDFs and payloads, commitment/execution equality, malformed ancestry, growth, ownership, rollback, and overlapping replay/loading.
+
+A local 2026-09-18 run on FlyWire v783 min5 (139,255 neurons, 2,700,513 base records, seed 7) measured JS apply at 981 ms and WASM apply at 395 ms (2.49×). Output was byte-identical: 1,985,132 records, 20,967,424 payload bytes. The reusable base occupied 28,123,136 bytes; apply retained only its output, with zero retained scratch and a 59,965,440-byte WASM buffer high-water. These timings exclude base verification/upload; the same already-verified base identity was supplied to both paths. Re-run the benchmark on the target device rather than treating this sample as a guarantee.
 
 ## Delta payloads (FLYDELTAv1)
 
