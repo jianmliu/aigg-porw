@@ -365,3 +365,14 @@ Measured (`test/MeshAggregated.t.sol`, execution gas): `materializeClaim` 208,99
 71,894 per MEP -> **51,215 per epoch**. For 200 brains with two hosts each and 144 epochs a day that is ~17.4 G gas a day
 -> ~3.4 G (materializations) and ~2.1 G -> ~7 M (roots). Still open: eligibility inherited from a base brain by its
 derived individuals, and materialization only when selected — both remove the per-brain factor altogether.
+
+**Claim validity window (the third lever).** `InstanceRegistry.setClaimManager(cm, k)` sets, once, how many epochs a valid
+claim keeps its instance eligible (default 1, at most 64). The claim manager keeps `lastValidEpochPlus1[instance][mep]`,
+one reused word updated at every recorded claim and zeroed by a residency fraud verdict, so `isEligible` is a single read
+whatever `k` is: eligible in epoch `e` iff the most recent valid claim is for an epoch `>= e - k`. Staying eligible then
+costs one materialization every `k` epochs: the standing cost divides by `k`. The word adds ~22k gas to an instance's first
+materialization for a MEP and ~5k to later ones (`materializeClaim` measured cold: 82k the first time; ~65k after). What a
+longer window gives up is how often residency is proven, not what is paid for: execution is enforced per task by redundancy
+and disputes, so an instance that dropped the model inside its window times out on its task rather than getting a wrong
+result paid. Two semantics changed with it and are deliberate: a claim for the current epoch counts (it is fresher than
+one for the previous epoch), and a fraud verdict ends the instance's standing for the whole window, not for one epoch.
