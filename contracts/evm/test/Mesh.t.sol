@@ -62,7 +62,7 @@ contract MeshTest is Test {
 
     /// @dev a challenger supplies the claim's contents (they are in the ClaimData log); the contract checks them against its commitment
     function _challenge(address who, IPoRWClaimManager.Claim memory c, uint64 tile) internal returns (bytes32) {
-        return cm.challengeOpening{value: DEPOSIT}(who, c.mepId, 1, c.partialsRoot, c.coverageBytes, c.deviceId, tile);
+        return cm.challengeOpening{value: DEPOSIT}(who, c.mepId, 1, c.partialsRoot, c.coverageBytes, tile);
     }
 
     function challengeExt(address who, IPoRWClaimManager.Claim memory c, uint64 tile) external { _challenge(who, c, tile); }
@@ -92,7 +92,7 @@ contract MeshTest is Test {
 
         // a wrong-proof opening is Invalid and reverts (the instance may retry before the deadline)
         // contents that do not match the commitment are not a claim; neither is an invalidated one
-        { IPoRWClaimManager.Claim memory w = cA; bytes32 keep = w.deviceId; w.deviceId = bytes32(uint256(keep) ^ 1); vm.expectRevert(bytes("claim")); this.challengeExt(A, w, 5); w.deviceId = keep; }
+        { IPoRWClaimManager.Claim memory w = cA; bytes32 keep = w.partialsRoot; w.partialsRoot = bytes32(uint256(keep) ^ 1); vm.expectRevert(bytes("claim")); this.challengeExt(A, w, 5); w.partialsRoot = keep; }
         vm.expectRevert(bytes("claim")); this.challengeExt(L, cL, 9);
         _challenge(A, cA, 5);
         IPoRWClaimManager.Opening memory bad = FX.openingNoFraud(); bad.tileIdx = 5;
@@ -130,6 +130,22 @@ contract MeshTest is Test {
         vm.prank(A); inst.setSessionKey(address(0x77), uint64(block.number + 5)); assertEq(inst.resolve(address(0x77)), A);
         vm.roll(block.number + 6); assertEq(inst.resolve(address(0x77)), address(0), "expired session resolves to nobody");
         ia; // silence
+    }
+
+    // ---- bondFor: a payer can only add to someone's bond ----
+    function test_bondFor_adds_to_another_instances_bond_and_nothing_else() public {
+        address payer = address(0xFA7E); address newcomer = address(0x1234); vm.deal(payer, 10 ether); bytes32[] memory none = new bytes32[](0); bytes32[] memory ids = new bytes32[](1); ids[0] = mepId;
+        uint256 before = inst.bonded(A); vm.prank(payer); inst.bondFor{value: 0.3 ether}(A, none);
+        assertEq(inst.bonded(A), before + 0.3 ether, "the stake is A's now"); assertEq(inst.bonded(payer), 0, "not the payer's");
+        vm.prank(payer); vm.expectRevert(bytes("delay")); inst.finalizeExit(); // the payer has no exit to finalize: withdrawal is the instance's own call
+        // a mint that funds its minter's stake: one transaction, and the newcomer is a bonded instance for the brain
+        vm.prank(payer); inst.bondFor{value: 1 ether}(newcomer, ids); assertTrue(inst.isBondedFor(newcomer, mepId)); assertEq(inst.weightOf(newcomer), 1);
+        vm.prank(newcomer); inst.requestExit(); vm.roll(block.number + 21); uint256 bal = newcomer.balance; vm.prank(newcomer); inst.finalizeExit(); assertEq(newcomer.balance, bal + 1 ether, "and it leaves with the money");
+        // enrolling somebody else into a MEP's sortition list takes a real bond, not a wei
+        vm.prank(payer); vm.expectRevert(bytes("enrolling another instance takes a UNIT")); inst.bondFor{value: 1 wei}(address(0x5678), ids);
+        vm.prank(payer); inst.bondFor{value: 1 wei}(address(0x5678), none); // topping up without enrolment is free of that floor
+        vm.prank(A); inst.requestExit(); vm.prank(payer); vm.expectRevert(bytes("exiting")); inst.bondFor{value: 1 ether}(A, none); // no topping up an instance on its way out
+        vm.prank(payer); vm.expectRevert(bytes("bond")); inst.bondFor{value: 0}(newcomer, none);
     }
 
     // ---- tasks: sortition, results, settlement into a dispute ----

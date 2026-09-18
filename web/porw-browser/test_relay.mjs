@@ -58,7 +58,7 @@ const cL = new RelayClient([R1.url], Lk); await cL.connect(); const svcL = new N
 await svcL.announce(mep.mepId, challenge); await sleep(300); const a2 = await aud.audits[1];
 check(`liar's claim verifies but the sampled lied tile ${liedTile} is fraud`, a2.claimOk && !a2.ok && a2.verdicts.find((v) => v.tile === liedTile)?.verdict === "fraud" && a2.verdicts.filter((v) => v.verdict === "fraud").length === 1);
 { const e = a2.escalation; const o = openingFromJson({ ...e.opening, position: e.opening.partialsIndex, sketch: e.opening.sTile });
-  check("escalation carries claimId + the exact respondOpening struct (verifies as fraud independently)", e?.kind === "fraud" && e.claimId.length === 66 && Vf.verifyOpening(o, a2.claim, V.slotSeed(challenge, a2.claim.deviceId), nTiles).verdict === "fraud"); }
+  check("escalation carries claimId + the exact respondOpening struct (verifies as fraud independently)", e?.kind === "fraud" && e.claimId.length === 66 && Vf.verifyOpening(o, a2.claim, V.slotSeed(challenge, a2.instance), nTiles).verdict === "fraud"); }
 
 // ---- invalid envelopes are dropped by the relay and by clients ----
 { const raw = new WebSocket(R1.url); await new Promise((r) => (raw.onopen = r)); const errs = []; raw.onmessage = (ev) => { const m = JSON.parse(ev.data); if (m.op === "err") errs.push(m.reason); };
@@ -79,7 +79,7 @@ check("auditor behind only the censoring relay never sees A's claim", aud3.audit
 { const cArel = new RelayClient([R3.url], A); await cArel.connect(); // A reachable only through the censor: the auditor's direct request times out
   const claimEnv = seal("claim", mepHex, claimToJson(rA), A); const fake = await aud3.audit(claimEnv);
   check("unresponsive instance -> escalation = deposit-backed challengeOpening (forces an on-chain answer)", fake.escalation?.kind === "unresponsive" && fake.escalation.action === "challengeOpening" && fake.escalation.tiles.length === 8);
-  const fb = svc.onchainOpening(mep.mepId, fake.escalation.tiles[0]); const v = Vf.verifyOpening({ tileIdx: fb.tileIdx, position: fb.partialsIndex, tile: V.unhex(fb.tile), sketch: fb.sTile, partialsProof: fb.partialsProof.map(V.unhex), weightsProof: fb.weightsProof.map(V.unhex) }, rA.claim, V.slotSeed(challenge, nodeA.deviceId), nTiles);
+  const fb = svc.onchainOpening(mep.mepId, fake.escalation.tiles[0]); const v = Vf.verifyOpening({ tileIdx: fb.tileIdx, position: fb.partialsIndex, tile: V.unhex(fb.tile), sketch: fb.sTile, partialsProof: fb.partialsProof.map(V.unhex), weightsProof: fb.weightsProof.map(V.unhex) }, rA.claim, V.slotSeed(challenge, wsA.delegation.instance), nTiles);
   check("the censored instance answers on-chain itself: respondOpening struct verifies no_fraud (relays bypassed)", v.verdict === "no_fraud"); cArel.close(); }
 
 // ---- a task over the relay: announce -> signed result (valid for TaskMarket.submitResult) ----

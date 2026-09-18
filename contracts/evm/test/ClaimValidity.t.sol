@@ -48,7 +48,7 @@ contract ClaimValidityTest is Test {
     function test_a_fraud_verdict_ends_the_standing_at_once() public {
         deploy(3); (uint64 i, IPoRWClaimManager.ClaimLeaf memory l, bytes32[] memory p) = FX.aggLeafL(); cm.materializeClaim(1, AGG, i, l, p);
         assertTrue(inst.isEligible(L, mepId, 3), "the residency liar looks fine until someone looks");
-        cm.challengeOpening{value: DEPOSIT}(L, l.mepId, 1, l.partialsRoot, l.coverageBytes, l.deviceId, 7); cm.respondOpening(cm.claimIdOf(L, mepId, 1), FX.openingFraud());
+        cm.challengeOpening{value: DEPOSIT}(L, l.mepId, 1, l.partialsRoot, l.coverageBytes, 7); cm.respondOpening(cm.claimIdOf(L, mepId, 1), FX.openingFraud());
         assertEq(cm.lastValidEpochPlus1(L, mepId), 0); for (uint64 e = 2; e <= 4; e++) assertFalse(inst.isEligible(L, mepId, e), "out for the whole window, not just for one epoch");
     }
     function test_the_window_is_set_once_and_bounded() public {

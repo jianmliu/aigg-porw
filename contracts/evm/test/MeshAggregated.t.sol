@@ -72,7 +72,7 @@ contract MeshAggregatedTest is Test {
         postRoot();
         (uint64 il, IPoRWClaimManager.ClaimLeaf memory ll, bytes32[] memory pl) = FX.aggLeafL(); bytes32 idL = cm.materializeClaim(1, AGG, il, ll, pl);
         uint256 bondedL = inst.bonded(L);
-        assertEq(cm.challengeOpening{value: DEPOSIT}(L, ll.mepId, 1, ll.partialsRoot, ll.coverageBytes, ll.deviceId, 7), idL);
+        assertEq(cm.challengeOpening{value: DEPOSIT}(L, ll.mepId, 1, ll.partialsRoot, ll.coverageBytes, 7), idL);
         cm.respondOpening(idL, FX.openingFraud());
         assertFalse(cm.hasValidClaim(L, mepId, 1), "the residency liar is caught through the aggregated path too"); assertEq(inst.bonded(L), bondedL - SLASH);
     }

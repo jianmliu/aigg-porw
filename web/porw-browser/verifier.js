@@ -32,9 +32,9 @@ export function verifyClaim(resp, mep, expectedChallenge, { domain = null, block
   let addr = null;
   try { addr = recoverAddress(domain ? claimDigest(domain, c) : resp.claimHash, resp.signature); } catch { addr = null; } // malformed signature == invalid, never a crash
   if (!addr || !V.eq(addr, resp.address)) fail("signature");
-  r.signer = addr; r.slotSeed = V.slotSeed(c.challenge, c.deviceId);
-  r.instance = addr ? V.hex(addr) : null;
+  r.signer = addr; r.instance = addr ? V.hex(addr) : null;
   if (addr && resp.delegation) { const inst = verifyDelegation(resp.delegation.domain || domain, resp.delegation, V.hex(addr), blockNumber); if (!inst) fail("delegation"); r.instance = inst; }
+  r.slotSeed = r.instance ? V.slotSeed(c.challenge, r.instance) : null; // seeded by the instance the claim resolves to (the wallet behind a session key)
   return r;
 }
 

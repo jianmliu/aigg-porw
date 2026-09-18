@@ -30,9 +30,9 @@ library PorwMeshHash {
     ///      over the EIP-712 Claim digest (PorwEIP712), signed by the wallet or a delegated session key
     function claimHash(
         bytes32 schemeDigest, bytes32 mepId_, bytes32 modelId, bytes32 partialsRoot, uint64 coverageBytes,
-        bytes32 challenge, bytes32 deviceId
+        bytes32 challenge
     ) internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked(schemeDigest, mepId_, modelId, partialsRoot, coverageBytes, challenge, deviceId));
+        return keccak256(abi.encodePacked(schemeDigest, mepId_, modelId, partialsRoot, coverageBytes, challenge));
     }
 
     /// @dev task id binds EVERY parameter of the task, not just (mep, seed, nonce): steps and the commit
@@ -70,6 +70,9 @@ interface IInstanceRegistry {
     event ExitRequested(address indexed instance, uint64 unlockEpoch);
     event Slashed(address indexed instance, uint256 amount, address beneficiary, bytes32 reason);
     function bond(bytes32[] calldata mepIds) external payable;
+    /// @notice add to SOMEONE ELSE's bond (a mint that funds its minter's stake, a breeder endowing a child's owner). A payer
+    ///         can only increase a bond: exit and withdrawal remain the instance's own calls.
+    function bondFor(address instance, bytes32[] calldata mepIds) external payable;
     function requestExit() external;
     function finalizeExit() external;
     /// @notice bonded AND has an unchallenged / defended residency claim for epoch-1 on this MEP
@@ -88,7 +91,6 @@ interface IPoRWClaimManager {
         bytes32 partialsRoot;
         uint64 coverageBytes;
         bytes32 challenge;   // epoch beacon-derived public challenge
-        bytes32 deviceId;
     }
     /// @dev tile opening as consumed by PorwVerifier.verifyTileFraudProofKeccak
     struct Opening {
@@ -100,12 +102,12 @@ interface IPoRWClaimManager {
         bytes32[] weightsProof;
     }
     /// @dev aggregated path: ONE Merkle root per (epoch, aggregator) over the claim leaves of every MEP
-    ///      leaf = keccak256(abi.encode(mepId, instance, partialsRoot, coverageBytes, deviceId, keccak256(signature)))
-    struct ClaimLeaf { bytes32 mepId; address instance; bytes32 partialsRoot; uint64 coverageBytes; bytes32 deviceId; bytes signature; }
+    ///      leaf = keccak256(abi.encode(mepId, instance, partialsRoot, coverageBytes, keccak256(signature)))
+    struct ClaimLeaf { bytes32 mepId; address instance; bytes32 partialsRoot; uint64 coverageBytes; bytes signature; }
     event EpochRootPosted(uint64 indexed epoch, address indexed aggregator, bytes32 root, uint64 count);
     /// @dev the claim's contents. The contract keeps only a commitment to them, so this log is where a challenger
     ///      finds what to pass to `challengeOpening`.
-    event ClaimData(bytes32 indexed claimId, bytes32 partialsRoot, uint64 coverageBytes, bytes32 deviceId);
+    event ClaimData(bytes32 indexed claimId, bytes32 partialsRoot, uint64 coverageBytes);
     event ClaimSubmitted(bytes32 indexed claimId, address indexed instance, bytes32 indexed mepId, uint64 epoch);
     event OpeningChallenged(bytes32 indexed claimId, uint64 tileIdx, address challenger);
     event OpeningResolved(bytes32 indexed claimId, uint64 tileIdx, uint8 verdict); // 0 Fraud, 1 NoFraud, 2 Invalid, 3 Timeout
@@ -115,7 +117,7 @@ interface IPoRWClaimManager {
     /// @notice materialize one claim from a posted root: inclusion proof + the leaf; the signature is verified here
     function materializeClaim(uint64 epoch, address aggregator, uint64 index, ClaimLeaf calldata leaf, bytes32[] calldata proof) external returns (bytes32 claimId);
     /// @notice the challenger supplies the claim's contents (from `ClaimData`); they must match the stored commitment
-    function challengeOpening(address instance, bytes32 mepId, uint64 epoch, bytes32 partialsRoot, uint64 coverageBytes, bytes32 deviceId, uint64 tileIdx) external payable returns (bytes32 claimId);
+    function challengeOpening(address instance, bytes32 mepId, uint64 epoch, bytes32 partialsRoot, uint64 coverageBytes, uint64 tileIdx) external payable returns (bytes32 claimId);
     function respondOpening(bytes32 claimId, Opening calldata opening) external;
     function claimExpiredChallenge(bytes32 claimId, uint64 tileIdx) external;
 }
@@ -124,7 +126,7 @@ interface ITaskMarket {
     /// @dev `steps` and `commitStride` are per-task: the dispute machinery is the only thing that reads them,
     ///      and both executors read the same stored Task. `commitStride` is the segment-root granularity for
     ///      int-lif (it was the MEP's misnamed `clampQ16`); int-spmv-q16 commits every step and ignores it.
-    struct Task { bytes32 mepId; uint32 stimulusSeed; uint32 steps; uint32 commitStride; bytes32 inputCommit; uint256 fee; uint64 deadline; uint8 redundancy; }
+    struct Task { bytes32 mepId; uint32 stimulusSeed; uint32 steps; uint32 commitStride; bytes32 initStateRoot; uint256 fee; uint64 deadline; uint8 redundancy; }
     struct Result { bytes32 execDigest; bytes32 execRoot; } // execRoot = merkle([actRoot[1..steps]])
     event TaskPosted(bytes32 indexed taskId, bytes32 indexed mepId, uint8 redundancy);
     event ResultSubmitted(bytes32 indexed taskId, address indexed executor, bytes32 execDigest);

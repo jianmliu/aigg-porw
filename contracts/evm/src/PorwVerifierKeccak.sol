@@ -17,8 +17,13 @@ contract PorwVerifierKeccak is PorwVerifier {
         return keccak256(bytes.concat(le64(tileIdx), tile));
     }
 
-    function deriveSlotSeedKeccak(bytes32 globalChallenge, bytes32 deviceId) public pure returns (uint32) {
-        bytes32 h = keccak256(bytes.concat(globalChallenge, deviceId));
+    /// @notice the sketch seed of a claim: a function of the epoch challenge and of the INSTANCE the claim resolves to, and of
+    ///         nothing the claimant can choose. There is no self-declared device id: a claim is already one per
+    ///         (instance, MEP, epoch), so the only thing such a field could do was vary the seed, and an address does that
+    ///         without being a free parameter. N identities cost N scans of the model, which is what the mechanism means.
+    ///         Encoding: keccak256(challenge || instance left-padded to 32 bytes), first four bytes little-endian.
+    function deriveSlotSeed(bytes32 globalChallenge, address instance) public pure returns (uint32) {
+        bytes32 h = keccak256(abi.encode(globalChallenge, instance));
         return uint32(uint8(h[0])) | (uint32(uint8(h[1])) << 8) | (uint32(uint8(h[2])) << 16) | (uint32(uint8(h[3])) << 24);
     }
 
@@ -40,12 +45,12 @@ contract PorwVerifierKeccak is PorwVerifier {
     /// keccak-scheme tile fraud proof, counted. 0 = Fraud, 1 = NoFraud, 2 = Invalid.
     function verifyTileFraudProofKeccakCounted(
         bytes32 partialsRoot, uint64 coverageNLeaves, bytes32 modelRoot, uint64 modelNLeaves,
-        bytes32 globalChallenge, bytes32 deviceId, uint64 tileIdx, uint32 claimedSTile, uint64 partialsIndex,
+        bytes32 globalChallenge, address instance, uint64 tileIdx, uint32 claimedSTile, uint64 partialsIndex,
         bytes32[] calldata partialsProof, bytes calldata tileBytes, bytes32[] calldata weightsProof
     ) external pure returns (uint8) {
         if (tileBytes.length != TILE_BYTES) return 2;
         if (!merkleVerifyCountedKeccak(partialsRoot, partialsLeafKeccak(tileIdx, claimedSTile), partialsIndex, coverageNLeaves, partialsProof)) return 2;
         if (!merkleVerifyCountedKeccak(modelRoot, weightsLeafKeccak(tileIdx, tileBytes), tileIdx, modelNLeaves, weightsProof)) return 2;
-        return sketchTile(deriveSlotSeedKeccak(globalChallenge, deviceId), tileIdx, tileBytes) == claimedSTile ? 1 : 0;
+        return sketchTile(deriveSlotSeed(globalChallenge, instance), tileIdx, tileBytes) == claimedSTile ? 1 : 0;
     }
 }

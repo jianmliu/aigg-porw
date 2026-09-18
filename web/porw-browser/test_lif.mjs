@@ -60,7 +60,7 @@ let tot = 0; for (const x of re.counts) tot += x; check(`activity propagates on 
 { const s0 = await A.nd.lifStates(A.mep, 0); const leaves = []; for (let i = 0; i < n; i++) leaves.push(L.stateLeaf(i, L.decodeState(s0, i * 16)));
   check("initStateRoot == noble recompute over state_0 (stimulus flags)", V.eq(V.merkleRoot(leaves), A.r.result.initStateRoot));
   const idSet = new Set(stimulusIds); let stimOk = true; for (let i = 0; i < n; i++) { const s = L.decodeState(s0, i * 16); if ((s.flags & 1) !== (idSet.has(i) ? 1 : 0) || s.v || s.g || s.refr || s.count) stimOk = false; } check("state_0 matches the task's stimulus set", stimOk);
-  // the verifier computes the same initStateRoot from the task input alone (the task's inputCommit)
+  // the verifier computes the same initStateRoot from the task input alone (the task's initStateRoot)
   const l0 = []; for (let i = 0; i < n; i++) l0.push(L.stateLeaf(i, { v: 0, g: 0, refr: 0, flags: idSet.has(i) ? 1 : 0, count: 0 })); check("initStateRoot derivable by anyone from the stimulus id list", V.eq(V.merkleRoot(l0), A.r.result.initStateRoot));
   check(`segment roots: ${A.r.result.actRoots.length} == ceil(${steps}/${stride}) -- the stride is the task's, not the MEP's`, A.r.result.actRoots.length === Math.ceil(steps / stride));
   const sm = await A.nd.lifStates(A.mep, 3 * stride); const lv = []; for (let i = 0; i < n; i++) lv.push(L.stateLeaf(i, L.decodeState(sm, i * 16)));

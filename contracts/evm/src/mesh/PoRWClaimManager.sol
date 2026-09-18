@@ -20,7 +20,7 @@ import "../interfaces/IBeacon.sol";
 ///         recorded once per epoch from an IBeacon provider, or — when none is configured (pilot,
 ///         chains with a random prevrandao) — from keccak(prevrandao || blockNumber).
 ///
-///         STORAGE. A claim on-chain is one word: a commitment to (partialsRoot, coverageBytes, deviceId) with the
+///         STORAGE. A claim on-chain is one word: a commitment to (partialsRoot, coverageBytes) with the
 ///         validity flag in its lowest bit. Eligibility reads that word and nothing else. The contents are emitted
 ///         (`ClaimData`) rather than stored; a challenger passes them back to `challengeOpening`, which checks them
 ///         against the commitment and only then writes them down — so the six storage slots a claim used to cost
@@ -37,11 +37,11 @@ contract PoRWClaimManager is IPoRWClaimManager {
     bytes32 public immutable DOMAIN_SEPARATOR; // EIP-712: claims are signed as typed data (wallet or delegated session key)
 
     /// @dev what a tile verdict needs; written by the first challenge against a claim, not by the claim
-    struct ChallengedClaim { address instance; bytes32 mepId; uint64 epoch; bytes32 partialsRoot; uint64 coverageBytes; bytes32 deviceId; }
+    struct ChallengedClaim { address instance; bytes32 mepId; uint64 epoch; bytes32 partialsRoot; uint64 coverageBytes; }
     struct OpenChallenge { address challenger; uint256 deposit; uint64 deadline; bool open; }
 
     mapping(uint64 => bytes32) public beacon;
-    /// @notice claimId -> (keccak(partialsRoot, coverageBytes, deviceId) with bit 0 cleared) | valid. Zero: no such claim.
+    /// @notice claimId -> (keccak(partialsRoot, coverageBytes) with bit 0 cleared) | valid. Zero: no such claim.
     mapping(bytes32 => bytes32) public claimRecord;
     /// @notice (epoch + 1) of the instance's most recent valid claim for a MEP; 0: none, or struck down by a fraud verdict.
     ///         One reused word per (instance, MEP), so eligibility over a validity window of any length is a single read.
@@ -58,7 +58,7 @@ contract PoRWClaimManager is IPoRWClaimManager {
     /// @notice the EIP-712 digest a wallet / session key signs for a claim (schemeDigest and modelId come from the MEP)
     function claimDigest(Claim calldata c) public view returns (bytes32) {
         (bytes32 scheme, bytes32 modelId) = meps.claimBinding(c.mepId);
-        return PorwEIP712.digest(DOMAIN_SEPARATOR, PorwEIP712.claimStructHash(scheme, c.mepId, modelId, c.partialsRoot, c.coverageBytes, c.challenge, c.deviceId));
+        return PorwEIP712.digest(DOMAIN_SEPARATOR, PorwEIP712.claimStructHash(scheme, c.mepId, modelId, c.partialsRoot, c.coverageBytes, c.challenge));
     }
 
     function currentEpoch() public view returns (uint64) { return uint64(block.number) / EPOCH_BLOCKS; }
@@ -75,15 +75,15 @@ contract PoRWClaimManager is IPoRWClaimManager {
     function epochChallenge(uint64 epoch, bytes32 mepId) public view returns (bytes32) { return keccak256(abi.encodePacked(beacon[epoch], mepId)); }
     function claimIdOf(address instance, bytes32 mepId, uint64 epoch) public pure returns (bytes32) { return keccak256(abi.encodePacked(instance, mepId, epoch)); }
     function hasValidClaim(address instance, bytes32 mepId, uint64 epoch) external view returns (bool) { return uint256(claimRecord[claimIdOf(instance, mepId, epoch)]) & 1 == 1; }
-    function claimCommit(bytes32 partialsRoot, uint64 coverageBytes, bytes32 deviceId) public pure returns (bytes32) { return keccak256(abi.encode(partialsRoot, coverageBytes, deviceId)); }
+    function claimCommit(bytes32 partialsRoot, uint64 coverageBytes) public pure returns (bytes32) { return keccak256(abi.encode(partialsRoot, coverageBytes)); }
     /// @dev one fresh word per claim; the contents go to the log
-    function _record(address instance, bytes32 mepId, uint64 epoch, bytes32 partialsRoot, uint64 coverageBytes, bytes32 deviceId) internal returns (bytes32 claimId) {
+    function _record(address instance, bytes32 mepId, uint64 epoch, bytes32 partialsRoot, uint64 coverageBytes) internal returns (bytes32 claimId) {
         claimId = claimIdOf(instance, mepId, epoch);
         require(claimRecord[claimId] == bytes32(0), "claimed");
-        claimRecord[claimId] = claimCommit(partialsRoot, coverageBytes, deviceId) | bytes32(uint256(1));
+        claimRecord[claimId] = claimCommit(partialsRoot, coverageBytes) | bytes32(uint256(1));
         if (epoch + 1 > lastValidEpochPlus1[instance][mepId]) lastValidEpochPlus1[instance][mepId] = epoch + 1;
         emit ClaimSubmitted(claimId, instance, mepId, epoch);
-        emit ClaimData(claimId, partialsRoot, coverageBytes, deviceId);
+        emit ClaimData(claimId, partialsRoot, coverageBytes);
     }
 
     function submitClaim(Claim calldata c, bytes calldata signature) external returns (bytes32 claimId) {
@@ -92,15 +92,15 @@ contract PoRWClaimManager is IPoRWClaimManager {
         require(c.challenge == epochChallenge(e, c.mepId), "challenge");
         (bytes32 scheme, bytes32 modelId) = meps.claimBinding(c.mepId);
         require(c.coverageBytes > 0 && c.coverageBytes % 4096 == 0, "coverage");
-        bytes32 h = PorwEIP712.digest(DOMAIN_SEPARATOR, PorwEIP712.claimStructHash(scheme, c.mepId, modelId, c.partialsRoot, c.coverageBytes, c.challenge, c.deviceId));
+        bytes32 h = PorwEIP712.digest(DOMAIN_SEPARATOR, PorwEIP712.claimStructHash(scheme, c.mepId, modelId, c.partialsRoot, c.coverageBytes, c.challenge));
         address instance = instances.resolve(PorwEIP712.recover(h, signature)); // the wallet itself, or its delegated session key
         require(instance != address(0) && instances.isBondedFor(instance, c.mepId), "not bonded");
-        claimId = _record(instance, c.mepId, e, c.partialsRoot, c.coverageBytes, c.deviceId);
+        claimId = _record(instance, c.mepId, e, c.partialsRoot, c.coverageBytes);
     }
 
     // ---- aggregated path ----
     function claimLeafHash(ClaimLeaf calldata l) public pure returns (bytes32) {
-        return keccak256(abi.encode(l.mepId, l.instance, l.partialsRoot, l.coverageBytes, l.deviceId, keccak256(l.signature)));
+        return keccak256(abi.encode(l.mepId, l.instance, l.partialsRoot, l.coverageBytes, keccak256(l.signature)));
     }
     /// @notice one root per aggregator per epoch, over the claims of every MEP it serves. The root is untrusted: a leaf
     ///         for an unknown MEP, an unbonded instance or with a bad signature simply cannot be materialized.
@@ -117,10 +117,10 @@ contract PoRWClaimManager is IPoRWClaimManager {
         require(_verify(er.root, claimLeafHash(l), index, er.count, proof), "not included");
         (bytes32 scheme, bytes32 modelId) = meps.claimBinding(l.mepId);
         require(l.coverageBytes > 0 && l.coverageBytes % 4096 == 0, "coverage");
-        bytes32 h = PorwEIP712.digest(DOMAIN_SEPARATOR, PorwEIP712.claimStructHash(scheme, l.mepId, modelId, l.partialsRoot, l.coverageBytes, epochChallenge(epoch, l.mepId), l.deviceId));
+        bytes32 h = PorwEIP712.digest(DOMAIN_SEPARATOR, PorwEIP712.claimStructHash(scheme, l.mepId, modelId, l.partialsRoot, l.coverageBytes, epochChallenge(epoch, l.mepId)));
         address instance = instances.resolve(PorwEIP712.recover(h, l.signature));
         require(instance != address(0) && instance == l.instance && instances.isBondedFor(instance, l.mepId), "not bonded");
-        claimId = _record(instance, l.mepId, epoch, l.partialsRoot, l.coverageBytes, l.deviceId);
+        claimId = _record(instance, l.mepId, epoch, l.partialsRoot, l.coverageBytes);
     }
     function _verify(bytes32 root, bytes32 leaf, uint64 index, uint64 count, bytes32[] calldata proof) internal pure returns (bool) {
         if (count == 0 || index >= count) return false;
@@ -138,14 +138,14 @@ contract PoRWClaimManager is IPoRWClaimManager {
     /// @notice challenge one tile of a claim. The challenger supplies the claim's contents (from `ClaimData`); they must
     ///         hash to the recorded commitment of a still-valid claim. The first challenge against a claim writes them
     ///         down for `respondOpening`; later ones (other tiles) reuse them.
-    function challengeOpening(address instance, bytes32 mepId, uint64 epoch, bytes32 partialsRoot, uint64 coverageBytes, bytes32 deviceId, uint64 tileIdx) external payable returns (bytes32 claimId) {
+    function challengeOpening(address instance, bytes32 mepId, uint64 epoch, bytes32 partialsRoot, uint64 coverageBytes, uint64 tileIdx) external payable returns (bytes32 claimId) {
         claimId = claimIdOf(instance, mepId, epoch);
-        require(claimRecord[claimId] == (claimCommit(partialsRoot, coverageBytes, deviceId) | bytes32(uint256(1))), "claim"); // exists, valid, these contents
+        require(claimRecord[claimId] == (claimCommit(partialsRoot, coverageBytes) | bytes32(uint256(1))), "claim"); // exists, valid, these contents
         require(tileIdx < coverageBytes / 4096, "tile");
         require(msg.value >= OPENING_DEPOSIT, "deposit");
         OpenChallenge storage ch = challenges[claimId][tileIdx];
         require(!ch.open, "open");
-        if (challenged[claimId].instance == address(0)) challenged[claimId] = ChallengedClaim(instance, mepId, epoch, partialsRoot, coverageBytes, deviceId);
+        if (challenged[claimId].instance == address(0)) challenged[claimId] = ChallengedClaim(instance, mepId, epoch, partialsRoot, coverageBytes);
         challenges[claimId][tileIdx] = OpenChallenge(msg.sender, msg.value, uint64(block.number) + OPENING_WINDOW, true);
         emit OpeningChallenged(claimId, tileIdx, msg.sender);
     }
@@ -159,7 +159,7 @@ contract PoRWClaimManager is IPoRWClaimManager {
         (, bytes32 modelId) = meps.claimBinding(c.mepId);
         uint64 nLeaves = c.coverageBytes / 4096;
         uint8 verdict = verifier.verifyTileFraudProofKeccakCounted(
-            c.partialsRoot, nLeaves, modelId, nLeaves, epochChallenge(c.epoch, c.mepId), c.deviceId,
+            c.partialsRoot, nLeaves, modelId, nLeaves, epochChallenge(c.epoch, c.mepId), c.instance, // the sketch seed is the claiming instance's, not a field it filled in
             o.tileIdx, o.sTile, o.partialsIndex, o.partialsProof, o.tile, o.weightsProof
         );
         require(verdict != 2, "invalid opening"); // the instance may retry before the deadline

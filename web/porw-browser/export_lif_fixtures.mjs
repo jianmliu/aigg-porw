@@ -34,7 +34,7 @@ const epochStart = EPOCH * EPOCH_BLOCKS; const beacon = keccak_256(cat(be256(PRE
 // residency claims (canonical stimulus run), then the task run with the explicit stimulus set
 const claimA = await A.nd.challenge(mepId, challenge, { steps, commitStride: stride, stimulusSeed });
 const Bc = await mk("22"); const claimB = await Bc.nd.challenge(mepId, challenge, { steps, commitStride: stride, stimulusSeed });
-const claimJson = (r) => { const c = r.claim; return { mepId: H(c.mepId), partialsRoot: H(c.partialsRoot), coverageBytes: c.coverageBytes, challenge: H(c.challenge), deviceId: H(c.deviceId), signature: H(r.signature), signer: H(r.address) }; };
+const claimJson = (r) => { const c = r.claim; return { mepId: H(c.mepId), partialsRoot: H(c.partialsRoot), coverageBytes: c.coverageBytes, challenge: H(c.challenge), signature: H(r.signature), signer: H(r.address) }; };
 const rA = await A.nd.challenge(mepId, challenge, { steps, commitStride: stride, stimulusSeed, stimulusIds });
 // the lied neuron: not stimulated, in-degree >= 3, free (not refractory) at step 22 so the input matters at step 23
 const sLie = 23; const s22 = await A.nd.lifStates(mepId, sLie - 1); let neuron = -1, len = 0;
@@ -45,7 +45,7 @@ const B1 = await mk("22", { step: sLie, neuron, delta: 5000 });            // li
 const B2 = await mk("22", { step: sLie, neuron, delta: 40, kind: "input" }); // lie in the input sum (caught at the single term)
 const rB1 = await B1.nd.challenge(mepId, challenge, { steps, commitStride: stride, stimulusSeed, stimulusIds }), rB2 = await B2.nd.challenge(mepId, challenge, { steps, commitStride: stride, stimulusSeed, stimulusIds });
 if (!V.eq(rA.result.initStateRoot, rB1.result.initStateRoot)) throw new Error("initStateRoot");
-const taskIds = nonces.map((nonce) => swarmTaskId({ ...TASK, mepId, inputCommit: rA.result.initStateRoot }, nonce));
+const taskIds = nonces.map((nonce) => swarmTaskId({ ...TASK, mepId, initStateRoot: rA.result.initStateRoot }, nonce));
 const resultSig = (P, r, taskId) => { const h = E.resultDigest(domains.market, taskId, r.result.execDigest, r.result.execRoot); return { execDigest: H(r.result.execDigest), execRoot: H(r.result.execRoot), signature: H(signHash(h, P.nd.key.priv)), signer: H(P.nd.key.address) }; };
 
 // dispute path: segment -> refine -> bisection (per liar) -> row -> term
@@ -96,7 +96,7 @@ function writeSolidity(F, dir) {
   const arrI64 = (name, a) => `    function ${name}() internal pure returns (int64[] memory a) { a = new int64[](${a.length});${a.map((v, i) => ` a[${i}] = ${v};`).join("")} }\n`;
   const bytesFn = (name, hexv) => `    function ${name}() internal pure returns (bytes memory) { return hex"${hexv.slice(2)}"; }\n`;
   const claimFn = (name, c) => `    function ${name}() internal pure returns (IPoRWClaimManager.Claim memory c, bytes memory sig) {
-        c = IPoRWClaimManager.Claim({ mepId: ${c.mepId}, partialsRoot: ${c.partialsRoot}, coverageBytes: ${c.coverageBytes}, challenge: ${c.challenge}, deviceId: ${c.deviceId} });
+        c = IPoRWClaimManager.Claim({ mepId: ${c.mepId}, partialsRoot: ${c.partialsRoot}, coverageBytes: ${c.coverageBytes}, challenge: ${c.challenge} });
         sig = hex"${c.signature.slice(2)}";
     }\n`;
   const resultFn = (name, r) => `    function ${name}() internal pure returns (ITaskMarket.Result memory r, bytes memory sig) { r = ITaskMarket.Result({ execDigest: ${r.execDigest}, execRoot: ${r.execRoot} }); sig = hex"${r.signature.slice(2)}"; }\n`;
@@ -129,7 +129,7 @@ library LifMeshFixtures {
   sol += delFn("delegationA", F.delegations.A) + delFn("delegationB", F.delegations.B);
   sol += `    /// @dev the exact Task the ids were derived from -- taskId = keccak256(abi.encode(task, nonce))
     function task() internal pure returns (ITaskMarket.Task memory t) {
-        t = ITaskMarket.Task({ mepId: MEP_ID, stimulusSeed: STIMULUS_SEED, steps: STEPS, commitStride: STRIDE, inputCommit: INIT_STATE_ROOT, fee: TASK_FEE, deadline: TASK_DEADLINE, redundancy: TASK_REDUNDANCY });
+        t = ITaskMarket.Task({ mepId: MEP_ID, stimulusSeed: STIMULUS_SEED, steps: STEPS, commitStride: STRIDE, initStateRoot: INIT_STATE_ROOT, fee: TASK_FEE, deadline: TASK_DEADLINE, redundancy: TASK_REDUNDANCY });
     }\n`;
   sol += arr32("nonces", P.nonces) + arr32("taskIds", P.taskIds) + claimFn("claimA", F.claimA) + claimFn("claimB", F.claimB);
   F.resultsA.forEach((r, i) => { sol += resultFn(`resultA${i}`, r); }); F.resultsB.forEach((r, i) => { sol += resultFn(`resultB${i}`, r); });

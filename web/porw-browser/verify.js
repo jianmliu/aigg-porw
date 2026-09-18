@@ -26,7 +26,12 @@ export function sketchTile(slotSeed, tileIdx, tile) {
 export const weightsLeaf = (tileIdx, tile) => keccak(cat(le64(tileIdx), tile));
 export const partialsLeaf = (tileIdx, sTile) => keccak(cat(le64(tileIdx), le32(sTile)));
 export const parent = (l, r) => keccak(cat(l, r));
-export const slotSeed = (challenge32, device32) => new DataView(keccak(cat(challenge32, device32)).buffer).getUint32(0, true);
+/** the 32-byte word of an instance address (20 bytes or 0x-hex), as abi.encode pads it */
+export const instanceWord = (a) => { const b = typeof a === "string" ? unhex(a) : a; if (b.length !== 20) throw new Error("instance must be a 20-byte address"); const w = new Uint8Array(32); w.set(b, 12); return w; };
+/** the sketch seed of a claim: keccak(challenge || instance word), first four bytes LE. The instance is the one the claim
+ *  RESOLVES to (the bonded wallet behind a session key), not a field the claimant fills in: N identities cost N scans. */
+export const slotSeedWord = (challenge32, word32) => new DataView(keccak(cat(challenge32, word32)).buffer).getUint32(0, true); // the raw two-word hash (conformance fixtures)
+export const slotSeed = (challenge32, instance) => slotSeedWord(challenge32, instanceWord(instance));
 export function merkleRoot(leaves) { // array of Uint8Array(32)
   if (leaves.length === 0) return keccak(new Uint8Array(0));
   let lvl = leaves.slice();

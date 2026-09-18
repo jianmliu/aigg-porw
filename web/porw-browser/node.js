@@ -12,7 +12,7 @@ import { decodeHeader, attachSpmv } from "./model.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { claimHash, signHash, keypair } from "./claim.js";
 import { makeMep } from "./mep.js";
-import { hex, CSR_CHUNK } from "./verify.js";
+import { hex, CSR_CHUNK, instanceWord } from "./verify.js";
 import { claimDigest } from "./eip712.js";
 import { lifExecKind, countsDigest, decodeState, encodeState, transition } from "./lif.js";
 const LIF_STATE = 16, LIF_CHECKPOINT = 32;
@@ -37,12 +37,11 @@ export class PorwNode {
   async _buildTree(leavesPtr, n, treePtr) { return this.pool ? treeBuildParallel(this.pool, leavesPtr, n, treePtr) : this.k.treeBuildInto(leavesPtr, n, treePtr); }
   /** `domains.claimManager` / `domains.market`: EIP-712 domains (chainId, verifying contract) — claims and results are then
    *  signed as typed data by this node's key (the wallet itself, or a session key the wallet delegated: `delegation`). */
-  constructor(kernel, { privHex = null, deviceId = null, pool = null, domains = null, delegation = null } = {}) {
+  constructor(kernel, { privHex = null, pool = null, domains = null, delegation = null } = {}) {
     this.domains = domains; this.delegation = delegation;
     this.k = attachTrees(attachSpmv(kernel, kernel.exports));
     this.pool = pool; // shared-memory worker pool (kernel must be pool.kernel when set)
     this.key = keypair(privHex);
-    this.deviceId = deviceId || keccak_256(this.key.address); // demo: device id derived from the reward key
     this.models = new Map(); // mepId hex -> resident model state
     this.deltaBases = new Map(); // model id -> immutable resident base handle; no JS payload retained
     this.lies = new Map();   // test hook: `${mepIdHex}:${tileIdx}` -> corrupted sketch
@@ -156,7 +155,8 @@ export class PorwNode {
     const st = this.models.get(hex(mepId)); if (!st) throw new Error("unknown MEP");
     const k = this.k, n = st.nTiles, t = {};
     let t0 = performance.now();
-    st.slotSeed = k.slotSeed(challenge32, this.deviceId);
+    // the seed is the claiming INSTANCE's: the bonded wallet when this key is a delegated session key, else this key's address
+    st.slotSeed = k.slotSeed(challenge32, instanceWord(this.delegation?.instance || this.key.address));
     const e = k.exports, sl = st.slot;
     if (this.pool) await this.pool.map("porw_sketch_tiles", n, (f, c) => [st.bufPtr + f * TILE_BYTES, c, f, st.slotSeed, sl.sketchesPtr + f * 4]);
     else k.sketch(st.bufPtr, n, 0, st.slotSeed, sl.sketchesPtr);
@@ -169,7 +169,7 @@ export class PorwNode {
     st.partialsRoot = st.partialsTree.root;
     t.commitMs = performance.now() - t0;
     const claim = { schemeDigest: st.mep.schemeDigest, mepId: st.mep.mepId, modelId: st.modelId, partialsRoot: st.partialsRoot,
-      coverageBytes: n * TILE_BYTES, challenge: challenge32, deviceId: this.deviceId };
+      coverageBytes: n * TILE_BYTES, challenge: challenge32 };
     const h = claimHash(claim); const digest = this.domains?.claimManager ? claimDigest(this.domains.claimManager, claim) : h; // EIP-712 when a domain is configured
     return { claim, claimHash: h, digest, signature: signHash(digest, this.key.priv), address: this.key.address, delegation: this.delegation, timings: t };
   }
