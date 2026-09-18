@@ -22,6 +22,12 @@ contract MEPRegistry is IMEPRegistry {
         emit MEPRegistered(id, m.modelId, m.schemeDigest);
     }
 
+    function claimBinding(bytes32 id) external view returns (bytes32 schemeDigest, bytes32 modelId) {
+        MEP storage m = meps[id]; schemeDigest = m.schemeDigest; // every registered MEP carries the (non-zero) scheme digest
+        require(schemeDigest != bytes32(0), "unknown mep");
+        modelId = m.modelId;
+    }
+
     function getMEP(bytes32 id) external view returns (MEP memory) {
         require(exists[id], "unknown mep");
         return meps[id];

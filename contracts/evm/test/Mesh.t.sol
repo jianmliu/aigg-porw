@@ -60,30 +60,41 @@ contract MeshTest is Test {
         (IPoRWClaimManager.Claim memory cl, bytes memory sl,) = FX.claimL(); idL = cm.submitClaim(cl, sl);
     }
 
+    /// @dev a challenger supplies the claim's contents (they are in the ClaimData log); the contract checks them against its commitment
+    function _challenge(address who, IPoRWClaimManager.Claim memory c, uint64 tile) internal returns (bytes32) {
+        return cm.challengeOpening{value: DEPOSIT}(who, c.mepId, 1, c.partialsRoot, c.coverageBytes, c.deviceId, tile);
+    }
+
+    function challengeExt(address who, IPoRWClaimManager.Claim memory c, uint64 tile) external { _challenge(who, c, tile); }
+
     // ---- residency claims and opening challenges ----
     function test_claims_and_openings() public {
         (bytes32 idA,, bytes32 idL) = submitAll();
         assertTrue(cm.hasValidClaim(A, mepId, 1) && cm.hasValidClaim(L, mepId, 1));
+        (IPoRWClaimManager.Claim memory cA,,) = FX.claimA(); (IPoRWClaimManager.Claim memory cL,,) = FX.claimL();
 
         uint256 balA = A.balance;
-        cm.challengeOpening{value: DEPOSIT}(idA, 3);
+        assertEq(_challenge(A, cA, 3), idA);
         cm.respondOpening(idA, FX.openingNoFraud());
         assertEq(A.balance, balA + DEPOSIT, "NoFraud pays the instance");
         assertTrue(cm.hasValidClaim(A, mepId, 1));
 
         // the residency liar: its honest tile passes, its lied tile is Fraud -> slashed, claim invalid
-        cm.challengeOpening{value: DEPOSIT}(idL, 3);
+        _challenge(L, cL, 3);
         cm.respondOpening(idL, FX.openingHonestOfLiar());
         assertTrue(cm.hasValidClaim(L, mepId, 1));
         uint256 bondedL = inst.bonded(L); uint256 me = address(this).balance;
-        cm.challengeOpening{value: DEPOSIT}(idL, 7);
+        _challenge(L, cL, 7);
         cm.respondOpening(idL, FX.openingFraud());
         assertFalse(cm.hasValidClaim(L, mepId, 1), "fraud invalidates the claim");
         assertEq(inst.bonded(L), bondedL - SLASH, "slashed");
         assertEq(address(this).balance, me + SLASH, "challenger paid slash + refund");
 
         // a wrong-proof opening is Invalid and reverts (the instance may retry before the deadline)
-        cm.challengeOpening{value: DEPOSIT}(idA, 5);
+        // contents that do not match the commitment are not a claim; neither is an invalidated one
+        { IPoRWClaimManager.Claim memory w = cA; bytes32 keep = w.deviceId; w.deviceId = bytes32(uint256(keep) ^ 1); vm.expectRevert(bytes("claim")); this.challengeExt(A, w, 5); w.deviceId = keep; }
+        vm.expectRevert(bytes("claim")); this.challengeExt(L, cL, 9);
+        _challenge(A, cA, 5);
         IPoRWClaimManager.Opening memory bad = FX.openingNoFraud(); bad.tileIdx = 5;
         vm.expectRevert(bytes("invalid opening"));
         cm.respondOpening(idA, bad);

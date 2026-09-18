@@ -341,3 +341,27 @@ the real connectome, so a second execution kind is implemented end to end
 - The interactive dispute's commitments (`actRoot[s]`, `execRoot`, `csrRoot`,
   `rowRoot`, `synapseRoot`) and the verifier-side protocol are implemented and tested
   off-chain; the on-chain contracts are the next step.
+
+
+## Standing gas of the aggregated claim path (2026-09)
+
+Eligibility in epoch `e` needs an on-chain claim for `e-1`, per instance, per MEP, per epoch, so the honest path's
+standing cost is `instances x brains x epochs`. Two changes take most of it away without touching the claim, its
+signature or the verdicts:
+
+- **A claim on-chain is one word.** `claimRecord[claimId] = keccak(partialsRoot, coverageBytes, deviceId)` with the
+  validity flag in bit 0; eligibility reads that word. The contents are emitted (`ClaimData`) instead of stored. A
+  challenger passes them back to `challengeOpening(instance, mepId, epoch, partialsRoot, coverageBytes, deviceId,
+  tile)`, which checks them against the commitment and only then writes them down for `respondOpening` — so the
+  storage a verdict needs is paid once, by the challenger, on the rare path, not by every claim. Data availability of
+  the contents is the event log, not the aggregator. `MEPRegistry.claimBinding` returns the two fields a claim is
+  signed over instead of copying the whole profile (with its dynamic `weightsDA`) out of storage.
+- **One root per epoch, not per MEP.** The leaf is `keccak(abi.encode(mepId, instance, partialsRoot, coverageBytes,
+  deviceId, keccak(signature)))` and `postEpochRoot(epoch, root, count)` is keyed by `(epoch, aggregator)`. The root is
+  as untrusted as before: a leaf for an unknown MEP, an unbonded instance or a bad signature cannot be materialized, and
+  a leaf presented under another MEP does not hash to the tree. JS: `aggregator.js` `EpochTree`.
+
+Measured (`test/MeshAggregated.t.sol`, execution gas): `materializeClaim` 208,999 -> **59,643**; `postEpochRoot`
+71,894 per MEP -> **51,215 per epoch**. For 200 brains with two hosts each and 144 epochs a day that is ~17.4 G gas a day
+-> ~3.4 G (materializations) and ~2.1 G -> ~7 M (roots). Still open: eligibility inherited from a base brain by its
+derived individuals, and materialization only when selected — both remove the per-brain factor altogether.
