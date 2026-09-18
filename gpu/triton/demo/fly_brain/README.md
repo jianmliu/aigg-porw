@@ -154,3 +154,24 @@ a `--min-syn 1` export so individuals can gain connections, and let `min_syn 5` 
 `make3 --base base.bin --parent-a a.delta --parent-b b.delta|base --seed N --name NAME --out c.delta [--granularity
 record|pre|post] [--mut-rate 0.125]` writes a **FLYDELTAv3** same-base cross (the child of two procedural individuals);
 `apply --parents a.delta b.delta [...]` supplies the ancestors by file (matched by keccak id).
+
+## The male base: `malecns_export.py`
+
+Exports the male CNS connectome (Janelia FlyEM MaleCNS v1.0, flat-connectome release: weights, body annotations,
+body neurotransmitters) in the same `FLYBRAINv2` layout, so the same node loads it and the same exec kind runs it.
+Neurons = annotation rows with a non-null `superclass` (166,700); synapses = weight rows with both ends in that set and
+`weight >= --min-syn`; sign = the pre neuron's transmitter (`consensus_nt`, else the cell type's prediction, else the
+neuron's own, else excitatory) with gaba, glutamate and histamine inhibitory; records sorted by `(post, pre)`. The
+manifest records the rules, the counts and the sha256 of the three source files.
+
+| export | records | bytes | note |
+|---|---|---|---|
+| `malecns-v1.0-min5` | 6,242,118 | 63.8 MB (15,566 tiles) | sha256 `c5619f70…52c9`; model_id `0x1ea92843…8a71`, synapseRoot `0x151f7065…196c`, mep_id (scheme `sketch-tile-keccak:v2`, int-lif) `0xa6d41fac…9b88` |
+| `malecns-v1.0-min1` | 25,582,938 | 257 MB | the base to sample individuals from (`FLYDELTAv2` with `min_syn 5`) |
+
+Checked: at `--min-syn 1` the neuron, edge and synapse totals (166,700 / 25,582,938 / 124,177,617) equal an independent
+import of the same release; the node loads the min5 payload in 0.8 s and runs 5,000 int-lif steps in 22 s (one thread).
+One caveat for anyone comparing the sexes: `aigg:exec:int-lif:v1` pins one weight unit (0.275 mV per synapse, calibrated
+on FlyWire counts), and this dataset reports more synapses per connection, so the male brain is markedly more excitable
+under the same exec kind (the same auditory drive recruits ~20k neurons here against ~600 in the female export). A
+per-dataset weight unit is a new exec kind, not an export option.
