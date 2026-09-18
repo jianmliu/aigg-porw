@@ -1,9 +1,10 @@
 // PoRW browser-node claim: EVM-packed encoding + secp256k1 signing (ecrecover-compatible).
 // The claim binds RESIDENCY -- the partials root over every resident tile -- to one model_id, a
-// challenge the instance cannot choose, and the node's device id. Nothing about execution is in
-// here: scheme sketch-tile-keccak:v2 dropped execDigest and stimulusSeed, because no verdict ever
+// challenge the instance cannot choose. Nothing about execution is in here: scheme sketch-tile-keccak:v2
+// dropped execDigest and stimulusSeed, because no verdict ever
 // read them (a claim dies only to the tile fraud proof, which reads partialsRoot and the model root).
-// Execution is attested per TASK instead, by TaskMarket's Result.
+// Execution is attested per TASK instead, by TaskMarket's Result. v3 dropped `deviceId`: it was self-declared and only
+// varied the sketch seed, which is now derived from the instance the claim resolves to (verify.js slotSeed).
 //
 // claimHash = keccak256(abi.encodePacked(
 //   bytes32 schemeDigest, bytes32 mepId, bytes32 modelId, bytes32 partialsRoot, uint64 coverageBytes,

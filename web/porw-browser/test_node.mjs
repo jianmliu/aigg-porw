@@ -18,7 +18,7 @@ const node = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "11
 const F = await node.loadModel("flywire-female", female, { maxSteps: 3 }), M = await node.loadModel("male-cns", male, { maxSteps: 2 });
 console.log(`female: ${F.nTiles} tiles mep ${V.hex(F.mep.mepId).slice(0, 14)}… | male: ${M.nTiles} tiles mep ${V.hex(M.mep.mepId).slice(0, 14)}…`);
 // the verifier derives both MEPs independently from the public model bytes alone: under
-// sketch-tile-keccak:v2 every field of mep_id is a function of those bytes and the exec kind
+// sketch-tile-keccak (since v2) every field of mep_id is a function of those bytes and the exec kind
 const mepF = makeMep({ name: "flywire-female", ...indepProfile(female) });
 const mepM = makeMep({ name: "male-cns", ...indepProfile(male) });
 check("female MEP id (node) == verifier's independent MEP id", V.eq(F.mep.mepId, mepF.mepId));

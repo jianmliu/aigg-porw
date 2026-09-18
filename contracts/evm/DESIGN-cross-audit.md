@@ -11,7 +11,7 @@ Greenfield for weights). Nothing here changes a PoRW scheme id.
 A browser instance has no TEE. Its execution proof cannot come from hardware, so it comes
 from three things the browser node already produces deterministically:
 
-1. **Residency** — a PoRW claim over the model (`sketch-tile-keccak:v2`), audited by
+1. **Residency** — a PoRW claim over the model (`sketch-tile-keccak:v3`), audited by
    sampled tile openings; the on-chain adjudicator is the existing
    `PorwVerifier.verifyTileFraudProofKeccak` (measured 1,106,534 gas).
 2. **Deterministic execution** — integer fixed-point SpMV (`aigg:exec:int-spmv-q16:v1`):
@@ -40,7 +40,7 @@ MEP, stake-gated (opening a thousand tabs is free; a bond is not).
 | task id | `keccak(abi.encode(Task, nonce32))` — the whole task, so a squatter cannot take the id with different parameters | `swarm.js` |
 | assignment | index sortition over stake-weighted eligible votes (§4) | `swarm.js` `assignSortition` |
 
-Scheme digest `keccak256("aigg:porw:sketch-tile-keccak:v2")` and exec kind
+Scheme digest `keccak256("aigg:porw:sketch-tile-keccak:v3")` and exec kind
 `keccak256("aigg:exec:int-spmv-q16:v1")` are pinned constants.
 
 One MEP per released brain (female FlyWire adult brain, male CNS, …): same scheme,
@@ -377,7 +377,12 @@ and disputes, so an instance that dropped the model inside its window times out 
 result paid. Two semantics changed with it and are deliberate: a claim for the current epoch counts (it is fresher than
 one for the previous epoch), and a fraud verdict ends the instance's standing for the whole window, not for one epoch.
 
-## Shape fixes before anything is deployed (2026-09)
+## Shape fixes before anything is deployed (2026-09) — scheme `sketch-tile-keccak:v3`
+
+Removing `deviceId` changes the Claim's EIP-712 type, the aggregated leaf and the seed of every sketch, so it carries a
+new scheme id. The digest is pinned on-chain in one place: `SCHEME_SKETCH_TILE_KECCAK_V3`, which `MEPRegistry.registerMEP`
+requires of every profile. `mep_id` hashes the scheme digest, so every MEP id moves with it; model ids, synapse roots and
+execution digests do not.
 
 - **No `deviceId`.** It was self-declared, its only live function was to vary the sketch seed, and it proved nothing a
   claim does not already fix: there is one claim per `(instance, MEP, epoch)`. The seed is now
