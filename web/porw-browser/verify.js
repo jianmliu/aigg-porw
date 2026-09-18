@@ -2,7 +2,7 @@
 // Never uses the wasm kernel: a second implementation the node's outputs are checked against.
 import { keccak_256 } from "@noble/hashes/sha3.js";
 
-export const SCHEME_ID = "aigg:porw:sketch-tile-keccak:v2";
+export const SCHEME_ID = "aigg:porw:sketch-tile-keccak:v3";
 export const TILE_BYTES = 4096, TILE_WORDS = 1024;
 const GOLDEN32 = 0x9e3779b9, M1 = 0x85ebca6b, M2 = 0xc2b2ae35;
 
@@ -68,7 +68,7 @@ export const rowActivation = (lastSum) => { const v = lastSum >> 16n; return Num
 export const record = (bytes) => { const dv = new DataView(bytes.buffer, bytes.byteOffset, 10); return { pre: dv.getUint32(0, true), post: dv.getUint32(4, true), w: dv.getUint16(8, true) }; };
 
 /** CSR commitments over a payload's synapse records, in pure JS -- the same tree the node builds in wasm.
- *  An auditor needs this to derive a mep_id from public bytes alone: scheme sketch-tile-keccak:v2 binds the
+ *  An auditor needs this to derive a mep_id from public bytes alone: scheme sketch-tile-keccak (since v2) binds the
  *  CSR structure into the id, so nobody can register a brain under a synapseRoot that does not match it.
  *  Records are 10 bytes (u32 pre, u32 post, u16 w), ordered by post neuron (stable); csrRoot is over
  *  `CSR_CHUNK`-record chunks in that order, rowRoot over rowStart[0..neurons]. */

@@ -13,7 +13,7 @@ contract MEPRegistry is IMEPRegistry {
     mapping(bytes32 => bool) public exists;
 
     function registerMEP(MEP calldata m) external returns (bytes32 id) {
-        require(m.schemeDigest == SCHEME_SKETCH_TILE_KECCAK_V2, "scheme");
+        require(m.schemeDigest == SCHEME_SKETCH_TILE_KECCAK_V3, "scheme");
         require(m.neurons > 0 && m.synapses > 0 && m.synapseRoot != bytes32(0), "profile");
         id = PorwMeshHash.mepId(m.schemeDigest, m.modelId, m.execKind, m.neurons, m.synapses, m.synapseRoot);
         require(!exists[id], "registered");

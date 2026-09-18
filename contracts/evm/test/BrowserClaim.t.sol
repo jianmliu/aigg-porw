@@ -12,7 +12,7 @@ import "../src/mesh/PorwEIP712.sol";
 contract BrowserClaimTest is Test {
     function test_browser_claim_hash_and_ecrecover() public {
         // scheme pin and execution kind
-        assertEq(BrowserClaimFixture.SCHEME_DIGEST, keccak256("aigg:porw:sketch-tile-keccak:v2"), "scheme digest");
+        assertEq(BrowserClaimFixture.SCHEME_DIGEST, keccak256("aigg:porw:sketch-tile-keccak:v3"), "scheme digest");
         assertEq(BrowserClaimFixture.EXEC_KIND, keccak256("aigg:exec:int-spmv-q16:v1"), "exec kind");
         // the MEP id pins the model and its structure -- and nothing about any particular run
         bytes32 mep = keccak256(abi.encodePacked(BrowserClaimFixture.SCHEME_DIGEST, BrowserClaimFixture.MODEL_ID, BrowserClaimFixture.EXEC_KIND, BrowserClaimFixture.NEURONS, BrowserClaimFixture.SYNAPSES, BrowserClaimFixture.SYNAPSE_ROOT));

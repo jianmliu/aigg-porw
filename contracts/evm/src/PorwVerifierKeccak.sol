@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import "./PorwVerifier.sol";
 
-/// @notice keccak scheme (aigg:porw:sketch-tile-keccak:v1) — counted Merkle verification and the tile
+/// @notice keccak scheme (aigg:porw:sketch-tile-keccak, currently v3) — counted Merkle verification and the tile
 ///         fraud proof used by the settlement contracts. Kept in a separate contract so the released,
 ///         benchmark-locked PorwVerifier bytecode is untouched. Leaf counts are pinned by the signed
 ///         coverage, so duplicate-last padding is checked, never trusted.

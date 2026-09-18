@@ -50,7 +50,7 @@ export function verifyOpening(o, claim, slotSeed, nTiles) {
 
 // Redundant re-execution of a TASK's inference with the verifier's own kernel + model copy.
 // `run` is the task's parameters plus the executor's claimed digest: { stimulusSeed, steps, execDigest }.
-// It is deliberately not a residency claim: under sketch-tile-keccak:v2 a claim attests residency only,
+// It is deliberately not a residency claim: under sketch-tile-keccak (since v2) a claim attests residency only,
 // and execution is attested per task by TaskMarket's Result.
 export function reexecute(kernel, payloadBytes, run) {
   const k = attachSpmv(kernel, kernel.exports);

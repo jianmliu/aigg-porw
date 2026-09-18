@@ -2,7 +2,7 @@
 // (e.g. the female and male fly brains, each its own MEP), answers epoch challenges per MEP with a
 // signed RESIDENCY claim, executes TASKS on request, and opens tiles.
 //
-// Those are two jobs, and scheme sketch-tile-keccak:v2 stops pretending they are one: `residency()`
+// Those are two jobs, and scheme sketch-tile-keccak (since v2) stops pretending they are one: `residency()`
 // sketches the resident tiles and signs the claim (no inference -- nothing ever adjudicated it), and
 // `execute()` runs the model for a task with the step count and commit stride the task specifies.
 import { TILE_BYTES, attachTrees, treeNodeAt, treeBuildParallel } from "./porw.js";

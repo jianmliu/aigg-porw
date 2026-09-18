@@ -1,6 +1,6 @@
 // What one hosted brain costs a tab, in bytes of wasm memory.
 //
-// Under scheme sketch-tile-keccak:v2 a residency claim is the sketch and its commitment, so CPU is no
+// Under scheme sketch-tile-keccak (since v2) a residency claim is the sketch and its commitment, so CPU is no
 // longer what limits how many brains a tab hosts. Memory is. Every allocation in `PorwNode.loadModel`
 // is sized by (tiles, neurons, synapses, maxSteps, exec) and never by the weight values, so this is a
 // closed form, not an estimate — `bench_memory.mjs` measures the real allocator against it and fails

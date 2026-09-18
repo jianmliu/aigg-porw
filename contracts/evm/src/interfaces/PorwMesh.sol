@@ -8,13 +8,16 @@ pragma solidity ^0.8.20;
 
 /// @dev CSR chunk size for synapse-record leaves (dispute openings)
 uint32 constant CSR_CHUNK = 64;
-/// @dev keccak256("aigg:porw:sketch-tile-keccak:v2")
+/// @dev keccak256("aigg:porw:sketch-tile-keccak:v3")
+/// @dev v3 vs v2: the Claim has no `deviceId`. It was self-declared and only varied the sketch seed; the seed is now
+///      `deriveSlotSeed(challenge, instance)`, a function of the instance the claim resolves to. That changes the Claim's
+///      EIP-712 type, the aggregated leaf and the seed of every sketch, so a v2 claim does not verify under v3 and vice versa.
 /// @dev v2 vs v1: a residency claim attests residency only. `execDigest` and `stimulusSeed` are gone from
 ///      the Claim (nothing ever adjudicated them -- the only verdict that can invalidate a claim is the tile
 ///      fraud proof, which reads partialsRoot and the model root), and `steps` / the commit stride moved off
 ///      the MEP onto the Task, where the dispute machinery is the only thing that reads them. The sketch and
 ///      tile math is unchanged: this is a change of what the mesh signs, not of how bytes are committed.
-bytes32 constant SCHEME_SKETCH_TILE_KECCAK_V2 = 0x743502825425e31852a0adb96c797d7ac839afdef315e8c24b68db6e58d4be2e;
+bytes32 constant SCHEME_SKETCH_TILE_KECCAK_V3 = 0x48bbcf993c40ccbab6c43697518f5ebe860e8ef282390f3519bfd5c212111726;
 
 library PorwMeshHash {
     /// @dev mep_id = keccak256(abi.encodePacked(schemeDigest, modelId, execKind, neurons, synapses, synapseRoot))

@@ -14,7 +14,7 @@ aigg-spec conformance vectors, and the claim is verified on-chain.
 | file | role |
 |---|---|
 | `sketch_wasm.c` | scheme-v2 tile sketch, WASM **SIMD128** + scalar fallback; deterministic test-payload filler; bump allocator with mark/release |
-| `commit_wasm.c` | **keccak256** (freestanding keccak-f[1600]); weights/partials leaves; Merkle root/proof; **cached trees** (O(log n) proofs); **block-parallel tree build**; slot-seed derivation — scheme `aigg:porw:sketch-tile-keccak:v2` |
+| `commit_wasm.c` | **keccak256** (freestanding keccak-f[1600]); weights/partials leaves; Merkle root/proof; **cached trees** (O(log n) proofs); **block-parallel tree build**; slot-seed derivation — scheme `aigg:porw:sketch-tile-keccak:v3` |
 | `spmv_wasm.c` | deterministic **integer fixed-point SpMV** (`aigg:exec:int-spmv-q16:v1`) over the packed synapse records in place; unsigned Q16, hard clamp |
 | `lif_wasm.c` / `lif.js` / `int_lif.py` | **`aigg:exec:int-lif:v1`**: deterministic integer leaky integrate-and-fire on the **real FlyWire brain** (payload v2 from `demo/fly_brain/flywire_export.py`; Shiu et al. 2024 parameters in fixed point); scatter, CSR-range and post-sorted row kernels, signed partial sums, 16-byte state leaves; JS transition rule + exec-kind digest; numpy reference |
 | `dispute_wasm.c` | execution-dispute commitments: per-step activation leaves, CSR build (counting sort by post), CSR chunk leaves (64 records/leaf), rowStart leaves, CSR-ordered partial sums; row-parallel inference (`…_csr_range`, and `…_rows_direct` when records are published post-sorted) |
@@ -224,7 +224,7 @@ openings in ~0.2 M execution gas. Not implemented yet: the registry around it, a
 521 MiB model, 139,255 neurons / 54.5M synapses, steps = 2, per-slot work including
 the dispute commitments:
 
-Under scheme `sketch-tile-keccak:v2` only the first two columns are a residency claim;
+Under scheme `sketch-tile-keccak` (since v2) only the first two columns are a residency claim;
 the other two are a task's work. The totals below are therefore a claim **plus** a task
 run, which is what this table measured before the two were separated.
 
