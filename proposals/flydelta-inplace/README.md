@@ -1,6 +1,11 @@
 # Proposal: in-place derivation for procedural brains, so a wrong `model_id` is provable
 
-Status: **proposal**, with the measurements it rests on. Nothing here is implemented. It has to be decided before the
+Status: decisions 1–4 are **implemented** in `web/porw-browser/delta.js` and `demo/fly_brain/flywire_delta.py` (layout byte,
+name rule, founders as zero-parent crosses, record-local rule `inheritRecord` / `recompute_record`); the on-chain verifier
+and the registration bond are not. Measured after implementing: an in-place individual and its compact twin give the same
+`execDigest` (zero weights are inert), at 2.3× the execution time; a founder on the ≥ 2 base with mean ratio 0.92 expresses
+2,689,164 records against the real fly's 2,700,513. One correction to decision 3: a zero-parent founder has the `v2`
+individual's *distribution*, not its draws (the cross uses its own seed domains). It has to be decided before the
 first derived individual is registered, because it fixes the payload layout and therefore every derived `model_id`.
 
 ## The problem
