@@ -4,15 +4,16 @@ let fails = 0; const check = (n, ok) => { console.log((ok ? "  ok   " : "  FAIL 
 const addr = (i) => keccak_256(new Uint8Array([i])).subarray(12);
 const inst = Array.from({ length: 50 }, (_, i) => ({ address: addr(i), weight: 1 + (i % 4), eligible: i % 7 !== 0 }));
 const beacon = keccak_256(new Uint8Array([9])), mep = keccak_256(new Uint8Array([1]));
-const t = taskId(mep, 1, new Uint8Array(32));
+const task = (seed) => ({ mepId: mep, stimulusSeed: seed, steps: 2, commitStride: 1, inputCommit: new Uint8Array(32), fee: 0n, deadline: 0, redundancy: 3 });
+const t = taskId(task(1), new Uint8Array(32));
 const a1 = assign(beacon, mep, t, inst, 3), a2 = assign(beacon, mep, t, inst, 3);
 check("assignment is deterministic (any node computes the same executors)", JSON.stringify(a1.executors.map((x) => [...x.address])) === JSON.stringify(a2.executors.map((x) => [...x.address])));
 check("r executors + backup queue covers all eligible instances exactly once", a1.executors.length === 3 && a1.executors.length + a1.backups.length === inst.filter((i) => i.eligible).length);
 check("ineligible instances (failed residency audit / unbonded) never assigned", [...a1.executors, ...a1.backups].every((i) => i.eligible && i.weight > 0));
-const t2 = taskId(mep, 2, new Uint8Array(32));
+const t2 = taskId(task(2), new Uint8Array(32));
 check("different task -> different executor set (load spreads)", JSON.stringify(assign(beacon, mep, t2, inst, 3).executors.map((x) => [...x.address])) !== JSON.stringify(a1.executors.map((x) => [...x.address])));
 // stake weighting: an instance with more votes is selected more often across many tasks
-const counts = new Map(); for (let n = 0; n < 2000; n++) { const tid = taskId(mep, n, new Uint8Array(32)); for (const e of assign(beacon, mep, tid, inst, 3).executors) counts.set(e.weight, (counts.get(e.weight) || 0) + 1); }
+const counts = new Map(); for (let n = 0; n < 2000; n++) { const tid = taskId(task(n), new Uint8Array(32)); for (const e of assign(beacon, mep, tid, inst, 3).executors) counts.set(e.weight, (counts.get(e.weight) || 0) + 1); }
 const perInstance = (w) => counts.get(w) / inst.filter((i) => i.eligible && i.weight === w).length;
 check(`stake-weighted: weight-4 instances chosen more than weight-1 (${perInstance(4).toFixed(0)} vs ${perInstance(1).toFixed(0)} per instance)`, perInstance(4) > perInstance(1));
 const aud = auditors(beacon, mep, keccak_256(new Uint8Array([5])), inst, 5, a1.executors[0].address);
@@ -23,7 +24,7 @@ const s = settle([{ address: addr(1), digest: d }, { address: addr(2), digest: d
 check("a dissenter triggers a fraud-proof round (majority digest + dissenter identified)", s.needsFraudProof && s.dissenters.length === 1 && s.voters.length === 2);
 const s1 = assignSortition(beacon, mep, t, inst, 3), s2 = assignSortition(beacon, mep, t, inst, 3);
 check("sortition (contract rule) is deterministic and picks r distinct eligible instances", s1.executors.length === 3 && new Set(s1.executors.map((x) => [...x.address].join())).size === 3 && JSON.stringify(s1.executors.map((x) => [...x.address])) === JSON.stringify(s2.executors.map((x) => [...x.address])) && s1.executors.every((i) => i.eligible));
-const c2 = new Map(); for (let n = 0; n < 2000; n++) for (const e of assignSortition(beacon, mep, taskId(mep, n, new Uint8Array(32)), inst, 3).executors) c2.set(e.weight, (c2.get(e.weight) || 0) + 1);
+const c2 = new Map(); for (let n = 0; n < 2000; n++) for (const e of assignSortition(beacon, mep, taskId(task(n), new Uint8Array(32)), inst, 3).executors) c2.set(e.weight, (c2.get(e.weight) || 0) + 1);
 const pi = (w) => c2.get(w) / inst.filter((i) => i.eligible && i.weight === w).length;
 check(`sortition is stake-weighted (${pi(4).toFixed(0)} vs ${pi(1).toFixed(0)} per instance)`, pi(4) > pi(1));
 console.log(fails ? `${fails} FAILURES` : "ALL PASS"); process.exit(fails ? 1 : 0);

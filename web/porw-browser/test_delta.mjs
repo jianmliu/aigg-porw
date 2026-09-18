@@ -41,9 +41,9 @@ check("rejects a duplicate op", throws(() => encodeDelta({ baseModelId: mid, neu
 // the node: loading (base, delta) yields the same MEP / model_id as loading the target payload
 const wasm = fs.readFileSync(new URL("./sketch.wasm", import.meta.url));
 const A = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "11".repeat(32) }), B = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "22".repeat(32) });
-const stA = await A.loadModel("synthetic-target", target, { steps: 20, exec: "lif", commitStride: 10 }); const stB = await B.loadDelta(base, delta, { steps: 20, exec: "lif", commitStride: 10 });
+const stA = await A.loadModel("synthetic-target", target, { maxSteps: 20, exec: "lif" }); const stB = await B.loadDelta(base, delta, { maxSteps: 20, exec: "lif" });
 check("node.loadDelta(base, delta): same model_id, mepId and synapseRoot as loading the target payload", V.eq(stA.modelId, stB.modelId) && V.eq(stA.mep.mepId, stB.mep.mepId) && V.eq(stA.csr.synapseRoot, stB.csr.synapseRoot) && stB.delta && V.eq(stB.delta.baseModelId, mid));
-const rA = await A.challenge(stA.mep.mepId, new Uint8Array(32), { stimulusSeed: 3 }), rB = await B.challenge(stB.mep.mepId, new Uint8Array(32), { stimulusSeed: 3 });
+const rA = await A.challenge(stA.mep.mepId, new Uint8Array(32), { steps: 20, commitStride: 10, stimulusSeed: 3 }), rB = await B.challenge(stB.mep.mepId, new Uint8Array(32), { steps: 20, commitStride: 10, stimulusSeed: 3 });
 check("and the same execution digest", V.eq(rA.result.execDigest, rB.result.execDigest));
 
 // ---- FLYDELTAv2: procedural individuals ----
@@ -65,7 +65,7 @@ check("and the same execution digest", V.eq(rA.result.execDigest, rB.result.exec
   check("explicit ops apply after sampling: delete + insert honoured, sorted output", !ro.some((r) => r.pre === del.pre && r.post === del.post) && ro.some((r) => r.pre === (del.pre + 1) % n && r.post === del.post && r.w === 99) && ro.every((r, i) => !i || (r.post - ro[i - 1].post) || (r.pre - ro[i - 1].pre) > 0));
   let absent = { pre: 0, post: 1 }; while (bm.has(key(absent))) absent.pre++; check("a v2 delete of a record the individual lacks is a no-op (lenient)", !throws(() => applyDelta(base, encodeDelta2({ baseModelId: mid, neurons: n, seed: 7n, name: "len", ops: [{ ...absent, w: 0 }] }))));
   check("v2 rejects a foreign base and a bad r table", throws(() => applyDelta(other, d2), /base model id mismatch/) && throws(() => encodeDelta2({ baseModelId: mid, neurons: n, seed: 1n, name: "x", rTable: [[2, 100]] }), /start at c=1/));
-  const C = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "33".repeat(32) }); const stC = await C.loadDelta(base, d2, { steps: 20, exec: "lif", commitStride: 10 }); const stD = await A.loadModel("synthetic-ind7", i7, { steps: 20, exec: "lif", commitStride: 10 });
+  const C = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "33".repeat(32) }); const stC = await C.loadDelta(base, d2, { maxSteps: 20, exec: "lif" }); const stD = await A.loadModel("synthetic-ind7", i7, { maxSteps: 20, exec: "lif" });
   check("node.loadDelta(base, v2 delta): model_id / mepId of the sampled individual, delta version recorded", V.eq(stC.modelId, stD.modelId) && V.eq(stC.mep.mepId, stD.mep.mepId) && stC.delta.version === 2 && stC.delta.seed === 7n);
 }
 
@@ -93,7 +93,7 @@ check("and the same execution digest", V.eq(rA.result.execDigest, rB.result.exec
   check("rejects a missing ancestor, a parent with explicit ops and a parent of another base", throws(() => applyDelta(base, g1, { resolve: () => null }), /not provided/)
     && throws(() => { const p = reg(encodeDelta2({ baseModelId: mid, neurons: n, seed: 9n, name: "ops", ops: [{ pre: 0, post: 1, w: 5 }] })); applyDelta(base, cross(p, f1, 107n), { resolve }); }, /no explicit ops/)
     && throws(() => { const p = reg(encodeDelta2({ baseModelId: modelIdOf(other), neurons: n, seed: 9n, name: "foreign" })); applyDelta(base, cross(p, f1, 108n), { resolve }); }, /base model id mismatch/));
-  const E = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "44".repeat(32) }); const stE = await E.loadDelta(base, c1, { resolve, steps: 20, exec: "lif", commitStride: 10 }); check("node.loadDelta(base, v3 delta, { resolve }): the child's model_id, parents recorded", V.eq(stE.modelId, modelIdOf(applyDelta(base, c1, { resolve }))) && stE.delta.version === 3 && V.eq(stE.delta.parents[0], deltaId(f1)));
+  const E = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "44".repeat(32) }); const stE = await E.loadDelta(base, c1, { resolve, maxSteps: 20, exec: "lif" }); check("node.loadDelta(base, v3 delta, { resolve }): the child's model_id, parents recorded", V.eq(stE.modelId, modelIdOf(applyDelta(base, c1, { resolve }))) && stE.delta.version === 3 && V.eq(stE.delta.parents[0], deltaId(f1)));
 }
 // the real brain, if given: apply(base, python-made v2 delta) must reproduce the python-applied payload byte for byte
 const [basePath2, deltaPath, appliedPath, ...ancestorPaths] = process.argv.slice(2);

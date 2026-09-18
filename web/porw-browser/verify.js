@@ -2,7 +2,7 @@
 // Never uses the wasm kernel: a second implementation the node's outputs are checked against.
 import { keccak_256 } from "@noble/hashes/sha3.js";
 
-export const SCHEME_ID = "aigg:porw:sketch-tile-keccak:v1";
+export const SCHEME_ID = "aigg:porw:sketch-tile-keccak:v2";
 export const TILE_BYTES = 4096, TILE_WORDS = 1024;
 const GOLDEN32 = 0x9e3779b9, M1 = 0x85ebca6b, M2 = 0xc2b2ae35;
 
@@ -61,3 +61,35 @@ export const synapseRootOf = (csrRoot, rowRoot) => keccak(cat(csrRoot, rowRoot))
 export const stimulusAct = (i, seed) => (fmix32((Math.imul(i, GOLDEN32) + seed) >>> 0) % 100 === 0 ? CLAMP_Q16 : 0);
 export const rowActivation = (lastSum) => { const v = lastSum >> 16n; return Number(v > BigInt(CLAMP_Q16) ? BigInt(CLAMP_Q16) : v); };
 export const record = (bytes) => { const dv = new DataView(bytes.buffer, bytes.byteOffset, 10); return { pre: dv.getUint32(0, true), post: dv.getUint32(4, true), w: dv.getUint16(8, true) }; };
+
+/** CSR commitments over a payload's synapse records, in pure JS -- the same tree the node builds in wasm.
+ *  An auditor needs this to derive a mep_id from public bytes alone: scheme sketch-tile-keccak:v2 binds the
+ *  CSR structure into the id, so nobody can register a brain under a synapseRoot that does not match it.
+ *  Records are 10 bytes (u32 pre, u32 post, u16 w), ordered by post neuron (stable); csrRoot is over
+ *  `CSR_CHUNK`-record chunks in that order, rowRoot over rowStart[0..neurons]. */
+export function csrCommitments(synBytes, synapses, neurons) {
+  const dv = new DataView(synBytes.buffer, synBytes.byteOffset, synapses * 10);
+  const post = new Uint32Array(synapses);
+  for (let i = 0; i < synapses; i++) post[i] = dv.getUint32(i * 10 + 4, true);
+  const order = Array.from({ length: synapses }, (_, i) => i).sort((a, b) => post[a] - post[b] || a - b);
+  const rowStart = new Uint32Array(neurons + 1);
+  for (let i = 0; i < synapses; i++) rowStart[post[i] + 1]++;
+  for (let i = 0; i < neurons; i++) rowStart[i + 1] += rowStart[i];
+  const nChunks = Math.ceil(synapses / CSR_CHUNK), csrLeaves = [];
+  for (let c = 0; c < nChunks; c++) {
+    const lo = c * CSR_CHUNK, hi = Math.min(lo + CSR_CHUNK, synapses), buf = new Uint8Array((hi - lo) * 10);
+    for (let k = lo; k < hi; k++) buf.set(synBytes.subarray(order[k] * 10, order[k] * 10 + 10), (k - lo) * 10);
+    csrLeaves.push(csrChunkLeaf(c, buf));
+  }
+  const rowLeaves = []; for (let i = 0; i <= neurons; i++) rowLeaves.push(rowStartLeaf(i, rowStart[i]));
+  const csrRoot = merkleRoot(csrLeaves), rowRoot = merkleRoot(rowLeaves);
+  return { csrRoot, rowRoot, synapseRoot: synapseRootOf(csrRoot, rowRoot), rowStart, order };
+}
+
+/** the full MEP-defining profile of a payload, derived from its bytes alone (no wasm kernel) */
+export function profileOf(payloadBytes, hdr) {
+  const n = Math.floor(payloadBytes.length / TILE_BYTES), lv = [];
+  for (let t = 0; t < n; t++) lv.push(weightsLeaf(t, payloadBytes.subarray(t * TILE_BYTES, (t + 1) * TILE_BYTES)));
+  const c = csrCommitments(payloadBytes.subarray(hdr.synOffset, hdr.synOffset + hdr.synapses * 10), hdr.synapses, hdr.neurons);
+  return { modelId: merkleRoot(lv), tiles: n, neurons: hdr.neurons, synapses: hdr.synapses, ...c };
+}

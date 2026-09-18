@@ -35,7 +35,7 @@ contract MeshTest is Test {
         inst.setClaimManager(address(cm)); inst.setSlasher(address(disp), true); market.setDisputes(address(disp));
 
         mepId = meps.registerMEP(IMEPRegistry.MEP({
-            modelId: FX.MODEL_ID, schemeDigest: FX.SCHEME_DIGEST, execKind: FX.EXEC_KIND, steps: FX.STEPS, clampQ16: FX.CLAMP_Q16,
+            modelId: FX.MODEL_ID, schemeDigest: FX.SCHEME_DIGEST, execKind: FX.EXEC_KIND,
             neurons: FX.NEURONS, synapses: FX.SYNAPSES, synapseRoot: FX.SYNAPSE_ROOT, weightsDA: bytes("greenfield://demo")
         }));
         assertEq(mepId, FX.MEP_ID, "mep id");
@@ -129,9 +129,9 @@ contract MeshTest is Test {
     function postAndSubmit(uint256 k) internal returns (bytes32 taskId) {
         submitAll();
         // epoch 2: eligibility uses the epoch-1 claims (A and B valid)
-        vm.roll(2 * FX.EPOCH_BLOCKS); vm.difficulty(7); cm.rollEpoch();
-        ITaskMarket.Task memory t = ITaskMarket.Task({ mepId: mepId, stimulusSeed: FX.STIMULUS_SEED, inputCommit: bytes32(0), fee: 1 ether, deadline: uint64(block.number + 50), redundancy: 2 });
-        taskId = market.postTask{value: 1 ether}(t, FX.nonces()[k]);
+        vm.roll(FX.TASK_EPOCH * FX.EPOCH_BLOCKS); vm.difficulty(FX.TASK_PREVRANDAO); cm.rollEpoch();
+        ITaskMarket.Task memory t = FX.task(); // the id binds every field, so the test posts exactly the task the fixture signed
+        taskId = market.postTask{value: FX.TASK_FEE}(t, FX.nonces()[k]);
         assertEq(taskId, FX.taskIds()[k], "task id");
         address[] memory ex = market.executors(taskId);
         assertEq(ex.length, 2, "two executors"); assertTrue((ex[0] == A && ex[1] == B) || (ex[0] == B && ex[1] == A), "sortition picks the eligible pair");

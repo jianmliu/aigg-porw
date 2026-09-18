@@ -31,7 +31,7 @@ contract PoRWClaimManager is IPoRWClaimManager {
 
     struct StoredClaim {
         address instance; bytes32 mepId; uint64 epoch; bytes32 partialsRoot; uint64 coverageBytes;
-        bytes32 challenge; bytes32 deviceId; bytes32 execDigest; uint32 stimulusSeed; bool valid; bool exists;
+        bytes32 challenge; bytes32 deviceId; bool valid; bool exists;
     }
     struct OpenChallenge { address challenger; uint256 deposit; uint64 deadline; bool open; }
 
@@ -48,7 +48,7 @@ contract PoRWClaimManager is IPoRWClaimManager {
     /// @notice the EIP-712 digest a wallet / session key signs for a claim (schemeDigest and modelId come from the MEP)
     function claimDigest(Claim calldata c) public view returns (bytes32) {
         IMEPRegistry.MEP memory m = meps.getMEP(c.mepId);
-        return PorwEIP712.digest(DOMAIN_SEPARATOR, PorwEIP712.claimStructHash(m.schemeDigest, c.mepId, m.modelId, c.partialsRoot, c.coverageBytes, c.challenge, c.deviceId, c.execDigest, c.stimulusSeed));
+        return PorwEIP712.digest(DOMAIN_SEPARATOR, PorwEIP712.claimStructHash(m.schemeDigest, c.mepId, m.modelId, c.partialsRoot, c.coverageBytes, c.challenge, c.deviceId));
     }
 
     function currentEpoch() public view returns (uint64) { return uint64(block.number) / EPOCH_BLOCKS; }
@@ -72,18 +72,18 @@ contract PoRWClaimManager is IPoRWClaimManager {
         require(c.challenge == epochChallenge(e, c.mepId), "challenge");
         IMEPRegistry.MEP memory m = meps.getMEP(c.mepId);
         require(c.coverageBytes > 0 && c.coverageBytes % 4096 == 0, "coverage");
-        bytes32 h = PorwEIP712.digest(DOMAIN_SEPARATOR, PorwEIP712.claimStructHash(m.schemeDigest, c.mepId, m.modelId, c.partialsRoot, c.coverageBytes, c.challenge, c.deviceId, c.execDigest, c.stimulusSeed));
+        bytes32 h = PorwEIP712.digest(DOMAIN_SEPARATOR, PorwEIP712.claimStructHash(m.schemeDigest, c.mepId, m.modelId, c.partialsRoot, c.coverageBytes, c.challenge, c.deviceId));
         address instance = instances.resolve(PorwEIP712.recover(h, signature)); // the wallet itself, or its delegated session key
         require(instance != address(0) && instances.isBondedFor(instance, c.mepId), "not bonded");
         claimId = claimIdOf(instance, c.mepId, e);
         require(!claims[claimId].exists, "claimed");
-        claims[claimId] = StoredClaim(instance, c.mepId, e, c.partialsRoot, c.coverageBytes, c.challenge, c.deviceId, c.execDigest, c.stimulusSeed, true, true);
+        claims[claimId] = StoredClaim(instance, c.mepId, e, c.partialsRoot, c.coverageBytes, c.challenge, c.deviceId, true, true);
         emit ClaimSubmitted(claimId, instance, c.mepId, e);
     }
 
     // ---- aggregated path ----
     function claimLeafHash(ClaimLeaf calldata l) public pure returns (bytes32) {
-        return keccak256(abi.encode(l.instance, l.partialsRoot, l.coverageBytes, l.deviceId, l.execDigest, l.stimulusSeed, keccak256(l.signature)));
+        return keccak256(abi.encode(l.instance, l.partialsRoot, l.coverageBytes, l.deviceId, keccak256(l.signature)));
     }
     function postEpochRoot(bytes32 mepId, uint64 epoch, bytes32 root, uint64 count) external {
         require(beacon[epoch] != bytes32(0), "no beacon");
@@ -100,12 +100,12 @@ contract PoRWClaimManager is IPoRWClaimManager {
         IMEPRegistry.MEP memory m = meps.getMEP(mepId);
         require(l.coverageBytes > 0 && l.coverageBytes % 4096 == 0, "coverage");
         bytes32 challenge = epochChallenge(epoch, mepId);
-        bytes32 h = PorwEIP712.digest(DOMAIN_SEPARATOR, PorwEIP712.claimStructHash(m.schemeDigest, mepId, m.modelId, l.partialsRoot, l.coverageBytes, challenge, l.deviceId, l.execDigest, l.stimulusSeed));
+        bytes32 h = PorwEIP712.digest(DOMAIN_SEPARATOR, PorwEIP712.claimStructHash(m.schemeDigest, mepId, m.modelId, l.partialsRoot, l.coverageBytes, challenge, l.deviceId));
         address instance = instances.resolve(PorwEIP712.recover(h, l.signature));
         require(instance != address(0) && instance == l.instance && instances.isBondedFor(instance, mepId), "not bonded");
         claimId = claimIdOf(instance, mepId, epoch);
         require(!claims[claimId].exists, "claimed");
-        claims[claimId] = StoredClaim(instance, mepId, epoch, l.partialsRoot, l.coverageBytes, challenge, l.deviceId, l.execDigest, l.stimulusSeed, true, true);
+        claims[claimId] = StoredClaim(instance, mepId, epoch, l.partialsRoot, l.coverageBytes, challenge, l.deviceId, true, true);
         emit ClaimSubmitted(claimId, instance, mepId, epoch);
     }
     function _verify(bytes32 root, bytes32 leaf, uint64 index, uint64 count, bytes32[] calldata proof) internal pure returns (bool) {

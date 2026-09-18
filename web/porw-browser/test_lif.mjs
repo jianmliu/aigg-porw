@@ -46,14 +46,15 @@ if (realPath && fs.existsSync(realPath) && refPath && fs.existsSync(refPath)) {
 } else console.log("  (skip) real export / numpy reference not given");
 
 // ---- 2. node commitments + claim + redundant re-execution on a synthetic v2 brain ----
-const payload = synthesizePayloadV2("lif-test", 5000, 150000); const steps = 100, seed = 3; const ch = new Uint8Array(32).fill(9);
+const payload = synthesizePayloadV2("lif-test", 5000, 150000); const steps = 100, stride = 10, seed = 3; const ch = new Uint8Array(32).fill(9);
 const stimulusIds = Uint32Array.from({ length: 400 }, (_, j) => j * 11); // an explicit task stimulus set (sorted ids)
-const mk = async (priv, lie) => { const nd = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + priv.repeat(32) }); if (lie) nd.execLie = lie; const st = await nd.loadModel("lif-test", payload, { steps }); const r = await nd.challenge(st.mep.mepId, ch, { stimulusSeed: seed, stimulusIds }); return { nd, st, r, mep: st.mep.mepId }; };
+const mk = async (priv, lie) => { const nd = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + priv.repeat(32) }); if (lie) nd.execLie = lie; const st = await nd.loadModel("lif-test", payload, { maxSteps: steps }); const r = await nd.challenge(st.mep.mepId, ch, { steps, commitStride: stride, stimulusSeed: seed, stimulusIds }); return { nd, st, r, mep: st.mep.mepId }; };
 const A = await mk("11"); const n = A.st.hdr.neurons;
-check("MEP pins the LIF exec kind (parameters folded in) and the commit stride", V.eq(A.st.mep.execKind, L.lifExecKind()) && A.st.mep.clampQ16 === A.st.mep.commitStride && V.eq(A.st.mep.mepId, makeMep({ name: "lif-test", modelId: A.st.modelId, steps, execKind: L.lifExecKind(), commitStride: 10 }).mepId));
+check("MEP pins the LIF exec kind and the model structure -- and nothing about a run", V.eq(A.st.mep.execKind, L.lifExecKind()) && !("steps" in A.st.mep) && !("clampQ16" in A.st.mep) && V.eq(A.st.mep.mepId, makeMep({ name: "lif-test", ...V.profileOf(payload, decodeHeader(payload)), execKind: L.lifExecKind() }).mepId));
 const vA = Vf.verifyClaim(A.r, A.st.mep, ch); check("LIF claim verifies (hash, signature)", vA.ok);
-const re = Vf.reexecuteLif(await loadKernelFromBytes(wasm), payload, A.r.claim, A.st.mep, { stimulusIds }); check("redundant re-execution (no commitments) reproduces the counts digest", re.matches);
-check("re-execution with the canonical (wrong) stimulus set does NOT match", !Vf.reexecuteLif(await loadKernelFromBytes(wasm), payload, A.r.claim, A.st.mep).matches);
+const run = { stimulusSeed: seed, steps, execDigest: A.r.result.execDigest };
+const re = Vf.reexecuteLif(await loadKernelFromBytes(wasm), payload, run, { stimulusIds }); check("redundant re-execution (no commitments) reproduces the counts digest", re.matches);
+check("re-execution with the canonical (wrong) stimulus set does NOT match", !Vf.reexecuteLif(await loadKernelFromBytes(wasm), payload, run).matches);
 let tot = 0; for (const x of re.counts) tot += x; check(`activity propagates on the synthetic brain: ${tot} spikes (${A.r.result.stimulated} stimulated)`, tot > A.r.result.stimulated * 2);
 // independent recompute of commitments with noble: state_0 root, a mid-run state root, execRoot
 { const s0 = await A.nd.lifStates(A.mep, 0); const leaves = []; for (let i = 0; i < n; i++) leaves.push(L.stateLeaf(i, L.decodeState(s0, i * 16)));
@@ -61,7 +62,7 @@ let tot = 0; for (const x of re.counts) tot += x; check(`activity propagates on 
   const idSet = new Set(stimulusIds); let stimOk = true; for (let i = 0; i < n; i++) { const s = L.decodeState(s0, i * 16); if ((s.flags & 1) !== (idSet.has(i) ? 1 : 0) || s.v || s.g || s.refr || s.count) stimOk = false; } check("state_0 matches the task's stimulus set", stimOk);
   // the verifier computes the same initStateRoot from the task input alone (the task's inputCommit)
   const l0 = []; for (let i = 0; i < n; i++) l0.push(L.stateLeaf(i, { v: 0, g: 0, refr: 0, flags: idSet.has(i) ? 1 : 0, count: 0 })); check("initStateRoot derivable by anyone from the stimulus id list", V.eq(V.merkleRoot(l0), A.r.result.initStateRoot));
-  const stride = A.st.mep.commitStride; check(`segment roots: ${A.r.result.actRoots.length} == ceil(${steps}/${stride}); mep field5 = stride`, A.r.result.actRoots.length === Math.ceil(steps / stride) && A.st.mep.clampQ16 === stride);
+  check(`segment roots: ${A.r.result.actRoots.length} == ceil(${steps}/${stride}) -- the stride is the task's, not the MEP's`, A.r.result.actRoots.length === Math.ceil(steps / stride));
   const sm = await A.nd.lifStates(A.mep, 3 * stride); const lv = []; for (let i = 0; i < n; i++) lv.push(L.stateLeaf(i, L.decodeState(sm, i * 16)));
   check(`state root at step ${3 * stride} (replayed from checkpoint) == committed segment root 2`, V.eq(V.merkleRoot(lv), A.r.result.actRoots[2]));
   const seg = await A.nd.lifSegmentRoots(A.mep, 1); check(`per-step roots inside segment 1 end at its committed root (${seg.roots.length} steps)`, V.eq(seg.roots[seg.roots.length - 1], A.r.result.actRoots[1]));
@@ -75,7 +76,7 @@ let tot = 0; for (const x of re.counts) tot += x; check(`activity propagates on 
 const B = await mk("22", { step: 23, neuron: 123, delta: 5000 }); // neuron 123 is not stimulated (123 % 11 != 0); step 23 is inside segment 2
 check("A and B disagree on execRoot", !V.eq(A.r.result.execRoot, B.r.result.execRoot));
 const segStar = D.firstDifferingStep(A.r.result.actRoots, B.r.result.actRoots) - 1; check(`first differing segment = 2 (got ${segStar})`, segStar === 2);
-const stride = A.st.mep.commitStride; const segA = await A.nd.lifSegmentRoots(A.mep, segStar), segB = await B.nd.lifSegmentRoots(B.mep, segStar);
+const segA = await A.nd.lifSegmentRoots(A.mep, segStar), segB = await B.nd.lifSegmentRoots(B.mep, segStar);
 const ref = D.refineSegment({ seg: segStar, stride, steps, prevAgreed: segStar ? A.r.result.actRoots[segStar - 1] : A.r.result.initStateRoot, segRootA: A.r.result.actRoots[segStar], segRootB: B.r.result.actRoots[segStar], rootsA: segA.roots, rootsB: segB.roots });
 const sStar = ref.step; check(`segment refinement: first differing step = 23 (got ${sStar}), previous-step root agreed`, sStar === 23 && ref.loser === null && V.eq(ref.prevRoot, segA.roots[1]));
 { const forged = segB.roots.slice(); forged[forged.length - 1] = segA.roots[segA.roots.length - 1]; // B tries to pass off A's chain end: not bound to B's committed root

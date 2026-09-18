@@ -29,7 +29,7 @@ contract MeshAggregatedTest is Test {
         deployCodeTo("TaskMarket.sol:TaskMarket", abi.encode(meps, inst, cm, uint64(50)), FX.MARKET); market = TaskMarket(payable(FX.MARKET));
         disp = new ExecutionDisputes(meps, inst, market, ROUND, SLASH);
         inst.setClaimManager(address(cm)); inst.setSlasher(address(disp), true); market.setDisputes(address(disp));
-        mepId = meps.registerMEP(IMEPRegistry.MEP({ modelId: FX.MODEL_ID, schemeDigest: FX.SCHEME_DIGEST, execKind: FX.EXEC_KIND, steps: FX.STEPS, clampQ16: FX.CLAMP_Q16, neurons: FX.NEURONS, synapses: FX.SYNAPSES, synapseRoot: FX.SYNAPSE_ROOT, weightsDA: bytes("gnfd://aigg-brains/demo") }));
+        mepId = meps.registerMEP(IMEPRegistry.MEP({ modelId: FX.MODEL_ID, schemeDigest: FX.SCHEME_DIGEST, execKind: FX.EXEC_KIND, neurons: FX.NEURONS, synapses: FX.SYNAPSES, synapseRoot: FX.SYNAPSE_ROOT, weightsDA: bytes("gnfd://aigg-brains/demo") }));
         bytes32[] memory ids = new bytes32[](1); ids[0] = mepId;
         for (uint256 i = 0; i < 3; i++) { address who = i == 0 ? A : i == 1 ? B : L; vm.deal(who, 10 ether); vm.prank(who); inst.bond{value: 2 ether}(ids); }
         { (address ia, address sa, uint64 ea, bytes memory ga) = FX.delegationA(); inst.delegateBySig(ia, sa, ea, ga); }
@@ -50,9 +50,9 @@ contract MeshAggregatedTest is Test {
         (uint64 ib, IPoRWClaimManager.ClaimLeaf memory lb, bytes32[] memory pb) = FX.aggLeafB(); cm.materializeClaim(mepId, 1, AGG, ib, lb, pb);
         emit log_named_uint("gas postEpochRoot", gRoot); emit log_named_uint("gas materializeClaim", gMat);
         // epoch 2: A and B are eligible through their materialized claims; a task runs as in Mesh.t.sol
-        vm.roll(2 * FX.EPOCH_BLOCKS); vm.difficulty(7); cm.rollEpoch();
+        vm.roll(FX.TASK_EPOCH * FX.EPOCH_BLOCKS); vm.difficulty(FX.TASK_PREVRANDAO); cm.rollEpoch();
         assertTrue(inst.isEligible(A, mepId, 2) && inst.isEligible(B, mepId, 2) && !inst.isEligible(L, mepId, 2), "L never materialized");
-        ITaskMarket.Task memory t = ITaskMarket.Task({ mepId: mepId, stimulusSeed: FX.STIMULUS_SEED, inputCommit: bytes32(0), fee: 1 ether, deadline: uint64(block.number + 50), redundancy: 2 });
+        ITaskMarket.Task memory t = FX.task();
         bytes32 taskId = market.postTask{value: 1 ether}(t, FX.nonces()[0]);
         address[] memory ex = market.executors(taskId); assertEq(ex.length, 2);
         (ITaskMarket.Result memory ra, bytes memory sa,) = FX.resultA0(); market.submitResult(taskId, ra, sa);

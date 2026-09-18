@@ -1,10 +1,13 @@
 // PoRW browser-node claim: EVM-packed encoding + secp256k1 signing (ecrecover-compatible).
-// The claim binds residency (partials root over the model) and execution (deterministic
-// inference digest) to one model_id, a fresh challenge, and the node's device id.
+// The claim binds RESIDENCY -- the partials root over every resident tile -- to one model_id, a
+// challenge the instance cannot choose, and the node's device id. Nothing about execution is in
+// here: scheme sketch-tile-keccak:v2 dropped execDigest and stimulusSeed, because no verdict ever
+// read them (a claim dies only to the tile fraud proof, which reads partialsRoot and the model root).
+// Execution is attested per TASK instead, by TaskMarket's Result.
 //
 // claimHash = keccak256(abi.encodePacked(
 //   bytes32 schemeDigest, bytes32 mepId, bytes32 modelId, bytes32 partialsRoot, uint64 coverageBytes,
-//   bytes32 challenge, bytes32 deviceId, bytes32 execDigest, uint32 stimulusSeed))
+//   bytes32 challenge, bytes32 deviceId))
 // Signed raw (no EIP-191) in this PoC; a wallet deployment signs the same struct via EIP-712.
 import * as secp from "@noble/secp256k1";
 import { keccak_256 } from "@noble/hashes/sha3.js";
@@ -14,11 +17,10 @@ secp.hashes.sha256 = sha256;
 secp.hashes.hmacSha256 = (key, msg) => hmac(sha256, key, msg);
 
 const be64 = (n) => { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(n)); return b; };
-const be32 = (n) => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0); return b; };
 const cat = (...p) => { const o = new Uint8Array(p.reduce((s, x) => s + x.length, 0)); let i = 0; for (const x of p) { o.set(x, i); i += x.length; } return o; };
 
 export function encodeClaim(c) {
-  return cat(c.schemeDigest, c.mepId, c.modelId, c.partialsRoot, be64(c.coverageBytes), c.challenge, c.deviceId, c.execDigest, be32(c.stimulusSeed));
+  return cat(c.schemeDigest, c.mepId, c.modelId, c.partialsRoot, be64(c.coverageBytes), c.challenge, c.deviceId);
 }
 export const claimHash = (c) => keccak_256(encodeClaim(c));
 

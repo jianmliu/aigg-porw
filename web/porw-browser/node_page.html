@@ -37,22 +37,22 @@ try {
     window.__session = session; log(`wallet ${walletAddr} delegated session key ${hex(session.address)} (expiry block ${delegation.expiry})`);
   }
   const node = new PorwNode(kernel, { privHex: window.__session ? "0x" + Array.from(window.__session.priv, (b) => b.toString(16).padStart(2, "0")).join("") : "0x" + "33".repeat(32), pool, domains, delegation });
-  const st = await node.loadModel(q.get("name") || "flywire-female", payload, { steps }); // exec kind follows the payload version (v2 -> int-lif)
+  const st = await node.loadModel(q.get("name") || "flywire-female", payload, { maxSteps: steps }); // exec kind follows the payload version (v2 -> int-lif)
   log(`payload ${payload.length} B fetched in ${fetchMs.toFixed(0)} ms; ${st.nTiles} tiles; weights leaves + model id in ${st.leavesMs.toFixed(0)} ms`);
   // optional stage-1 relay transport: ?relays=ws://a,ws://b — announce the claim and serve audits/tasks from the tab
   const relays = (q.get("relays") || "").split(",").filter(Boolean); let svc = null, rc = null;
   if (relays.length) { rc = new RelayClient(relays, node.key); const nOpen = await rc.connect(); svc = new NodeService(node, rc); svc.serve(st.mep.mepId); log(`relay: connected to ${nOpen}/${relays.length}`); }
   window.porwNode = {
-    announce: async (chHex, seed) => { const { r, env } = await svc.announce(st.mep.mepId, Uint8Array.from(chHex.match(/../g).map((h) => parseInt(h, 16))), { stimulusSeed: seed }); return { claimHash: hex(r.claimHash), envId: env.sig.slice(0, 18), served: svc.served, relayStats: { received: rc.received, duplicates: rc.duplicates, rejected: rc.rejected } }; },
+    announce: async (chHex) => { const { r, env } = await svc.announce(st.mep.mepId, Uint8Array.from(chHex.match(/../g).map((h) => parseInt(h, 16)))); return { claimHash: hex(r.claimHash), envId: env.sig.slice(0, 18), served: svc.served, relayStats: { received: rc.received, duplicates: rc.duplicates, rejected: rc.rejected } }; },
     served: () => (svc ? { ...svc.served, address: rc.address } : null),
     wallet: () => ({ wallet: walletAddr, session: hex(node.key.address), delegation }),
     info: () => ({ nTiles: st.nTiles, neurons: st.hdr.neurons, synapses: st.hdr.synapses, modelId: hex(st.modelId), mepId: hex(st.mep.mepId),
                    steps, exec: st.exec, fetchMs, leavesMs: st.leavesMs, backend: node.k.backend, hc: navigator.hardwareConcurrency, workers, iso: crossOriginIsolated, sorted: st.csr.sorted }),
-    challenge: async (chHex, seed) => { const r = await node.challenge(st.mep.mepId, Uint8Array.from(chHex.match(/../g).map((h) => parseInt(h, 16))), { stimulusSeed: seed });
+    challenge: async (chHex, seed) => { const r = await node.challenge(st.mep.mepId, Uint8Array.from(chHex.match(/../g).map((h) => parseInt(h, 16))), { steps, commitStride: st.exec === "lif" ? Math.min(10, steps) : 1, stimulusSeed: seed });
       const c = r.claim; return { claim: { schemeDigest: hex(c.schemeDigest), mepId: hex(c.mepId), modelId: hex(c.modelId), partialsRoot: hex(c.partialsRoot),
-        coverageBytes: c.coverageBytes, challenge: hex(c.challenge), deviceId: hex(c.deviceId), execDigest: hex(c.execDigest), stimulusSeed: c.stimulusSeed },
+        coverageBytes: c.coverageBytes, challenge: hex(c.challenge), deviceId: hex(c.deviceId) },
         claimHash: hex(r.claimHash), digest: hex(r.digest), signature: hex(r.signature), address: hex(r.address), delegation: r.delegation, timings: r.timings,
-        result: { execRoot: hex(r.result.execRoot), initStateRoot: r.result.initStateRoot ? hex(r.result.initStateRoot) : null, stimulated: r.result.stimulated } }; },
+        result: { execDigest: hex(r.result.execDigest), execRoot: hex(r.result.execRoot), initStateRoot: r.result.initStateRoot ? hex(r.result.initStateRoot) : null, stimulated: r.result.stimulated } }; },
     open: (t) => { const o = node.open(st.mep.mepId, t); return { tileIdx: o.tileIdx, position: o.position, tile: hex(o.tile), sketch: o.sketch,
       partialsProof: o.partialsProof.map(hex), weightsProof: o.weightsProof.map(hex) }; },
   };

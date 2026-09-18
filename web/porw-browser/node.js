@@ -1,6 +1,10 @@
 // PorwNode: the browser/Node-side prover. Holds one or more models resident in wasm memory
-// (e.g. the female and male fly brains, each its own MEP), answers challenges per MEP with a
-// signed claim (residency + deterministic execution), and opens tiles.
+// (e.g. the female and male fly brains, each its own MEP), answers epoch challenges per MEP with a
+// signed RESIDENCY claim, executes TASKS on request, and opens tiles.
+//
+// Those are two jobs, and scheme sketch-tile-keccak:v2 stops pretending they are one: `residency()`
+// sketches the resident tiles and signs the claim (no inference -- nothing ever adjudicated it), and
+// `execute()` runs the model for a task with the step count and commit stride the task specifies.
 import { TILE_BYTES, attachTrees, treeNodeAt, treeBuildParallel } from "./porw.js";
 import { applyDelta, decodeDelta, decodeDelta2, decodeDelta3, isDelta2, isDelta3 } from "./delta.js";
 import { decodeHeader, attachSpmv } from "./model.js";
@@ -26,7 +30,9 @@ export class PorwNode {
     this.lies = new Map();   // test hook: `${mepIdHex}:${tileIdx}` -> corrupted sketch
   }
   /** Load a released fly-brain payload and register it under a MEP. */
-  async loadModel(name, payloadBytes, { steps = 2, exec = null, commitStride = 10 } = {}) {
+  /** `maxSteps`: the largest task this slot's per-step buffers are sized for. It is a local capacity, not
+   *  part of the MEP -- the step count of an actual run comes from the task. */
+  async loadModel(name, payloadBytes, { maxSteps = 2, exec = null } = {}) {
     const k = this.k, t0 = performance.now();
     const bufPtr = k.put(payloadBytes);
     const nTiles = Math.floor(payloadBytes.length / TILE_BYTES);
@@ -38,7 +44,6 @@ export class PorwNode {
     const weightsTree = await this.buildTree(wLeavesPtr, nTiles, k.alloc(nodes * 32));
     const modelId = weightsTree.root;
     exec = exec || (hdr.version === 2 ? "lif" : "spmv"); if (exec === "lif" && hdr.version !== 2) throw new Error("int-lif needs a v2 payload");
-    const mep = makeMep({ name, modelId, steps, execKind: exec === "lif" ? lifExecKind() : undefined, commitStride });
     // fixed per-slot regions, reused every challenge (no allocation growth)
     const csr = { rowStartPtr: k.alloc((hdr.neurons + 1) * 4), permPtr: k.alloc(hdr.synapses * 4) };
     { const cur = k.mark(); const cursor = k.alloc(hdr.neurons * 4); const rc = e.porw_csr_build(bufPtr + hdr.synOffset, hdr.synapses >>> 0, hdr.neurons >>> 0, csr.rowStartPtr, csr.permPtr, cursor); k.release(cur); if (rc !== 0) throw new Error("csr build rc=" + rc); }
@@ -54,26 +59,33 @@ export class PorwNode {
     csr.csrTree = await this.buildTree(csrLeaves, csr.nChunks, k.alloc(k.treeNodes(csr.nChunks) * 32));
     csr.rowTree = await this.buildTree(rowLeaves, n + 1, k.alloc(k.treeNodes(n + 1) * 32));
     csr.synapseRoot = k.keccak256(new Uint8Array([...csr.csrTree.root, ...csr.rowTree.root]));
+    // the MEP is derivable only now: mep_id binds the CSR structure as well as the weights
+    const mep = makeMep({ name, modelId, execKind: exec === "lif" ? lifExecKind() : undefined, neurons: hdr.neurons, synapses: hdr.synapses, synapseRoot: csr.synapseRoot });
     // per-step activation arrays + leaves + trees (act_0 = stimulus, act_1..steps)
     const actN = k.treeNodes(n);
-    const acts = []; if (exec === "spmv") for (let sIdx = 0; sIdx <= steps; sIdx++) acts.push({ ptr: k.alloc(n * 4), leavesPtr: sIdx ? k.alloc(n * 32) : 0, treePtr: sIdx ? k.alloc(actN * 32) : 0, tree: null });
+    const acts = []; if (exec === "spmv") for (let sIdx = 0; sIdx <= maxSteps; sIdx++) acts.push({ ptr: k.alloc(n * 4), leavesPtr: sIdx ? k.alloc(n * 32) : 0, treePtr: sIdx ? k.alloc(actN * 32) : 0, tree: null });
     // int-lif: ping-pong state buffers + checkpoints every LIF_CHECKPOINT steps (openings replay from the nearest one);
     // one leaves/tree region reused per step (only the roots are kept), a small materialized-step cache for disputes
     const lif = exec === "lif" ? { ping: k.alloc(n * LIF_STATE), pong: k.alloc(n * LIF_STATE), leavesPtr: k.alloc(n * 32), treePtr: k.alloc(actN * 32), acc: k.alloc(n * 8),
       checkpoints: new Map(), cache: new Map(), counts: k.alloc(n * 4) } : null;
-    if (lif) for (let sIdx = 0; sIdx <= steps; sIdx += LIF_CHECKPOINT) lif.checkpoints.set(sIdx, k.alloc(n * LIF_STATE));
+    if (lif) for (let sIdx = 0; sIdx <= maxSteps; sIdx += LIF_CHECKPOINT) lif.checkpoints.set(sIdx, k.alloc(n * LIF_STATE));
     const slot = { sketchesPtr: k.alloc(nTiles * 4), pLeavesPtr: k.alloc(nTiles * 32), pTreePtr: k.alloc(nodes * 32), acts, lif };
-    const st = { mep, exec, bufPtr, nTiles, hdr, weightsTree, modelId, slot, csr, steps, leavesMs: performance.now() - t0 };
+    const st = { mep, exec, bufPtr, nTiles, hdr, weightsTree, modelId, slot, csr, maxSteps, steps: 0, commitStride: 1, leavesMs: performance.now() - t0 };
     this.models.set(hex(mep.mepId), st);
     return st;
   }
-  /** Load a FLYDELTAv1 delta on top of its base payload: the applied bytes are the model (same model_id / MEP as
-   *  publishing them directly); `st.delta` records the binding. `baseModelId` skips recomputing the base's id. */
+  /** Load a FLYDELTA delta on top of its base payload: the applied bytes are the model (same model_id / MEP as
+   *  publishing them directly); `st.delta` records the binding. `baseModelId` skips recomputing the base's id.
+   *  `opts` reaches loadModel, so a caller sizes this slot with `maxSteps` the same way. */
   async loadDelta(baseBytes, deltaBytes, { baseModelId = null, resolve = null, ...opts } = {}) {
     const d = isDelta3(deltaBytes) ? decodeDelta3(deltaBytes) : isDelta2(deltaBytes) ? decodeDelta2(deltaBytes) : decodeDelta(deltaBytes); const applied = applyDelta(baseBytes, deltaBytes, { baseModelId, resolve }); // resolve(idHex): ancestors of a v3 cross
     const st = await this.loadModel(d.name, applied, opts); st.delta = { version: isDelta3(deltaBytes) ? 3 : isDelta2(deltaBytes) ? 2 : 1, parents: d.parentA ? [d.parentA, d.parentB] : null, baseModelId: d.baseModelId, baseDA: d.baseDA, ops: d.ops.length, seed: d.seed ?? null, bytes: deltaBytes.length }; return st;
   }
-  async challenge(mepId, challenge32, { stimulusSeed = 1, stimulusIds = null } = {}) {
+  /** A residency claim: sketch every resident tile under a challenge the instance cannot choose, commit the
+   *  sketches, sign. That is all of it. No inference happens here, because no verdict ever read one: a claim
+   *  is invalidated only by the tile fraud proof, which adjudicates a challenged tile against `partialsRoot`
+   *  and the model root. Execution belongs to `execute()` and is attested per task. */
+  async residency(mepId, challenge32) {
     const st = this.models.get(hex(mepId)); if (!st) throw new Error("unknown MEP");
     const k = this.k, n = st.nTiles, t = {};
     let t0 = performance.now();
@@ -88,36 +100,58 @@ export class PorwNode {
     else e.porw_partials_leaves(0, sl.sketchesPtr, n >>> 0, 0, sl.pLeavesPtr);
     st.partialsTree = await this.buildTree(sl.pLeavesPtr, n, sl.pTreePtr);
     st.partialsRoot = st.partialsTree.root;
-    t.commitMs = performance.now() - t0; t0 = performance.now();
+    t.commitMs = performance.now() - t0;
+    const claim = { schemeDigest: st.mep.schemeDigest, mepId: st.mep.mepId, modelId: st.modelId, partialsRoot: st.partialsRoot,
+      coverageBytes: n * TILE_BYTES, challenge: challenge32, deviceId: this.deviceId };
+    const h = claimHash(claim); const digest = this.domains?.claimManager ? claimDigest(this.domains.claimManager, claim) : h; // EIP-712 when a domain is configured
+    return { claim, claimHash: h, digest, signature: signHash(digest, this.key.priv), address: this.key.address, delegation: this.delegation, timings: t };
+  }
+
+  /** Execute this model for a task. `steps` and `commitStride` come from the Task, not from the MEP.
+   *  `commit`: also build the per-step (spmv) or per-segment (int-lif) state commitments an execution
+   *  DISPUTE needs -- on the real brain that is the majority of the work, and it is only ever read when
+   *  two executors of the same task disagree, so a caller that just wants the answer can skip it. */
+  async execute(mepId, { steps = 1, commitStride = 1, stimulusSeed = 1, stimulusIds = null, commit = true } = {}) {
+    const st = this.models.get(hex(mepId)); if (!st) throw new Error("unknown MEP");
+    if (!(steps >= 1 && steps <= st.maxSteps)) throw new Error(`steps ${steps} exceeds this slot's capacity (${st.maxSteps})`);
+    if (!(commitStride >= 1 && commitStride <= steps)) throw new Error("commitStride must be in 1..steps");
+    st.steps = steps; st.commitStride = commitStride;
+    const k = this.k, sl = st.slot, t = {}; let t0 = performance.now();
     if (st.exec === "lif") {
       // canonical stimulus set from the seed (or an explicit task set); commitments are folded into the run
-      const r = await this.runLif(st, stimulusSeed, stimulusIds);
+      const r = await this.runLif(st, stimulusSeed, stimulusIds, commit);
       st.execDigest = r.execDigest; st.actRoots = r.stateRoots; st.execRoot = r.execRoot; st.initStateRoot = r.initStateRoot; st.stimulated = r.stimulated;
       t.inferMs = r.inferMs; t.disputeCommitMs = r.commitMs;
     } else {
-    e.porw_spmv_stimulus(sl.acts[0].ptr, st.hdr.neurons >>> 0, stimulusSeed >>> 0);
-    await this.runInference(st);
-    const last = sl.acts[st.steps].ptr, a = k.u32(last, st.hdr.neurons);
-    st.execDigest = keccak_256(new Uint8Array(a.buffer, a.byteOffset, a.byteLength));
-    t.inferMs = performance.now() - t0; t0 = performance.now();
-    // dispute commitments: per-step activation roots, execRoot = merkle(actRoots)
-    st.actRoots = [];
-    for (let sIdx = 1; sIdx <= st.steps; sIdx++) {
-      const A = sl.acts[sIdx], n = st.hdr.neurons;
-      if (this.pool) await this.pool.map("porw_act_leaves", n, (f, c) => [A.ptr + f * 4, c, f, A.leavesPtr + f * 32]);
-      else e.porw_act_leaves(A.ptr, n >>> 0, 0, A.leavesPtr);
-      A.tree = await this.buildTree(A.leavesPtr, n, A.treePtr); st.actRoots.push(A.tree.root);
+      const e = k.exports;
+      e.porw_spmv_stimulus(sl.acts[0].ptr, st.hdr.neurons >>> 0, stimulusSeed >>> 0);
+      await this.runInference(st);
+      const last = sl.acts[st.steps].ptr, a = k.u32(last, st.hdr.neurons);
+      st.execDigest = keccak_256(new Uint8Array(a.buffer, a.byteOffset, a.byteLength));
+      t.inferMs = performance.now() - t0; t0 = performance.now();
+      // dispute commitments: per-step activation roots, execRoot = merkle(actRoots)
+      st.actRoots = [];
+      if (commit) for (let sIdx = 1; sIdx <= st.steps; sIdx++) {
+        const A = sl.acts[sIdx], nn = st.hdr.neurons;
+        if (this.pool) await this.pool.map("porw_act_leaves", nn, (f, c) => [A.ptr + f * 4, c, f, A.leavesPtr + f * 32]);
+        else e.porw_act_leaves(A.ptr, nn >>> 0, 0, A.leavesPtr);
+        A.tree = await this.buildTree(A.leavesPtr, nn, A.treePtr); st.actRoots.push(A.tree.root);
+      }
+      st.execRoot = commit ? k.merkleRoot(new Uint8Array(st.actRoots.flatMap((r) => [...r]))) : null;
+      t.disputeCommitMs = performance.now() - t0;
     }
-    st.execRoot = k.merkleRoot(new Uint8Array(st.actRoots.flatMap((r) => [...r])));
-    t.disputeCommitMs = performance.now() - t0;
-    }
-    const claim = { schemeDigest: st.mep.schemeDigest, mepId: st.mep.mepId, modelId: st.modelId, partialsRoot: st.partialsRoot,
-      coverageBytes: n * TILE_BYTES, challenge: challenge32, deviceId: this.deviceId, execDigest: st.execDigest, stimulusSeed };
-    const h = claimHash(claim); const digest = this.domains?.claimManager ? claimDigest(this.domains.claimManager, claim) : h; // EIP-712 when a domain is configured
-    return { claim, claimHash: h, digest, signature: signHash(digest, this.key.priv), address: this.key.address, delegation: this.delegation, timings: t,
+    return { steps, commitStride, timings: t,
       result: { execDigest: st.execDigest, execRoot: st.execRoot, actRoots: st.actRoots, csrRoot: st.csr.csrTree.root, rowRoot: st.csr.rowTree.root, synapseRoot: st.csr.synapseRoot,
                 initStateRoot: st.initStateRoot || null, stimulated: st.stimulated ?? null } };
   }
+
+  /** residency + execution in one call, for callers (tests, benches) that want both under one challenge */
+  async challenge(mepId, challenge32, { steps = 1, commitStride = 1, stimulusSeed = 1, stimulusIds = null, commit = true } = {}) {
+    const R = await this.residency(mepId, challenge32);
+    const X = await this.execute(mepId, { steps, commitStride, stimulusSeed, stimulusIds, commit });
+    return { ...R, result: X.result, timings: { ...R.timings, ...X.timings } };
+  }
+
   /** steps of deterministic inference in place on actPtr; parallel CSR rows with a pool, scatter otherwise (bit-identical) */
   async runInference(st) {
     const k = this.k, e = k.exports, n = st.hdr.neurons, syn = st.bufPtr + st.hdr.synOffset, acts = st.slot.acts;
@@ -182,22 +216,23 @@ export class PorwNode {
     return this.buildTree(L.leavesPtr, n, L.treePtr);
   }
   /** full run with per-step state commitments; keeps roots + checkpoints, returns the result artifacts */
-  async runLif(st, seed, ids = null) {
+  async runLif(st, seed, ids = null, commit = true) {
     const k = this.k, e = k.exports, n = st.hdr.neurons, L = st.slot.lif; let t0 = performance.now(), inferMs = 0, commitMs = 0;
     L.seed = seed; L.ids = ids; L.cache.clear();
     const stimulated = this.lifState0(st, L.ping, seed, ids);
     k.u8(L.checkpoints.get(0), n * LIF_STATE).set(k.u8(L.ping, n * LIF_STATE));
-    const initStateRoot = (await this.lifCommit(st, L.ping)).root; commitMs += performance.now() - t0;
-    const roots = [], stride = st.mep.commitStride; let cur = L.ping, nxt = L.pong;
+    const initStateRoot = commit ? (await this.lifCommit(st, L.ping)).root : null; commitMs += performance.now() - t0;
+    const roots = [], stride = st.commitStride; let cur = L.ping, nxt = L.pong;
     for (let s = 1; s <= st.steps; s++) {
       t0 = performance.now(); await this.lifStep(st, cur, nxt, s, seed); inferMs += performance.now() - t0;
-      if (s % stride === 0 || s === st.steps) { t0 = performance.now(); roots.push((await this.lifCommit(st, nxt)).root); commitMs += performance.now() - t0; } // segment root
+      if (commit && (s % stride === 0 || s === st.steps)) { t0 = performance.now(); roots.push((await this.lifCommit(st, nxt)).root); commitMs += performance.now() - t0; } // segment root
       if (L.checkpoints.has(s)) k.u8(L.checkpoints.get(s), n * LIF_STATE).set(k.u8(nxt, n * LIF_STATE));
       [cur, nxt] = [nxt, cur];
     }
     e.porw_lif_counts(cur, n >>> 0, L.counts);
     const counts = new Uint32Array(k.u32(L.counts, n));
-    return { initStateRoot, stateRoots: roots, segments: roots.length, execRoot: k.merkleRoot(new Uint8Array(roots.flatMap((r) => [...r]))), execDigest: countsDigest(counts), counts, stimulated, inferMs, commitMs };
+    // execDigest is a digest of the spike counts -- independent of the commitments, which is why a claim can skip them
+    return { initStateRoot, stateRoots: roots, segments: roots.length, execRoot: commit ? k.merkleRoot(new Uint8Array(roots.flatMap((r) => [...r]))) : null, execDigest: countsDigest(counts), counts, stimulated, inferMs, commitMs };
   }
   /** materialize state_s (replay from the nearest checkpoint) and its tree; cached (small LRU) */
   async lifStateAt(st, s) {
@@ -216,7 +251,7 @@ export class PorwNode {
   }
   /** per-step state roots inside segment `seg` (steps seg*stride+1 .. min((seg+1)*stride, steps)); one replay pass */
   async lifSegmentRoots(mepId, seg) {
-    const st = this.models.get(hex(mepId)), k = this.k, n = st.hdr.neurons, L = st.slot.lif, stride = st.mep.commitStride;
+    const st = this.models.get(hex(mepId)), k = this.k, n = st.hdr.neurons, L = st.slot.lif, stride = st.commitStride;
     const s0 = seg * stride, s1 = Math.min(s0 + stride, st.steps); const { statePtr } = await this.lifStateAt(st, s0);
     const m = k.mark(); const a = k.alloc(n * LIF_STATE), b = k.alloc(n * LIF_STATE); k.u8(a, n * LIF_STATE).set(k.u8(statePtr, n * LIF_STATE));
     let cur = a, nxt = b; const roots = [];

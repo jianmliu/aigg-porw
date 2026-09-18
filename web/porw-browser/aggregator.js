@@ -14,9 +14,9 @@ import { claimFromJson } from "./node_service.js";
 const abiWord = (b) => { const o = new Uint8Array(32); o.set(b, 32 - b.length); return o; };
 const be = (n) => { const o = new Uint8Array(32); let x = BigInt(n); for (let i = 31; i >= 0; i--) { o[i] = Number(x & 255n); x >>= 8n; } return o; };
 const cat = (...p) => { const o = new Uint8Array(p.reduce((s, x) => s + x.length, 0)); let i = 0; for (const x of p) { o.set(x, i); i += x.length; } return o; };
-/** ClaimLeaf hash = keccak(abi.encode(instance, partialsRoot, coverageBytes, deviceId, execDigest, stimulusSeed, keccak(signature))) */
-export const claimLeafHash = (leaf) => keccak_256(cat(abiWord(unhex(leaf.instance)), leaf.partialsRoot, be(leaf.coverageBytes), leaf.deviceId, leaf.execDigest, be(leaf.stimulusSeed), keccak_256(leaf.signature)));
-export const leafOf = (R, instanceHex) => ({ instance: instanceHex, partialsRoot: R.claim.partialsRoot, coverageBytes: R.claim.coverageBytes, deviceId: R.claim.deviceId, execDigest: R.claim.execDigest, stimulusSeed: R.claim.stimulusSeed, signature: R.signature });
+/** ClaimLeaf hash = keccak(abi.encode(instance, partialsRoot, coverageBytes, deviceId, keccak(signature))) */
+export const claimLeafHash = (leaf) => keccak_256(cat(abiWord(unhex(leaf.instance)), leaf.partialsRoot, be(leaf.coverageBytes), leaf.deviceId, keccak_256(leaf.signature)));
+export const leafOf = (R, instanceHex) => ({ instance: instanceHex, partialsRoot: R.claim.partialsRoot, coverageBytes: R.claim.coverageBytes, deviceId: R.claim.deviceId, signature: R.signature });
 
 export class Aggregator {
   constructor(client, mep, expectedChallenge, { epoch, domain, blockNumber = 0 }) {
@@ -48,13 +48,13 @@ export class Aggregator {
     const t = this.tree || this.build(); const i = t.order.indexOf(instanceHex.toLowerCase()); if (i < 0) return null;
     const c = this.claims.get(t.order[i]); const l = c.leaf;
     return { type: "claim-proof", payload: { mepId: hex(this.mep.mepId), epoch: this.epoch, root: hex(t.root), count: t.count, index: i,
-      leaf: { instance: l.instance, partialsRoot: hex(l.partialsRoot), coverageBytes: l.coverageBytes, deviceId: hex(l.deviceId), execDigest: hex(l.execDigest), stimulusSeed: l.stimulusSeed, signature: hex(l.signature) },
+      leaf: { instance: l.instance, partialsRoot: hex(l.partialsRoot), coverageBytes: l.coverageBytes, deviceId: hex(l.deviceId), signature: hex(l.signature) },
       proof: V.merkleProof(t.leaves, i).map(hex) } };
   }
 }
 /** instance side: verify a received proof against the posted root before spending gas on materializeClaim */
 export function verifyClaimProof(p, expectedRootHex) {
   if (expectedRootHex && p.root.toLowerCase() !== expectedRootHex.toLowerCase()) return false;
-  const leaf = claimLeafHash({ ...p.leaf, partialsRoot: unhex(p.leaf.partialsRoot), deviceId: unhex(p.leaf.deviceId), execDigest: unhex(p.leaf.execDigest), signature: unhex(p.leaf.signature) });
+  const leaf = claimLeafHash({ ...p.leaf, partialsRoot: unhex(p.leaf.partialsRoot), deviceId: unhex(p.leaf.deviceId), signature: unhex(p.leaf.signature) });
   return V.merkleVerifyCounted(unhex(p.root), leaf, p.index, p.count, p.proof.map(unhex));
 }

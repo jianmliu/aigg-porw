@@ -5,19 +5,33 @@ import { verifyEnvelope, envelopeId, seal, topicInbox } from "./envelope.js";
 import { hex } from "./verify.js";
 
 export class RelayClient {
-  constructor(urls, key, { onLog = null, seenCap = 10000 } = {}) {
+  constructor(urls, key, { onLog = null, seenCap = 10000, reconnect = true, backoffMs = 500, maxBackoffMs = 15000 } = {}) {
     this.urls = urls; this.key = key; this.address = hex(key.address); this.socks = []; this.subs = new Map(); // topic -> Set<handler>
     this.seen = new Map(); this.seenCap = seenCap; this.pending = new Map(); this.onLog = onLog; this.received = 0; this.duplicates = 0; this.rejected = 0;
+    this.closed = false; this.reconnects = 0; this.opts = { reconnect, backoffMs, maxBackoffMs };
   }
   async connect() {
-    this.socks = await Promise.all(this.urls.map((u) => new Promise((res) => {
-      const ws = new WebSocket(u); const entry = { url: u, ws, open: false };
-      ws.onopen = () => { entry.open = true; for (const t of this.subs.keys()) ws.send(JSON.stringify({ op: "sub", topic: t })); res(entry); };
-      ws.onerror = () => res(entry); ws.onclose = () => { entry.open = false; };
-      ws.onmessage = (ev) => this._onFrame(entry, ev.data);
-    })));
+    this.socks = await Promise.all(this.urls.map((u) => new Promise((res) => this._dial({ url: u, ws: null, open: false, tries: 0, timer: null }, res))));
     this.subscribe(topicInbox(this.address), (env) => this._onInbox(env)); // own inbox: responses to our requests
     return this.socks.filter((s) => s.open).length;
+  }
+  // A relay connection is idle most of the time and anything in front of it will eventually cut it, so a drop is
+  // normal operation rather than an error: redial with backoff and replay our subscriptions on the new socket.
+  // Without this a tab stops announcing claims and answering tasks without ever reporting that anything is wrong.
+  _dial(entry, done) {
+    let settled = false; const finish = () => { if (!settled) { settled = true; done && done(entry); } };
+    let ws; try { ws = new WebSocket(entry.url); } catch { finish(); this._retry(entry); return; }
+    entry.ws = ws;
+    ws.onopen = () => { entry.open = true; entry.tries = 0; for (const t of this.subs.keys()) try { ws.send(JSON.stringify({ op: "sub", topic: t })); } catch {} finish(); };
+    ws.onerror = () => finish(); // a close event follows and schedules the retry
+    ws.onclose = () => { const was = entry.open; entry.open = false; finish(); if (was && this.onLog) this.onLog(`relay ${entry.url} dropped, reconnecting`); this._retry(entry); };
+    ws.onmessage = (ev) => this._onFrame(entry, ev.data);
+  }
+  _retry(entry) {
+    if (this.closed || !this.opts.reconnect || entry.timer) return;
+    const n = ++entry.tries; const cap = Math.min(this.opts.maxBackoffMs, this.opts.backoffMs * 2 ** (n - 1));
+    entry.timer = setTimeout(() => { entry.timer = null; this.reconnects++; this._dial(entry); }, cap / 2 + Math.random() * (cap / 2)); // jittered, so a relay restart is not a stampede
+    entry.timer.unref?.();
   }
   _onFrame(entry, data) {
     let m; try { m = JSON.parse(String(data)); } catch { return; }
@@ -29,13 +43,13 @@ export class RelayClient {
     for (const h of this.subs.get(m.topic) || []) h(m.env, from, entry.url);
   }
   subscribe(topic, handler) {
-    if (!this.subs.has(topic)) { this.subs.set(topic, new Set()); for (const s of this.socks) if (s.open) s.ws.send(JSON.stringify({ op: "sub", topic })); }
+    if (!this.subs.has(topic)) { this.subs.set(topic, new Set()); for (const s of this.socks) if (s.open && s.ws) try { s.ws.send(JSON.stringify({ op: "sub", topic })); } catch {} }
     this.subs.get(topic).add(handler); return () => this.subs.get(topic)?.delete(handler);
   }
   /** publish a signed envelope to every connected relay; returns the envelope */
   publish(topic, type, mepIdHex, payload) {
     const env = seal(type, mepIdHex, payload, this.key); const frame = JSON.stringify({ op: "pub", topic, env });
-    let sent = 0; for (const s of this.socks) if (s.open && s.ws.readyState === 1) { s.ws.send(frame); sent++; }
+    let sent = 0; for (const s of this.socks) if (s.open && s.ws && s.ws.readyState === 1) { s.ws.send(frame); sent++; }
     if (!sent) throw new Error("no relay connected"); return env;
   }
   /** request/response to another instance's inbox; resolves with the response envelope or rejects on timeout */
@@ -61,5 +75,5 @@ export class RelayClient {
       this.publish(topicInbox(env.payload.replyTo), out.type, env.mepId, { ...out.payload, reqId: env.payload.reqId });
     });
   }
-  close() { for (const s of this.socks) try { s.ws.close(); } catch {} }
+  close() { this.closed = true; for (const s of this.socks) { if (s.timer) { clearTimeout(s.timer); s.timer = null; } try { s.ws && s.ws.close(); } catch {} } }
 }

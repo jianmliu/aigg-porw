@@ -1,10 +1,11 @@
 # PoRW in the browser — zero-install fly-brain node
 
 A browser tab as a **fly-brain instance**: it holds a released fly-brain model resident
-in wasm memory, proves that residency with PoRW, runs the model's deterministic
-inference, commits everything an execution dispute needs, signs claims with a
-secp256k1 key (the reward key), answers audits, and can take distributed inference
-tasks in a leaderless mesh. No install. Measured in headless Chromium; every
+in wasm memory, proves that residency with PoRW (a claim is the sketch and its
+commitment — nothing else), runs the model's deterministic inference for a task and
+commits everything an execution dispute needs, signs claims with a secp256k1 key (the
+reward key), answers audits, and can take distributed inference tasks in a leaderless
+mesh. No install. Measured in headless Chromium; every
 cryptographic output is checked against an independent implementation and the
 aigg-spec conformance vectors, and the claim is verified on-chain.
 
@@ -13,21 +14,22 @@ aigg-spec conformance vectors, and the claim is verified on-chain.
 | file | role |
 |---|---|
 | `sketch_wasm.c` | scheme-v2 tile sketch, WASM **SIMD128** + scalar fallback; deterministic test-payload filler; bump allocator with mark/release |
-| `commit_wasm.c` | **keccak256** (freestanding keccak-f[1600]); weights/partials leaves; Merkle root/proof; **cached trees** (O(log n) proofs); **block-parallel tree build**; slot-seed derivation — scheme `aigg:porw:sketch-tile-keccak:v1` |
+| `commit_wasm.c` | **keccak256** (freestanding keccak-f[1600]); weights/partials leaves; Merkle root/proof; **cached trees** (O(log n) proofs); **block-parallel tree build**; slot-seed derivation — scheme `aigg:porw:sketch-tile-keccak:v2` |
 | `spmv_wasm.c` | deterministic **integer fixed-point SpMV** (`aigg:exec:int-spmv-q16:v1`) over the packed synapse records in place; unsigned Q16, hard clamp |
 | `lif_wasm.c` / `lif.js` / `int_lif.py` | **`aigg:exec:int-lif:v1`**: deterministic integer leaky integrate-and-fire on the **real FlyWire brain** (payload v2 from `demo/fly_brain/flywire_export.py`; Shiu et al. 2024 parameters in fixed point); scatter, CSR-range and post-sorted row kernels, signed partial sums, 16-byte state leaves; JS transition rule + exec-kind digest; numpy reference |
 | `dispute_wasm.c` | execution-dispute commitments: per-step activation leaves, CSR build (counting sort by post), CSR chunk leaves (64 records/leaf), rowStart leaves, CSR-ordered partial sums; row-parallel inference (`…_csr_range`, and `…_rows_direct` when records are published post-sorted) |
 | `pool.js` / `pool_worker.js` | **shared-memory worker pool**: one resident copy in a shared `WebAssembly.Memory`, N instances of `porw-shared.wasm` (each with its own stack region) computing disjoint ranges in place; browser Workers (needs cross-origin isolation) or Node `worker_threads` |
 | `porw.js` / `model.js` | wasm glue (Node + browser), payload header decode, tree/SpMV wrappers, tree-node access for bisection |
-| `mep.js` | Model Execution Profiles — one per released brain (female FlyWire, male CNS, …): `mep_id = keccak(scheme ‖ model_id ‖ exec kind ‖ steps ‖ clamp-or-stride)` |
+| `mep.js` | Model Execution Profiles — one per released brain (female FlyWire, male CNS, …): `mep_id = keccak(scheme ‖ model_id ‖ exec kind ‖ neurons ‖ synapses ‖ synapse_root)`. No run parameters: steps and the commit stride ride on the task |
 | `claim.js` | EVM-packed claim encoding, secp256k1 signing / `ecrecover`-compatible recovery (noble) |
 | `eip712.js` | **EIP-712** typed data (`Claim`, `Result`, `Delegation`): hand-coded digests, `eth_signTypedData_v4` JSON + a generic `hashTypedData` (the wallet's view), local / injected (EIP-1193) wallets, session-key delegation |
 | `run_wallet_browser.mjs` | a Chromium tab with an injected wallet (simulated outside the page): one `Delegation` prompt, then session-key-signed claims over the relay |
 | `node.js` | `PorwNode`: multi-model residency, per-MEP signed claims (residency + execution digest), tile openings, dispute openings (activation / rowStart / CSR chunk / partial sums / tree nodes); LIF path with segment roots every `commitStride` steps, checkpoint + replay for openings |
 | `verify.js` / `verifier.js` / `dispute.js` | **independent** verifier (noble keccak only, never the wasm): claim checks, sampled openings, sketch recomputation, redundant re-execution, and the execution dispute (step → neuron bisection → row check → synapse bisection → one-term check) |
 | `swarm.js` | mesh coordination: stake-weighted **index sortition** (the contract rule), redundancy sets, backups, auditors, majority settlement |
-| `envelope.js` / `relay.js` / `relay_client.js` | **stage-1 transport**: signed message envelopes (reward key), a stateless WebSocket relay (`ws`), an isomorphic multi-relay client (fan-out, verify, dedupe, request/response on inbox topics) |
+| `envelope.js` / `relay.js` / `relay_client.js` | **stage-1 transport**: signed message envelopes (reward key), a stateless WebSocket relay (`ws`), an isomorphic multi-relay client (fan-out, verify, dedupe, request/response on inbox topics). The hub pings its peers and reaps the silent ones; the client redials with backoff and replays its subscriptions — a relay connection is idle across whole epochs, and anything deployed in front of one will cut it. `startRelay({ server, path })` shares an existing http server instead of taking a port of its own. |
 | `aggregator.js` | **aggregated claims** (BSC posture): an untrusted aggregator batches the epoch's verified claims into one Merkle root (`postEpochRoot`) and serves inclusion proofs over the relay; instances `materializeClaim` only when they need eligibility |
+| `node.js` `residency()` / `execute()` | two jobs, split. `residency()` sketches the resident tiles and signs the claim — no inference at all, because none of it was ever adjudicated: `respondOpening` decides a challenged tile against `partialsRoot` and the model root. `execute({ steps, commitStride, commit })` runs a task and builds the state commitments a dispute needs (72% of the work on the real brain) |
 | `node_service.js` / `auditor.js` | the instance announcing claims and serving audits/tasks over relays (+ the on-chain fallback opening); the auditor sampling openings through relays and escalating to `challengeOpening` calldata |
 | `run_relay_browser.mjs` | a Chromium tab as a relay-served instance: audit + task from this process |
 | `index.html` + `worker.js` | audit-throughput PoC (per-worker slices, no shared memory) |
@@ -45,7 +47,7 @@ aigg-spec conformance vectors, and the claim is verified on-chain.
 cd web/porw-browser
 ./build.sh          # sketch.wasm (own memory) + porw-shared.wasm (imported shared memory)
 npm install
-npm test            # test_wasm · test_node · test_swarm · test_pool · test_dispute · test_lif · test_eip712 · test_relay · test_aggregator
+npm test            # test_wasm · test_node · test_swarm · test_pool · test_dispute · test_lif · test_eip712 · test_relay · test_relay_keepalive · test_aggregator
 PW_CHROMIUM=/path/to/chrome node run_wallet_browser.mjs     # injected wallet: one Delegation prompt, session-key claims
 PW_CHROMIUM=/path/to/chrome node run_relay_browser.mjs      # the tab announces, serves audits and a task over two relays
 # the real brain: export it (see demo/fly_brain/README.md), then
@@ -171,6 +173,10 @@ payloads made with the earlier hash are not reproducible; none had been register
 521 MiB model, 139,255 neurons / 54.5M synapses, steps = 2, per-slot work including
 the dispute commitments:
 
+Under scheme `sketch-tile-keccak:v2` only the first two columns are a residency claim;
+the other two are a task's work. The totals below are therefore a claim **plus** a task
+run, which is what this table measured before the two were separated.
+
 | per slot (ms) | sketch | partials commit | inference | dispute commit | **total** | one-time load |
 |---|---|---|---|---|---|---|
 | 1 thread | 164 | 345 | 585 | 716 | **1811** | 18.6 s |
@@ -181,7 +187,8 @@ the dispute commitments:
 **Real FlyWire brain, integer LIF** (139,255 neurons, 2.70M signed records ≥ 5 synapses,
 28 MB, `benchmarks/lif/`): Node 22, this host — inference 9.4 ms/step single thread,
 2.9 ms/step on the 4-worker pool; one committed state root 362 ms single / 116 ms pool;
-with stride 10 a 100-step claim (10 ms of brain time) takes 5.0 s single / **1.6 s** pool;
+with stride 10 a 100-step *task* (10 ms of brain time) takes 5.0 s single / **1.6 s** pool,
+of which the residency claim is 34 ms single;
 research mode (no commitments) 9.0 ms/step ⇒ ~90 s per second of brain time per tab.
 
 16 sampled openings: 16–19 ms (cached trees). Two findings worth keeping: a CSR
@@ -217,6 +224,9 @@ The settlement design that consumes these artifacts is
   build the same root; an instance's proof verifies exactly as the contract does; on-chain,
   materialized claims give eligibility (a task settles into a dispute), a junk leaf cannot
   be materialized, and a materialized residency liar is slashed through an opening challenge.
+- **Keepalive and reconnect** (`test_relay_keepalive.mjs`): a cut connection is redialled and its
+  subscriptions replayed so envelopes flow again, a peer that stops answering pings is reaped without
+  disturbing the live ones, and `close()` really stops the loop.
 - **Relay transport** (`test_relay.mjs`): envelopes verify / reject tampering, spoofing,
   staleness; the auditor receives each claim once across relays; 16 openings audited
   through the relay; a residency liar caught and escalated with the exact

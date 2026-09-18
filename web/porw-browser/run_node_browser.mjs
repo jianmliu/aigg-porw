@@ -25,10 +25,9 @@ const server = http.createServer((req, res) => {
 await new Promise((r) => server.listen(0, "127.0.0.1", r)); const port = server.address().port;
 
 // verifier's independent view of the model: MEP from the public bytes (noble keccak, no wasm)
-let t0 = performance.now(); const nT = Math.floor(payload.length / TILE_BYTES); const lv = [];
-for (let t = 0; t < nT; t++) lv.push(V.weightsLeaf(t, payload.subarray(t * TILE_BYTES, (t + 1) * TILE_BYTES)));
+let t0 = performance.now(); const prof = V.profileOf(payload, decodeHeader(payload));
 const hdr = decodeHeader(payload); const isLif = hdr.version === 2; // v2 payloads (real FlyWire export) run `aigg:exec:int-lif:v1`
-const mep = makeMep({ name: hdr.name, modelId: V.merkleRoot(lv), steps, execKind: isLif ? lifExecKind() : undefined }); const verifierModelMs = performance.now() - t0;
+const mep = makeMep({ name: hdr.name, ...prof, execKind: isLif ? lifExecKind() : undefined }); const verifierModelMs = performance.now() - t0;
 
 const { chromium } = await import("playwright");
 const launch = { headless: true, args: ["--no-sandbox", "--js-flags=--max-old-space-size=4096"] };
@@ -51,9 +50,10 @@ for (let r = 0; r < rounds; r++) {
   const sample = Vf.sampleTiles(ch, nT, samples); t0 = performance.now();
   const opens = await page.evaluate((ts) => ts.map((t) => window.porwNode.open(t)), sample); const openMs = performance.now() - t0;
   const verdicts = opens.map((o) => Vf.verifyOpening({ ...o, tile: V.unhex(o.tile), partialsProof: o.partialsProof.map(V.unhex), weightsProof: o.weightsProof.map(V.unhex) }, R.claim, vc.slotSeed, nT).verdict);
-  t0 = performance.now(); const re = isLif ? Vf.reexecuteLif(kernel, payload, R.claim, mep) : Vf.reexecute(kernel, payload, R.claim, mep); const reMs = performance.now() - t0;
+  const run = { stimulusSeed: r + 1, steps, execDigest: V.unhex(resp.result.execDigest) };
+  t0 = performance.now(); const re = isLif ? Vf.reexecuteLif(kernel, payload, run) : Vf.reexecute(kernel, payload, run); const reMs = performance.now() - t0;
   const t = resp.timings; const slotMs = t.sketchMs + t.commitMs + t.inferMs + (t.disputeCommitMs || 0);
-  out.rounds.push({ claimOk: vc.ok, signer: V.hex(vc.signer), verdicts, reexecMatches: re.matches, timings: t, slotMs, openMs, reMs, execDigest: V.hex(R.claim.execDigest), result: resp.result });
+  out.rounds.push({ claimOk: vc.ok, signer: V.hex(vc.signer), verdicts, reexecMatches: re.matches, timings: t, slotMs, openMs, reMs, execDigest: resp.result.execDigest, result: resp.result });
   console.log(`round ${r + 1}: claim ok=${vc.ok} | sketch ${t.sketchMs.toFixed(0)} + commit ${t.commitMs.toFixed(0)} + infer ${t.inferMs.toFixed(0)} + dispute-commit ${(t.disputeCommitMs || 0).toFixed(0)} = ${slotMs.toFixed(0)} ms per slot | ${sample.length} openings ${verdicts.every((v) => v === "no_fraud") ? "all no_fraud" : verdicts.join(",")} (${openMs.toFixed(0)} ms) | re-exec match=${re.matches} (${reMs.toFixed(0)} ms)`);
 }
 await browser.close(); server.close();

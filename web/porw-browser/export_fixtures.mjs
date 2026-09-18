@@ -12,6 +12,7 @@ import * as D from "./dispute.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import * as E from "./eip712.js";
 import { claimLeafHash, leafOf } from "./aggregator.js";
+import { taskId as swarmTaskId } from "./swarm.js";
 import { domains, walletAndSession, CHAIN_ID, CM_ADDR, MK_ADDR, REG_ADDR, DELEGATION_EXPIRY } from "./export_fixtures_common.js";
 
 const [out, epochBlocksArg, epochArg, prevrandaoArg] = process.argv.slice(2);
@@ -23,9 +24,11 @@ const H = V.hex;
 
 const wasm = fs.readFileSync(new URL("./sketch.wasm", import.meta.url));
 const payload = synthesizePayload("flywire-female", 4000, 40000); // small so the dispute openings stay test-sized
-const steps = 2, stimulusSeed = 5; const nonces = [9, 10, 11].map((v) => new Uint8Array(32).fill(v));
+const steps = 2, stride = 1, stimulusSeed = 5;
+// the task, pinned: the id binds every field of it now, so the fixture and the Solidity test must agree on all of them
+const TASK = { stimulusSeed, steps, commitStride: stride, inputCommit: new Uint8Array(32), fee: 10n ** 18n, deadline: 10_000_000, redundancy: 2 };
 
-const mk = async (priv, lie) => { const ws = await walletAndSession(String.fromCharCode(priv.charCodeAt(0)) + "a", priv); const nd = new PorwNode(await loadKernelFromBytes(wasm), { privHex: ws.sessionPriv, domains, delegation: ws.delegation }); if (lie) nd.execLie = lie; const st = await nd.loadModel("flywire-female", payload, { steps }); return { nd, st, ws }; };
+const mk = async (priv, lie) => { const ws = await walletAndSession(String.fromCharCode(priv.charCodeAt(0)) + "a", priv); const nd = new PorwNode(await loadKernelFromBytes(wasm), { privHex: ws.sessionPriv, domains, delegation: ws.delegation }); if (lie) nd.execLie = lie; const st = await nd.loadModel("flywire-female", payload, { maxSteps: steps }); return { nd, st, ws }; };
 const A = await mk("11"); const mep = A.st.mep; const mepId = mep.mepId;
 
 // contract-derived epoch challenge
@@ -34,20 +37,34 @@ const beacon = keccak_256(cat(be256(PREVRANDAO), be256(epochStart)));
 const challenge = keccak_256(cat(beacon, mepId));
 
 // pick a neuron for the execution lie: not clamped, in-degree >= 3, honest act + 777 < 65536
-const rA = await A.nd.challenge(mepId, challenge, { stimulusSeed });
+const rA = await A.nd.challenge(mepId, challenge, { steps, commitStride: stride, stimulusSeed });
 const actFinal = A.nd.activations(mepId, steps); let neuron = -1;
 for (let i = 0; i < actFinal.length; i++) { const ps = A.nd.partialSums(mepId, steps, i); if (ps.sums.length >= 3 && actFinal[i] + 777 < 65536 && V.rowActivation(ps.sums[ps.sums.length - 1]) === actFinal[i]) { neuron = i; break; } }
 if (neuron < 0) throw new Error("no suitable neuron");
 const B = await mk("22", { step: steps, neuron, delta: 777 });
-const rB = await B.nd.challenge(mepId, challenge, { stimulusSeed });
+const rB = await B.nd.challenge(mepId, challenge, { steps, commitStride: stride, stimulusSeed });
 
 // --- residency claim (A, honest) + openings: NoFraud tile from A, Fraud tile from a residency liar ---
-const L = await mk("33"); L.nd.lies.set(`${H(mepId)}:7`, 12345); const rL = await L.nd.challenge(mepId, challenge, { stimulusSeed });
+const L0 = await mk("33"); L0.nd.lies.set(`${H(mepId)}:7`, 12345); const rL = await L0.nd.challenge(mepId, challenge, { steps, commitStride: stride, stimulusSeed });
 const opening = (nd, r, t) => { const o = nd.open(mepId, t); return { tileIdx: o.tileIdx, tile: H(o.tile), sTile: o.sketch, partialsIndex: o.position, partialsProof: o.partialsProof.map(H), weightsProof: o.weightsProof.map(H) }; };
-const claimJson = (r) => { const c = r.claim; return { mepId: H(c.mepId), partialsRoot: H(c.partialsRoot), coverageBytes: c.coverageBytes, challenge: H(c.challenge), deviceId: H(c.deviceId), execDigest: H(c.execDigest), stimulusSeed: c.stimulusSeed, signature: H(r.signature), signer: H(r.address), digest: H(r.digest), instance: r.delegation.instance }; };
+const claimJson = (r) => { const c = r.claim; return { mepId: H(c.mepId), partialsRoot: H(c.partialsRoot), coverageBytes: c.coverageBytes, challenge: H(c.challenge), deviceId: H(c.deviceId), signature: H(r.signature), signer: H(r.address), digest: H(r.digest), instance: r.delegation.instance }; };
 
 // --- task results signed by A and B: resultHash = keccak("porw-result" || taskId || execDigest || execRoot) ---
-const taskIds = nonces.map((nonce) => keccak_256(cat(mepId, be32(stimulusSeed), nonce)));
+// The sortition key is the task id, and the id now covers the whole task -- so the nonces that used to put A
+// and B on every task no longer do. Pick nonces that do, using the contract's own rule over the test's vote
+// list (A, B, L each bonded 2 UNIT -> weight 2), so the fixture's A/B result signatures stay usable.
+// tasks are posted in the NEXT epoch (eligibility reads the previous epoch's claims), so the sortition
+// beacon is that epoch's, not the claim epoch's -- these two pin what the Solidity test rolls to.
+const TASK_EPOCH = EPOCH + 1, TASK_PREVRANDAO = 7n;
+const taskBeacon = keccak_256(cat(be256(TASK_PREVRANDAO), be256(TASK_EPOCH * EPOCH_BLOCKS)));
+const VOTES = [A.ws.wallet.address, A.ws.wallet.address, B.ws.wallet.address, B.ws.wallet.address, L0.ws.wallet.address, L0.ws.wallet.address].map((a) => a.toLowerCase());
+const executorsOf = (tid) => { const out = []; for (let j = 0; out.length < TASK.redundancy && j < 64 * TASK.redundancy; j++) {
+  const h = keccak_256(cat(taskBeacon, mepId, tid, be32(j))); let x = 0n; for (const b of h) x = (x << 8n) | BigInt(b);
+  const c = VOTES[Number(x % BigInt(VOTES.length))]; if (!out.includes(c)) out.push(c); } return out; };
+const wantAB = (tid) => { const e = executorsOf(tid); return e.length === 2 && e.includes(A.ws.wallet.address.toLowerCase()) && e.includes(B.ws.wallet.address.toLowerCase()); };
+const nonces = []; for (let v = 0; v < 256 && nonces.length < 3; v++) { const nc = new Uint8Array(32).fill(v); if (wantAB(swarmTaskId({ ...TASK, mepId }, nc))) nonces.push(nc); }
+if (nonces.length < 3) throw new Error("no nonce puts A and B on the task");
+const taskIds = nonces.map((nonce) => swarmTaskId({ ...TASK, mepId }, nonce));
 const resultSig = (P, r, taskId) => { const h = E.resultDigest(domains.market, taskId, r.result.execDigest, r.result.execRoot); return { execDigest: H(r.result.execDigest), execRoot: H(r.result.execRoot), signature: H(signHash(h, P.nd.key.priv)), signer: H(P.nd.key.address) }; };
 
 // --- dispute path: step, then the children pairs each party posts, following the contract's rule ---
@@ -72,18 +89,18 @@ const actA = A.nd.openActivation(mepId, sStar, neuron).act, actB = B.nd.openActi
 if (V.rowActivation(lied[len - 1]) !== actB) throw new Error("lied sums inconsistent with B's activation (clamp)");
 
 // aggregated path: one root over the epoch's claims (A, B, L sorted by wallet) + one junk leaf (tampered signature)
-const aggEntries = [[A, rA], [B, rB], [L, rL]].map(([P, r]) => ({ instance: P.ws.wallet.address.toLowerCase(), leaf: leafOf(r, P.ws.wallet.address.toLowerCase()) }));
+const aggEntries = [[A, rA], [B, rB], [L0, rL]].map(([P, r]) => ({ instance: P.ws.wallet.address.toLowerCase(), leaf: leafOf(r, P.ws.wallet.address.toLowerCase()) }));
 const junkSig = Uint8Array.from(rA.signature); junkSig[3] ^= 0x55; aggEntries.push({ instance: "0x00000000000000000000000000000000000000ff", leaf: { ...leafOf(rA, "0x00000000000000000000000000000000000000ff"), signature: junkSig } });
 aggEntries.sort((x, y) => (x.instance < y.instance ? -1 : 1)); const aggLeaves = aggEntries.map((e) => claimLeafHash(e.leaf)); const aggRoot = V.merkleRoot(aggLeaves);
-const aggProof = (who) => { const i = aggEntries.findIndex((e) => e.instance === who.toLowerCase()); const l = aggEntries[i].leaf; return { index: i, leaf: { instance: l.instance, partialsRoot: H(l.partialsRoot), coverageBytes: l.coverageBytes, deviceId: H(l.deviceId), execDigest: H(l.execDigest), stimulusSeed: l.stimulusSeed, signature: H(l.signature) }, proof: V.merkleProof(aggLeaves, i).map(H) }; };
+const aggProof = (who) => { const i = aggEntries.findIndex((e) => e.instance === who.toLowerCase()); const l = aggEntries[i].leaf; return { index: i, leaf: { instance: l.instance, partialsRoot: H(l.partialsRoot), coverageBytes: l.coverageBytes, deviceId: H(l.deviceId), signature: H(l.signature) }, proof: V.merkleProof(aggLeaves, i).map(H) }; };
 const F = ({
-  params: { epochBlocks: EPOCH_BLOCKS, epoch: EPOCH, epochStart, prevrandao: Number(PREVRANDAO), beacon: H(beacon), challenge: H(challenge), steps, stimulusSeed, nonces: nonces.map(H), taskIds: taskIds.map(H) },
-  mep: { mepId: H(mepId), modelId: H(mep.modelId), schemeDigest: H(mep.schemeDigest), execKind: H(mep.execKind), steps: mep.steps, clampQ16: mep.clampQ16, neurons: n, synapses: A.st.hdr.synapses, synapseRoot: H(rA.result.synapseRoot), csrRoot: H(rA.result.csrRoot), rowRoot: H(rA.result.rowRoot), nTiles: A.st.nTiles },
-  instances: { A: A.ws.wallet.address, B: B.ws.wallet.address, L: L.ws.wallet.address }, sessions: { A: H(A.nd.key.address), B: H(B.nd.key.address), L: H(L.nd.key.address) },
-  delegations: { A: A.ws.delegation, B: B.ws.delegation, L: L.ws.delegation }, eip712: { chainId: CHAIN_ID, claimManager: CM_ADDR, market: MK_ADDR, registry: REG_ADDR, expiry: DELEGATION_EXPIRY },
+  params: { epochBlocks: EPOCH_BLOCKS, epoch: EPOCH, epochStart, prevrandao: Number(PREVRANDAO), beacon: H(beacon), challenge: H(challenge), taskEpoch: TASK_EPOCH, taskPrevrandao: Number(TASK_PREVRANDAO), steps, stride, stimulusSeed, nonces: nonces.map(H), taskIds: taskIds.map(H), task: { ...TASK, inputCommit: H(TASK.inputCommit), fee: String(TASK.fee) } },
+  mep: { mepId: H(mepId), modelId: H(mep.modelId), schemeDigest: H(mep.schemeDigest), execKind: H(mep.execKind), neurons: n, synapses: A.st.hdr.synapses, synapseRoot: H(rA.result.synapseRoot), csrRoot: H(rA.result.csrRoot), rowRoot: H(rA.result.rowRoot), nTiles: A.st.nTiles },
+  instances: { A: A.ws.wallet.address, B: B.ws.wallet.address, L: L0.ws.wallet.address }, sessions: { A: H(A.nd.key.address), B: H(B.nd.key.address), L: H(L0.nd.key.address) },
+  delegations: { A: A.ws.delegation, B: B.ws.delegation, L: L0.ws.delegation }, eip712: { chainId: CHAIN_ID, claimManager: CM_ADDR, market: MK_ADDR, registry: REG_ADDR, expiry: DELEGATION_EXPIRY },
   claimA: claimJson(rA), claimB: claimJson(rB), claimL: claimJson(rL), claimHashA: H(rA.claimHash),
-  aggregated: { root: H(aggRoot), count: aggLeaves.length, A: aggProof(A.ws.wallet.address), B: aggProof(B.ws.wallet.address), L: aggProof(L.ws.wallet.address), junk: aggProof("0x00000000000000000000000000000000000000ff") },
-  openingNoFraud: opening(A.nd, rA, 3), openingFraud: opening(L.nd, rL, 7), openingHonestOfLiar: opening(L.nd, rL, 3),
+  aggregated: { root: H(aggRoot), count: aggLeaves.length, A: aggProof(A.ws.wallet.address), B: aggProof(B.ws.wallet.address), L: aggProof(L0.ws.wallet.address), junk: aggProof("0x00000000000000000000000000000000000000ff") },
+  openingNoFraud: opening(A.nd, rA, 3), openingFraud: opening(L0.nd, rL, 7), openingHonestOfLiar: opening(L0.nd, rL, 3),
   resultsA: taskIds.map((t) => resultSig(A, rA, t)), resultsB: taskIds.map((t) => resultSig(B, rB, t)),
   dispute: { sStar, actRootsA: rA.result.actRoots.map(H), actRootsB: rB.result.actRoots.map(H), rounds: pairsA.length, pairsAFlat: pairsA.flat(), pairsBFlat: pairsB.flat(), neuron, actA, actB,
     sumsA: Array.from(psA.sums, Number), sumsBHonest: Array.from(psB.sums, Number), sumsBLied: Array.from(lied, Number), kStar,
@@ -108,7 +125,7 @@ function writeSolidity(F, base) {
   const arr64 = (name, a) => `    function ${name}() internal pure returns (uint64[] memory a) { a = new uint64[](${a.length});${a.map((v, i) => ` a[${i}] = ${num(v)};`).join("")} }\n`;
   const bytesFn = (name, hexv) => `    function ${name}() internal pure returns (bytes memory) { return hex"${hexv.slice(2)}"; }\n`;
   const claimFn = (name, c) => `    function ${name}() internal pure returns (IPoRWClaimManager.Claim memory c, bytes memory sig, address signer) {
-        c = IPoRWClaimManager.Claim({ mepId: ${c.mepId}, partialsRoot: ${c.partialsRoot}, coverageBytes: ${c.coverageBytes}, challenge: ${c.challenge}, deviceId: ${c.deviceId}, execDigest: ${c.execDigest}, stimulusSeed: ${c.stimulusSeed} });
+        c = IPoRWClaimManager.Claim({ mepId: ${c.mepId}, partialsRoot: ${c.partialsRoot}, coverageBytes: ${c.coverageBytes}, challenge: ${c.challenge}, deviceId: ${c.deviceId} });
         sig = hex"${c.signature.slice(2)}"; signer = ${checksum(c.signer)};
     }\n`;
   const openingFn = (name, o) => `    function ${name}() internal pure returns (IPoRWClaimManager.Opening memory o) {
@@ -127,7 +144,9 @@ library MeshFixtures {
     uint64 constant EPOCH_BLOCKS = ${P.epochBlocks}; uint64 constant EPOCH = ${P.epoch}; uint256 constant EPOCH_START = ${P.epochStart}; uint256 constant PREVRANDAO = ${P.prevrandao};
     bytes32 constant BEACON = ${P.beacon}; bytes32 constant CHALLENGE = ${P.challenge}; uint32 constant STIMULUS_SEED = ${P.stimulusSeed};
     bytes32 constant MEP_ID = ${M.mepId}; bytes32 constant MODEL_ID = ${M.modelId}; bytes32 constant SCHEME_DIGEST = ${M.schemeDigest}; bytes32 constant EXEC_KIND = ${M.execKind};
-    uint32 constant STEPS = ${M.steps}; uint32 constant CLAMP_Q16 = ${M.clampQ16}; uint32 constant NEURONS = ${M.neurons}; uint32 constant SYNAPSES = ${M.synapses};
+    uint32 constant STEPS = ${P.steps}; uint32 constant STRIDE = ${P.stride}; uint32 constant NEURONS = ${M.neurons}; uint32 constant SYNAPSES = ${M.synapses};
+    uint256 constant TASK_FEE = ${P.task.fee}; uint64 constant TASK_DEADLINE = ${P.task.deadline}; uint8 constant TASK_REDUNDANCY = ${P.task.redundancy}; bytes32 constant TASK_INPUT_COMMIT = ${P.task.inputCommit};
+    uint64 constant TASK_EPOCH = ${P.taskEpoch}; uint256 constant TASK_PREVRANDAO = ${P.taskPrevrandao}; // the nonces were chosen so this epoch's beacon sortitions A and B
     bytes32 constant SYNAPSE_ROOT = ${M.synapseRoot}; bytes32 constant CSR_ROOT = ${M.csrRoot}; bytes32 constant ROW_ROOT = ${M.rowRoot}; uint64 constant N_TILES = ${M.nTiles};
     address constant A = ${checksum(F.instances.A)}; address constant B = ${checksum(F.instances.B)}; address constant L = ${checksum(F.instances.L)}; // bonded wallets
     address constant SESSION_A = ${checksum(F.sessions.A)}; address constant SESSION_B = ${checksum(F.sessions.B)}; address constant SESSION_L = ${checksum(F.sessions.L)}; // delegated tab keys
@@ -138,8 +157,12 @@ library MeshFixtures {
 `;
   const delFn = (name, d) => `    function ${name}() internal pure returns (address instance, address session, uint64 expiry, bytes memory sig) { instance = ${checksum(d.instance)}; session = ${checksum(d.session)}; expiry = ${d.expiry}; sig = hex"${d.sig.slice(2)}"; }\n`;
   sol += delFn("delegationA", F.delegations.A) + delFn("delegationB", F.delegations.B) + delFn("delegationL", F.delegations.L);
-  const leafFn = (name, p) => `    function ${name}() internal pure returns (uint64 index, IPoRWClaimManager.ClaimLeaf memory l, bytes32[] memory proof) { index = ${p.index}; l = IPoRWClaimManager.ClaimLeaf({ instance: ${checksum(p.leaf.instance)}, partialsRoot: ${p.leaf.partialsRoot}, coverageBytes: ${p.leaf.coverageBytes}, deviceId: ${p.leaf.deviceId}, execDigest: ${p.leaf.execDigest}, stimulusSeed: ${p.leaf.stimulusSeed}, signature: hex"${p.leaf.signature.slice(2)}" }); proof = ${name}Proof(); }\n` + arr32(name + "Proof", p.proof);
+  const leafFn = (name, p) => `    function ${name}() internal pure returns (uint64 index, IPoRWClaimManager.ClaimLeaf memory l, bytes32[] memory proof) { index = ${p.index}; l = IPoRWClaimManager.ClaimLeaf({ instance: ${checksum(p.leaf.instance)}, partialsRoot: ${p.leaf.partialsRoot}, coverageBytes: ${p.leaf.coverageBytes}, deviceId: ${p.leaf.deviceId}, signature: hex"${p.leaf.signature.slice(2)}" }); proof = ${name}Proof(); }\n` + arr32(name + "Proof", p.proof);
   sol += `    bytes32 constant AGG_ROOT = ${F.aggregated.root}; uint64 constant AGG_COUNT = ${F.aggregated.count};\n` + leafFn("aggLeafA", F.aggregated.A) + leafFn("aggLeafB", F.aggregated.B) + leafFn("aggLeafL", F.aggregated.L) + leafFn("aggLeafJunk", F.aggregated.junk);
+  sol += `    /// @dev the exact Task the ids were derived from -- taskId = keccak256(abi.encode(task, nonce))
+    function task() internal pure returns (ITaskMarket.Task memory t) {
+        t = ITaskMarket.Task({ mepId: MEP_ID, stimulusSeed: STIMULUS_SEED, steps: STEPS, commitStride: STRIDE, inputCommit: TASK_INPUT_COMMIT, fee: TASK_FEE, deadline: TASK_DEADLINE, redundancy: TASK_REDUNDANCY });
+    }\n`;
   sol += arr32("nonces", P.nonces) + arr32("taskIds", P.taskIds);
   sol += claimFn("claimA", F.claimA) + claimFn("claimB", F.claimB) + claimFn("claimL", F.claimL);
   sol += openingFn("openingNoFraud", F.openingNoFraud) + openingFn("openingFraud", F.openingFraud) + openingFn("openingHonestOfLiar", F.openingHonestOfLiar);
@@ -155,9 +178,9 @@ pragma solidity ^0.8.20;
 // GENERATED by web/porw-browser/export_fixtures.mjs — the browser node's signed residency claim.
 library BrowserClaimFixture {
     bytes32 constant SCHEME_DIGEST = ${M.schemeDigest}; bytes32 constant MEP_ID = ${M.mepId}; bytes32 constant MODEL_ID = ${M.modelId};
-    bytes32 constant EXEC_KIND = ${M.execKind}; uint32 constant STEPS = ${M.steps}; uint32 constant CLAMP_Q16 = ${M.clampQ16};
+    bytes32 constant EXEC_KIND = ${M.execKind}; uint32 constant NEURONS = ${M.neurons}; uint32 constant SYNAPSES = ${M.synapses}; bytes32 constant SYNAPSE_ROOT = ${M.synapseRoot};
     bytes32 constant PARTIALS_ROOT = ${c.partialsRoot}; uint64 constant COVERAGE_BYTES = ${c.coverageBytes}; bytes32 constant CHALLENGE = ${c.challenge};
-    bytes32 constant DEVICE_ID = ${c.deviceId}; bytes32 constant EXEC_DIGEST = ${c.execDigest}; uint32 constant STIMULUS_SEED = ${c.stimulusSeed};
+    bytes32 constant DEVICE_ID = ${c.deviceId};
     bytes32 constant CLAIM_HASH = ${F.claimHashA}; bytes32 constant CLAIM_DIGEST = ${c.digest}; address constant SIGNER = ${checksum(c.signer)}; address constant INSTANCE = ${checksum(c.instance)};
     uint256 constant CHAIN_ID = ${F.eip712.chainId}; address constant CLAIM_MANAGER = ${checksum(F.eip712.claimManager)}; address constant REGISTRY = ${checksum(F.eip712.registry)};
     function signature() internal pure returns (bytes memory) { return hex"${c.signature.slice(2)}"; }

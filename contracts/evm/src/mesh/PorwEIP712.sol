@@ -9,7 +9,7 @@ library PorwEIP712 {
     string constant NAME = "PoRW Mesh";
     string constant VERSION = "1";
     bytes32 constant DOMAIN_TYPEHASH = keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
-    bytes32 constant CLAIM_TYPEHASH = keccak256("Claim(bytes32 schemeDigest,bytes32 mepId,bytes32 modelId,bytes32 partialsRoot,uint64 coverageBytes,bytes32 challenge,bytes32 deviceId,bytes32 execDigest,uint32 stimulusSeed)");
+    bytes32 constant CLAIM_TYPEHASH = keccak256("Claim(bytes32 schemeDigest,bytes32 mepId,bytes32 modelId,bytes32 partialsRoot,uint64 coverageBytes,bytes32 challenge,bytes32 deviceId)");
     bytes32 constant RESULT_TYPEHASH = keccak256("Result(bytes32 taskId,bytes32 execDigest,bytes32 execRoot)");
     bytes32 constant DELEGATION_TYPEHASH = keccak256("Delegation(address instance,address session,uint64 expiry)");
 
@@ -17,8 +17,8 @@ library PorwEIP712 {
         return keccak256(abi.encode(DOMAIN_TYPEHASH, keccak256(bytes(NAME)), keccak256(bytes(VERSION)), block.chainid, verifyingContract));
     }
     function digest(bytes32 ds, bytes32 structHash) internal pure returns (bytes32) { return keccak256(abi.encodePacked("\x19\x01", ds, structHash)); }
-    function claimStructHash(bytes32 schemeDigest, bytes32 mepId, bytes32 modelId, bytes32 partialsRoot, uint64 coverageBytes, bytes32 challenge, bytes32 deviceId, bytes32 execDigest, uint32 stimulusSeed) internal pure returns (bytes32) {
-        return keccak256(abi.encode(CLAIM_TYPEHASH, schemeDigest, mepId, modelId, partialsRoot, coverageBytes, challenge, deviceId, execDigest, stimulusSeed));
+    function claimStructHash(bytes32 schemeDigest, bytes32 mepId, bytes32 modelId, bytes32 partialsRoot, uint64 coverageBytes, bytes32 challenge, bytes32 deviceId) internal pure returns (bytes32) {
+        return keccak256(abi.encode(CLAIM_TYPEHASH, schemeDigest, mepId, modelId, partialsRoot, coverageBytes, challenge, deviceId));
     }
     function resultStructHash(bytes32 taskId, bytes32 execDigest, bytes32 execRoot) internal pure returns (bytes32) { return keccak256(abi.encode(RESULT_TYPEHASH, taskId, execDigest, execRoot)); }
     function delegationStructHash(address instance, address session, uint64 expiry) internal pure returns (bytes32) { return keccak256(abi.encode(DELEGATION_TYPEHASH, instance, session, expiry)); }
