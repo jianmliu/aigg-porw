@@ -464,11 +464,11 @@ would give them: execution + 21,000 + calldata):
 
 | | postTask | submitResult (sum) | settle | total |
 |---|---|---|---|---|
-| redundancy 1 | 215,578 | 207,304 | 205,637 | 628,519 |
-| redundancy 2 | 215,578 | 418,886 | 229,723 | 864,187 |
-| redundancy 3 | 215,578 | 638,141 | 256,932 | 1,110,651 |
-| redundancy 2, MEP with terms | | | | 886,259 |
-| redundancy 2, **30** instances enrolled instead of 3 | | | | 2,358,050 |
+| redundancy 1 | 215,335 | 207,515 | 205,669 | 628,519 |
+| redundancy 2 | 215,335 | 419,097 | 229,755 | 864,187 |
+| redundancy 3 | 215,335 | 638,352 | 256,964 | 1,110,651 |
+| redundancy 2, MEP with terms | 215,335 | 417,589 | 253,335 | 886,259 |
+| redundancy 2, **30** instances enrolled instead of 3 | 215,335 | 1,415,005 | 727,710 | 2,358,050 |
 
 The last row is a finding, not a parameter. `executors()` rebuilds the stake-weighted vote list from every instance
 enrolled for the MEP, and `submitResult` and `settle` both call it: about **55,000 gas per enrolled instance per task**.
