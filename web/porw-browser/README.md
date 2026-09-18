@@ -38,6 +38,7 @@ aigg-spec conformance vectors, and the claim is verified on-chain.
 | `synth.js` | JS payload synthesizers (v1 as the Python demo; v2 with signed counts for the LIF tests) |
 | `delta.js` / `sample.js` / `test_delta.mjs` | **delta payloads**: v1 = explicit edit list, v2 = procedural (seed + noise model → a synthetic individual, deterministic integer sampler bit-identical in JS and Python), v3 = same-base cross (two parent deltas + seed → a child with real inheritance), in a compact or an **in-place** layout (records keep the base's positions, so one record of a child re-derives from one record of its parents); all: a fine-tune, ablation or synthetic individual of a released brain as a sorted edit list (set / insert / delete records) bound to the base's `model_id`; `applyDelta` rebuilds the target payload byte for byte, so its `model_id` / MEP are those of a directly published payload; `PorwNode.loadDelta(base, delta)`; Python twin `demo/fly_brain/flywire_delta.py` |
 | `bench_lif_node.mjs` / `model_id.mjs` | full-brain LIF measurement (single thread, pool, research mode); model / MEP ids of a payload file |
+| `export_delta_fixtures.mjs` | fixtures for `test/FlyDelta.t.sol`: sampler vectors and an in-place lineage (founders, child, tampered children) with the tile openings of a one-record check |
 | `sample_wasm.c` / `delta_wasm.c` / `delta_wasm.js` | exact Q256 sampling, inheritance and explicit-op merge into resident WASM payloads; JS/Python remain reference implementations |
 | `export_fixtures.mjs` / `export_lif_fixtures.mjs` | typed Solidity fixtures for the on-chain tests from real node runs (SpMV mesh; LIF mesh with a state liar and an input-sum liar) |
 | `test_*.mjs`, `crosscheck.py`, `int_spmv.py` | tests and Python cross-checks |
@@ -176,7 +177,9 @@ expresses 2,689,164 records (the real fly's ≥ 5 graph has 2,700,513), 64.6% of
 and a grandchild are byte-identical between JS and Python (1–2 s to apply); 200,000 sampled records of each re-derive
 from the Python-made parent payloads with 0 mismatches. Zero weights are inert: an in-place individual and its compact
 twin give the **same `execDigest`**, at 2.3× the execution time (10.1 s vs 4.3 s for 2,000 steps) and 283 vs 208 MB of
-wasm memory. Not implemented yet: the on-chain verifier for the one-record proof, and in-place `v1` edits.
+wasm memory. The one-record check exists on-chain: `contracts/evm/src/mesh/FlyDeltaSampler.sol` reproduces this sampler
+(85 vectors exported by `export_delta_fixtures.mjs`) and `FlyDeltaRecordVerifier.sol` decides a record from four tile
+openings in ~0.2 M execution gas. Not implemented yet: the registry around it, and in-place `v1` edits.
 
 ## What is verified
 

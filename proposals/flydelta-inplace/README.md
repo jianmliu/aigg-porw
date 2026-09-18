@@ -1,8 +1,9 @@
 # Proposal: in-place derivation for procedural brains, so a wrong `model_id` is provable
 
 Status: decisions 1–4 are **implemented** in `web/porw-browser/delta.js` and `demo/fly_brain/flywire_delta.py` (layout byte,
-name rule, founders as zero-parent crosses, record-local rule `inheritRecord` / `recompute_record`); the on-chain verifier
-and the registration bond are not. Measured after implementing: an in-place individual and its compact twin give the same
+name rule, founders as zero-parent crosses, record-local rule `inheritRecord` / `recompute_record`); the on-chain
+verifier is implemented too (`contracts/evm/src/mesh/FlyDeltaSampler.sol`, `FlyDeltaRecordVerifier.sol`, measured below);
+the registry that stores the roots, takes the registration bond and acts on a Fraud verdict is not. Measured after implementing: an in-place individual and its compact twin give the same
 `execDigest` (zero weights are inert), at 2.3× the execution time; a founder on the ≥ 2 base with mean ratio 0.92 expresses
 2,689,164 records against the real fly's 2,700,513. One correction to decision 3: a zero-parent founder has the `v2`
 individual's *distribution*, not its draws (the cross uses its own seed domains). It has to be decided before the
@@ -82,6 +83,29 @@ once written: calldata for up to four tiles plus proofs ≈ 0.3 M gas; the fixed
 256-bit arithmetic; the CDF walk ≈ one `mulDiv` pair per unit of the drawn count — tens of thousands of gas for typical
 counts, a few million for the largest (2,405). A registration then needs what a claim has: a bond and a challenge
 window, which is where the breeding fee can sit while it is at risk.
+
+## The verifier, measured
+
+`FlyDeltaSampler` is the sampler in Solidity: the same `fmix32` hashes, the same fixed-length `ln` / `exp` series in
+Q60, the same pmf recurrence in Q256 through a 512-bit `mulDiv`, the same table-end and pinning rules. It agrees with
+`sample.js` on all 85 exported vectors (hashes, `ln`, `exp`, and 65 draws from base count 1 to 2,405, both tails
+included). `FlyDeltaRecordVerifier` is stateless: the caller supplies the committed roots and the lineage constants
+(`baseModelId`, `nTiles`, `synOffset`, `synapses`, `nameLen`); it parses the raw `FLYDELTAv3` bytes, verifies the tile
+openings against the roots (one tile per payload, two when the record straddles), recomputes, and returns
+`0 Fraud | 1 Consistent` with the expected and committed weights. Malformed input reverts. A founder needs only the base.
+
+| | execution gas |
+|---|---|
+| `checkRecord`, four tiles opened, inherited record | 175k–184k |
+| `checkRecord`, mutated record (a draw at a small count) | 219k |
+| `checkStaticTile` (header / root ids / padding untouched) | 196k |
+| one draw at base count 5 / 22 / 150 / 1,000 / 2,405 (median `U`) | 46k / 58k / 174k / 0.94M / 2.2M |
+| the worst vector: base count 2,405 with `U = 2^64 − 1` (walks to the table's end, k = 19,496) | 17.6M |
+
+Add roughly 0.25M for the calldata of four 4 KB tiles and their proofs. A challenger chooses which wrong record to
+prove, so the expensive tail is avoidable unless the *only* wrong record is a mutated one with a very large base count —
+2,223 of the female base's 2.7 M records have a count ≥ 200 — and even that fits a block. The estimate in the first
+version of this text (a few hundred thousand gas typical, a few million at most) holds.
 
 ## What it costs
 
