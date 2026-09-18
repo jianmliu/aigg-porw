@@ -37,17 +37,17 @@ contract MeshAggregatedTest is Test {
         { (address il, address sl, uint64 el, bytes memory gl) = FX.delegationL(); inst.delegateBySig(il, sl, el, gl); }
         vm.roll(FX.EPOCH_START); vm.difficulty(FX.PREVRANDAO); cm.rollEpoch();
     }
-    function postRoot() internal { vm.prank(AGG); cm.postEpochRoot(mepId, 1, FX.AGG_ROOT, FX.AGG_COUNT); }
+    function postRoot() internal { vm.prank(AGG); cm.postEpochRoot(1, FX.AGG_ROOT, FX.AGG_COUNT); }
 
     function test_root_then_materialize_gives_eligibility_and_tasks_settle() public {
-        vm.expectRevert(bytes("no root")); (uint64 ia, IPoRWClaimManager.ClaimLeaf memory la, bytes32[] memory pa) = FX.aggLeafA(); cm.materializeClaim(mepId, 1, AGG, ia, la, pa);
+        vm.expectRevert(bytes("no root")); (uint64 ia, IPoRWClaimManager.ClaimLeaf memory la, bytes32[] memory pa) = FX.aggLeafA(); cm.materializeClaim(1, AGG, ia, la, pa);
         uint256 g0 = gasleft(); postRoot(); uint256 gRoot = g0 - gasleft();
-        vm.prank(AGG); vm.expectRevert(bytes("posted")); cm.postEpochRoot(mepId, 1, FX.AGG_ROOT, FX.AGG_COUNT);
+        vm.prank(AGG); vm.expectRevert(bytes("posted")); cm.postEpochRoot(1, FX.AGG_ROOT, FX.AGG_COUNT);
         assertFalse(cm.hasValidClaim(A, mepId, 1), "a posted root alone is not on-chain eligibility");
-        g0 = gasleft(); bytes32 idA = cm.materializeClaim(mepId, 1, AGG, ia, la, pa); uint256 gMat = g0 - gasleft(); // anyone may submit the instance's proof
+        g0 = gasleft(); bytes32 idA = cm.materializeClaim(1, AGG, ia, la, pa); uint256 gMat = g0 - gasleft(); // anyone may submit the instance's proof
         assertEq(idA, cm.claimIdOf(A, mepId, 1)); assertTrue(cm.hasValidClaim(A, mepId, 1));
-        vm.expectRevert(bytes("claimed")); cm.materializeClaim(mepId, 1, AGG, ia, la, pa);
-        (uint64 ib, IPoRWClaimManager.ClaimLeaf memory lb, bytes32[] memory pb) = FX.aggLeafB(); cm.materializeClaim(mepId, 1, AGG, ib, lb, pb);
+        vm.expectRevert(bytes("claimed")); cm.materializeClaim(1, AGG, ia, la, pa);
+        (uint64 ib, IPoRWClaimManager.ClaimLeaf memory lb, bytes32[] memory pb) = FX.aggLeafB(); cm.materializeClaim(1, AGG, ib, lb, pb);
         emit log_named_uint("gas postEpochRoot", gRoot); emit log_named_uint("gas materializeClaim", gMat);
         // epoch 2: A and B are eligible through their materialized claims; a task runs as in Mesh.t.sol
         vm.roll(FX.TASK_EPOCH * FX.EPOCH_BLOCKS); vm.difficulty(FX.TASK_PREVRANDAO); cm.rollEpoch();
@@ -63,21 +63,21 @@ contract MeshAggregatedTest is Test {
     function test_junk_leaf_wrong_proof_and_wrong_index_rejected() public {
         postRoot();
         (uint64 ij, IPoRWClaimManager.ClaimLeaf memory lj, bytes32[] memory pj) = FX.aggLeafJunk();
-        vm.expectRevert(bytes("not bonded")); cm.materializeClaim(mepId, 1, AGG, ij, lj, pj); // included, but its signature resolves to nobody bonded as 0x..ff
+        vm.expectRevert(bytes("not bonded")); cm.materializeClaim(1, AGG, ij, lj, pj); // included, but its signature resolves to nobody bonded as 0x..ff
         (uint64 ia, IPoRWClaimManager.ClaimLeaf memory la, bytes32[] memory pa) = FX.aggLeafA();
-        vm.expectRevert(bytes("not included")); cm.materializeClaim(mepId, 1, AGG, ia + 1, la, pa);
-        la.coverageBytes += 4096; vm.expectRevert(bytes("not included")); cm.materializeClaim(mepId, 1, AGG, ia, la, pa);
+        vm.expectRevert(bytes("not included")); cm.materializeClaim(1, AGG, ia + 1, la, pa);
+        la.coverageBytes += 4096; vm.expectRevert(bytes("not included")); cm.materializeClaim(1, AGG, ia, la, pa);
     }
     function test_materialized_claim_is_auditable_like_a_direct_one() public {
         postRoot();
-        (uint64 il, IPoRWClaimManager.ClaimLeaf memory ll, bytes32[] memory pl) = FX.aggLeafL(); bytes32 idL = cm.materializeClaim(mepId, 1, AGG, il, ll, pl);
+        (uint64 il, IPoRWClaimManager.ClaimLeaf memory ll, bytes32[] memory pl) = FX.aggLeafL(); bytes32 idL = cm.materializeClaim(1, AGG, il, ll, pl);
         uint256 bondedL = inst.bonded(L);
-        cm.challengeOpening{value: DEPOSIT}(idL, 7);
+        assertEq(cm.challengeOpening{value: DEPOSIT}(L, ll.mepId, 1, ll.partialsRoot, ll.coverageBytes, ll.deviceId, 7), idL);
         cm.respondOpening(idL, FX.openingFraud());
         assertFalse(cm.hasValidClaim(L, mepId, 1), "the residency liar is caught through the aggregated path too"); assertEq(inst.bonded(L), bondedL - SLASH);
     }
     function test_direct_submit_still_works_alongside() public {
         postRoot(); (IPoRWClaimManager.Claim memory c, bytes memory sig,) = FX.claimA(); cm.submitClaim(c, sig); assertTrue(cm.hasValidClaim(A, mepId, 1));
-        (uint64 ia, IPoRWClaimManager.ClaimLeaf memory la, bytes32[] memory pa) = FX.aggLeafA(); vm.expectRevert(bytes("claimed")); cm.materializeClaim(mepId, 1, AGG, ia, la, pa);
+        (uint64 ia, IPoRWClaimManager.ClaimLeaf memory la, bytes32[] memory pa) = FX.aggLeafA(); vm.expectRevert(bytes("claimed")); cm.materializeClaim(1, AGG, ia, la, pa);
     }
 }

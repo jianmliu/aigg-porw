@@ -60,6 +60,9 @@ interface IMEPRegistry {
     event MEPRegistered(bytes32 indexed mepId, bytes32 indexed modelId, bytes32 schemeDigest);
     function registerMEP(MEP calldata mep) external returns (bytes32 mepId);
     function getMEP(bytes32 mepId) external view returns (MEP memory);
+    /// @notice the two fields a residency claim is signed over; reverts for an unknown MEP. A claim path reads this instead
+    ///         of copying the whole profile (with its dynamic `weightsDA`) out of storage.
+    function claimBinding(bytes32 mepId) external view returns (bytes32 schemeDigest, bytes32 modelId);
 }
 
 interface IInstanceRegistry {
@@ -96,19 +99,23 @@ interface IPoRWClaimManager {
         bytes32[] partialsProof;
         bytes32[] weightsProof;
     }
-    /// @dev aggregated path: one Merkle root per (MEP, epoch, aggregator) over claim leaves
-    ///      leaf = keccak256(abi.encode(instance, partialsRoot, coverageBytes, deviceId, keccak256(signature)))
-    struct ClaimLeaf { address instance; bytes32 partialsRoot; uint64 coverageBytes; bytes32 deviceId; bytes signature; }
-    event EpochRootPosted(bytes32 indexed mepId, uint64 indexed epoch, address indexed aggregator, bytes32 root, uint64 count);
+    /// @dev aggregated path: ONE Merkle root per (epoch, aggregator) over the claim leaves of every MEP
+    ///      leaf = keccak256(abi.encode(mepId, instance, partialsRoot, coverageBytes, deviceId, keccak256(signature)))
+    struct ClaimLeaf { bytes32 mepId; address instance; bytes32 partialsRoot; uint64 coverageBytes; bytes32 deviceId; bytes signature; }
+    event EpochRootPosted(uint64 indexed epoch, address indexed aggregator, bytes32 root, uint64 count);
+    /// @dev the claim's contents. The contract keeps only a commitment to them, so this log is where a challenger
+    ///      finds what to pass to `challengeOpening`.
+    event ClaimData(bytes32 indexed claimId, bytes32 partialsRoot, uint64 coverageBytes, bytes32 deviceId);
     event ClaimSubmitted(bytes32 indexed claimId, address indexed instance, bytes32 indexed mepId, uint64 epoch);
     event OpeningChallenged(bytes32 indexed claimId, uint64 tileIdx, address challenger);
     event OpeningResolved(bytes32 indexed claimId, uint64 tileIdx, uint8 verdict); // 0 Fraud, 1 NoFraud, 2 Invalid, 3 Timeout
     function submitClaim(Claim calldata claim, bytes calldata signature) external returns (bytes32 claimId);
     /// @notice aggregated path: anyone posts a root over the epoch's signed claims (off-chain collected); untrusted
-    function postEpochRoot(bytes32 mepId, uint64 epoch, bytes32 root, uint64 count) external;
+    function postEpochRoot(uint64 epoch, bytes32 root, uint64 count) external;
     /// @notice materialize one claim from a posted root: inclusion proof + the leaf; the signature is verified here
-    function materializeClaim(bytes32 mepId, uint64 epoch, address aggregator, uint64 index, ClaimLeaf calldata leaf, bytes32[] calldata proof) external returns (bytes32 claimId);
-    function challengeOpening(bytes32 claimId, uint64 tileIdx) external payable;
+    function materializeClaim(uint64 epoch, address aggregator, uint64 index, ClaimLeaf calldata leaf, bytes32[] calldata proof) external returns (bytes32 claimId);
+    /// @notice the challenger supplies the claim's contents (from `ClaimData`); they must match the stored commitment
+    function challengeOpening(address instance, bytes32 mepId, uint64 epoch, bytes32 partialsRoot, uint64 coverageBytes, bytes32 deviceId, uint64 tileIdx) external payable returns (bytes32 claimId);
     function respondOpening(bytes32 claimId, Opening calldata opening) external;
     function claimExpiredChallenge(bytes32 claimId, uint64 tileIdx) external;
 }
