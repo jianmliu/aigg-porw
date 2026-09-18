@@ -5,11 +5,11 @@
 //   c' = smallest k with CDF(k) > U (the last table entry if none); records with c' < min_syn are dropped; sign kept.
 const M32 = 0xffffffff; const GOLDEN32 = 0x9e3779b9;
 export const fmix32 = (h) => { h >>>= 0; h ^= h >>> 16; h = Math.imul(h, 0x85ebca6b) >>> 0; h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35) >>> 0; h ^= h >>> 16; return h >>> 0; };
+/** the two 32-bit words [high, low] of the 64-bit uniform of a key (a, b) under a 64-bit seed: both seed words reach the high
+ *  word (h1 <- seedLo, hi <- seedHi) and the low word hashes the swapped key, so it is not a function of the high word */
+export function hash64Words(seedLo, seedHi, a, b) { const h1 = fmix32(((Math.imul(a >>> 0, GOLDEN32) + b) >>> 0) ^ seedLo); const hi = fmix32((h1 ^ seedHi) >>> 0); const lo = fmix32((((Math.imul(b >>> 0, GOLDEN32) + a) >>> 0) ^ hi ^ 0x85ebca6b) >>> 0); return [hi, lo]; }
 /** 64-bit uniform for a record as a BigInt */
-export function hash64(seedLo, seedHi, pre, post) {
-  const a = fmix32(((Math.imul(pre >>> 0, GOLDEN32) + post) >>> 0) ^ seedLo); const b = fmix32(((a ^ seedHi ^ 0x85ebca6b) >>> 0));
-  return (BigInt(a) << 32n) | BigInt(b);
-}
+export function hash64(seedLo, seedHi, pre, post) { const [hi, lo] = hash64Words(seedLo, seedHi, pre, post); return (BigInt(hi) << 32n) | BigInt(lo); }
 const Q60 = 1n << 60n, Q256 = 1n << 256n, LN2_Q60 = 799144290325165978n; // floor(ln 2 * 2^60)
 const floorDiv = (a, b) => { const q = a / b; return (a % b !== 0n && (a < 0n) !== (b < 0n)) ? q - 1n : q; };
 const bitLength = (x) => x.toString(2).length;
