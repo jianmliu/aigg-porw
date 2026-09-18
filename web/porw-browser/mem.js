@@ -11,7 +11,9 @@
 // steps) those checkpoints are 82% of the brain. TaskMarket's own limit on a task bounds the arrays a
 // dispute round must post, which is a different and far looser bound: see `maxStepsWithin` below.
 export const TILE_BYTES = 4096, LIF_STATE = 16, LIF_CHECKPOINT = 32, CSR_CHUNK = 64;
-export const WASM32_MAX_BYTES = 4 * 2 ** 30; // a wasm32 memory cannot grow past this, on any device
+// A wasm32 memory cannot grow past this, on any device. Until the pointer coercion in porw.js, the JS glue
+// gave up at half of it: a heap past 2 GiB reached the TypedArray constructors as a negative offset.
+export const WASM32_MAX_BYTES = 4 * 2 ** 30;
 
 const treeNodes = (n) => { let t = 0, w = n || 1; for (;;) { t += w; if (w === 1) break; w = Math.ceil(w / 2); } return t; };
 

@@ -44,16 +44,20 @@ export function wrap(e, memory = e.memory) {
     exports: e,
     backend: e.porw_simd_backend() === 1 ? "simd128" : "scalar",
     memory,
-    alloc: (n) => { const p = e.porw_alloc(n >>> 0); if (!p) throw new Error("wasm alloc failed"); return p; },
-    mark: () => e.porw_heap_mark(),
+    // A wasm i32 result reaches JS signed, so every pointer out of the module is coerced back to unsigned
+    // here. Without it a heap past 2 GiB hands `new Uint8Array(buffer, ptr, n)` a negative offset and the
+    // node dies with "Start offset ... is outside the bounds of the buffer" — a JS-glue ceiling at half of
+    // what wasm32 can address, which is exactly the range a tab hosting several brains reaches.
+    alloc: (n) => { const p = e.porw_alloc(n >>> 0) >>> 0; if (!p) throw new Error("wasm alloc failed"); return p; },
+    mark: () => e.porw_heap_mark() >>> 0,
     release: (m) => e.porw_heap_release(m),
     fill: (ptr, nWords, wordOffset, seed) => e.porw_fill_pattern(ptr, nWords >>> 0, wordOffset >>> 0, seed >>> 0),
     sketch: (bufPtr, nTiles, firstTile, slotSeed, outPtr) => {
       const rc = e.porw_sketch_tiles(bufPtr, nTiles >>> 0, firstTile >>> 0, slotSeed >>> 0, outPtr);
       if (rc !== 0) throw new Error("sketch rc=" + rc);
     },
-    u8: (ptr, n) => new Uint8Array(memory.buffer, ptr, n),
-    u32: (ptr, n) => new Uint32Array(memory.buffer, ptr, n),
+    u8: (ptr, n) => new Uint8Array(memory.buffer, ptr >>> 0, n),
+    u32: (ptr, n) => new Uint32Array(memory.buffer, ptr >>> 0, n),
     put: (bytes) => { const p = k.alloc(bytes.length); new Uint8Array(memory.buffer, p, bytes.length).set(bytes); return p; },
     keccak256: (bytes) => { const m = k.mark(); const p = k.put(bytes); const o = k.alloc(32);
       e.porw_keccak256(p, bytes.length, o); const r = new Uint8Array(k.u8(o, 32)); k.release(m); return r; },
