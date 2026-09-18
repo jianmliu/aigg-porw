@@ -6,10 +6,11 @@ import fs from "node:fs";
 import { synthesizePayloadV2 } from "./synth.js";
 import { decodeHeader } from "./model.js";
 import * as V from "./verify.js";
-import { applyDelta, diffPayloads, decodeDelta, encodeDelta, records, encodePayload, modelIdOf, deltaId, encodeDelta2, decodeDelta2, applyDelta2, sampleCounts, encodeDelta3, decodeDelta3, genotype, GRANULARITY } from "./delta.js";
+import { applyDelta, diffPayloads, decodeDelta, encodeDelta, records, encodePayload, modelIdOf, deltaId, encodeDelta2, decodeDelta2, applyDelta2, sampleCounts, encodeDelta3, decodeDelta3, genotype, GRANULARITY, LAYOUT, MUT_ALWAYS, fitName, baseNameLength, recordAt, expectedRecord, crossContext } from "./delta.js";
 import { nbTable, hash64, hash64Words, lnQ60, expQ256, DEFAULT_R_TABLE } from "./sample.js";
 import { loadKernelFromBytes } from "./porw.js";
 import { PorwNode } from "./node.js";
+const enc8 = (str) => new TextEncoder().encode(str).length;
 let fails = 0; const check = (n, ok) => { console.log((ok ? "  ok   " : "  FAIL ") + n); if (!ok) fails++; };
 const throws = (f, re) => { try { f(); return false; } catch (e) { return re ? re.test(String(e.message)) : true; } };
 const n = 3000, ns = 30000;
@@ -94,6 +95,41 @@ check("and the same execution digest", V.eq(rA.result.execDigest, rB.result.exec
     && throws(() => { const p = reg(encodeDelta2({ baseModelId: mid, neurons: n, seed: 9n, name: "ops", ops: [{ pre: 0, post: 1, w: 5 }] })); applyDelta(base, cross(p, f1, 107n), { resolve }); }, /no explicit ops/)
     && throws(() => { const p = reg(encodeDelta2({ baseModelId: modelIdOf(other), neurons: n, seed: 9n, name: "foreign" })); applyDelta(base, cross(p, f1, 108n), { resolve }); }, /base model id mismatch/));
   const E = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "44".repeat(32) }); const stE = await E.loadDelta(base, c1, { resolve, maxSteps: 20, exec: "lif" }); check("node.loadDelta(base, v3 delta, { resolve }): the child's model_id, parents recorded", V.eq(stE.modelId, modelIdOf(applyDelta(base, c1, { resolve }))) && stE.delta.version === 3 && V.eq(stE.delta.parents[0], deltaId(f1)));
+}
+
+// ---- in-place layout: records keep the base's positions, so one record of a child is re-derivable from one record of its parents ----
+{
+  const NL = baseNameLength(base); const byId = new Map(); const resolve = (id) => byId.get(id); const reg = (b) => { byId.set(V.hex(deltaId(b)), b); return b; }; const zero = new Uint8Array(32);
+  const mk = (o) => reg(encodeDelta3({ baseModelId: mid, neurons: n, layout: LAYOUT.inplace, minSyn: 5, meanRatioQ16: 60293, ...o, name: fitName(o.name, NL) }));
+  const founder = (seed) => mk({ parentA: zero, parentB: zero, seed, mutRateQ32: MUT_ALWAYS, name: "founder" + seed }); const f1 = founder(1n), f2 = founder(2n), f3 = founder(3n);
+  check(`fitName gives the base's name length (${NL} bytes) and a founder is a ${f1.length}-byte base x base cross that always mutates`, enc8(decodeDelta3(f1).name) === NL && decodeDelta3(f1).layout === 1 && decodeDelta3(f1).mutRateQ32 === MUT_ALWAYS);
+  const P1 = applyDelta(base, f1, { resolve }), P2 = applyDelta(base, f2, { resolve }); const rb = records(base), r1 = records(P1);
+  check("an in-place individual has the base's size, record count and record positions; only weights (and the name) differ", P1.length === base.length && r1.length === rb.length && r1.every((r, i) => r.pre === rb[i].pre && r.post === rb[i].post) && decodeHeader(P1).synOffset === decodeHeader(base).synOffset);
+  const zeros = r1.filter((r) => r.w === 0).length; check(`weights are 0 or >= min_syn with the base's sign (${zeros} of ${r1.length} records zeroed), and the header and root ids are the base's bytes`, zeros > 0 && r1.every((r, i) => r.w === 0 || (Math.abs(r.w) >= 5 && Math.sign(r.w) === Math.sign(rb[i].w))) && V.eq(P1.subarray(30 + NL, decodeHeader(base).synOffset), base.subarray(30 + NL, decodeHeader(base).synOffset)) && V.eq(P1.subarray(0, 30), base.subarray(0, 30)));
+  const c1 = mk({ parentA: deltaId(f1), parentB: deltaId(f2), seed: 101n, name: "child101" }), c2 = mk({ parentA: deltaId(f1), parentB: deltaId(f2), seed: 102n, name: "child102" }); const C1 = applyDelta(base, c1, { resolve }), C2 = applyDelta(base, c2, { resolve });
+  // the locality property: every record of the child from the same record of the base and of the parents' PAYLOADS
+  { const ctx = crossContext(decodeDelta3(c1)); let bad = 0; for (let j = 0; j < rb.length; j++) { const e = expectedRecord(c1, base, P1, P2, j, ctx), got = recordAt(C1, j); if (e.w !== got.w || e.pre !== got.pre || e.post !== got.post) bad++; } check(`record-local: all ${rb.length} records of a child re-derive from record j of the base and of its parents' payloads`, bad === 0); }
+  { const ctx = crossContext(decodeDelta3(f1)); let bad = 0; for (let j = 0; j < rb.length; j += 7) if (expectedRecord(f1, base, null, null, j, ctx).w !== recordAt(P1, j).w) bad++; check("a founder re-derives from the base alone", bad === 0); }
+  { const t = Uint8Array.from(C1); const h = decodeHeader(t); const dv = new DataView(t.buffer); const j = 1234; dv.setInt16(h.synOffset + j * 10 + 8, recordAt(t, j).w + 1, true); check("a tampered record is exposed by its own re-derivation (and changes the model_id)", expectedRecord(c1, base, P1, P2, j).w !== recordAt(t, j).w && !V.eq(modelIdOf(t), modelIdOf(C1))); }
+  // inheritance and stationarity survive the layout
+  const W = (P) => records(P).map((r) => Math.abs(r.w)); const dist = (x, y) => { let s = 0; for (let i = 0; i < x.length; i++) s += Math.abs(Math.log((x[i] + 1) / (y[i] + 1))); return s / x.length; }; const w1 = W(P1), w2 = W(P2), wc = W(C1), wc2 = W(C2), w3 = W(applyDelta(base, f3, { resolve }));
+  const dPC = (dist(wc, w1) + dist(wc, w2)) / 2, dSib = dist(wc, wc2), dUn = dist(wc, w3), dFF = dist(w1, w2); check(`kinship in place: parent-child ${dPC.toFixed(3)} < siblings ${dSib.toFixed(3)} < unrelated ${dUn.toFixed(3)} ~ founders ${dFF.toFixed(3)}`, dPC < dSib && dSib < dUn && Math.abs(dUn / dFF - 1) < 0.1);
+  const g2 = mk({ parentA: deltaId(c1), parentB: deltaId(c2), seed: 201n, name: "grand201" }); const ex = (w) => w.filter((v) => v >= 5).length; const e0 = ex(w1), e2 = ex(W(applyDelta(base, g2, { resolve }))); check(`stationary: expressed records ${e0} (founder) vs ${e2} (grandchild)`, Math.abs(e2 / e0 - 1) < 0.05);
+  // the compact materialization of the same recipe expresses the same connections
+  { const cf1 = reg(encodeDelta3({ baseModelId: mid, neurons: n, parentA: zero, parentB: zero, seed: 1n, mutRateQ32: MUT_ALWAYS, minSyn: 5, meanRatioQ16: 60293, name: "cf1" })); const comp = records(applyDelta(base, cf1, { resolve })); const inpl = r1.filter((r) => r.w !== 0); check("compact and in-place materializations of one recipe express the same records and weights (different bytes, different model_id)", comp.length === inpl.length && comp.every((r, i) => r.pre === inpl[i].pre && r.post === inpl[i].post && r.w === inpl[i].w)); }
+  // closure rules
+  check("rejects a name of another length, explicit ops, mixed layouts and a parent with a larger min_syn",
+    throws(() => applyDelta(base, reg(encodeDelta3({ baseModelId: mid, neurons: n, layout: 1, parentA: zero, parentB: zero, seed: 5n, name: "short" })), { resolve }), /byte length/)
+    && throws(() => encodeDelta3({ baseModelId: mid, neurons: n, layout: 1, parentA: zero, parentB: zero, seed: 5n, name: fitName("x", NL), ops: [{ pre: 0, post: 1, w: 5 }] }), /no explicit ops/)
+    && throws(() => { const compactParent = reg(encodeDelta3({ baseModelId: mid, neurons: n, parentA: zero, parentB: zero, seed: 6n, name: "cp" })); applyDelta(base, mk({ parentA: deltaId(compactParent), parentB: zero, seed: 7n, name: "mix" }), { resolve }); }, /one layout/)
+    && throws(() => { const v2p = reg(encodeDelta2({ baseModelId: mid, neurons: n, seed: 8n, name: "v2" })); applyDelta(base, mk({ parentA: deltaId(v2p), parentB: zero, seed: 9n, name: "mixv2" }), { resolve }); }, /one layout/)
+    && throws(() => { const strict = mk({ parentA: zero, parentB: zero, seed: 10n, mutRateQ32: MUT_ALWAYS, minSyn: 8, name: "strict" }); applyDelta(base, mk({ parentA: deltaId(strict), parentB: zero, seed: 11n, name: "lax" }), { resolve }); }, /min_syn/));
+  const N = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "55".repeat(32) }); const stN = await N.loadDelta(base, c1, { resolve, maxSteps: 40 }); check("node.loadDelta on an in-place child: the model_id of the in-place bytes", V.eq(stN.modelId, modelIdOf(C1)));
+  // zero weights are inert: the in-place brain and its compact twin spike identically, so a task's execDigest does not depend on the layout
+  { const twin = reg(encodeDelta3({ baseModelId: mid, neurons: n, parentA: deltaId(f1), parentB: deltaId(f2), seed: 101n, minSyn: 5, meanRatioQ16: 60293, name: "twin" })); const cf = (seed) => reg(encodeDelta3({ baseModelId: mid, neurons: n, parentA: zero, parentB: zero, seed, mutRateQ32: MUT_ALWAYS, minSyn: 5, meanRatioQ16: 60293, name: "cf" + seed }));
+    const tw = reg(encodeDelta3({ baseModelId: mid, neurons: n, parentA: deltaId(cf(1n)), parentB: deltaId(cf(2n)), seed: 101n, minSyn: 5, meanRatioQ16: 60293, name: "twin101" })); const M = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "66".repeat(32) }); const stM = await M.loadDelta(base, tw, { resolve, maxSteps: 40 });
+    const run = async (nd, st) => { const r = await nd.execute(st.mep.mepId, { steps: 40, commitStride: 10, stimulusSeed: 3 }); return (r.result || r).execDigest; }; const dI = await run(N, stN), dC = await run(M, stM);
+    check("an in-place child and its compact twin produce the same execDigest (different model_id, same spikes)", V.eq(dI, dC) && !V.eq(stN.modelId, stM.modelId) && stM.hdr.synapses < stN.hdr.synapses); }
 }
 // the real brain, if given: apply(base, python-made v2 delta) must reproduce the python-applied payload byte for byte
 const [basePath2, deltaPath, appliedPath, ...ancestorPaths] = process.argv.slice(2);

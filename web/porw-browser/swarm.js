@@ -58,7 +58,7 @@ export function assignSortition(beacon, mepId, taskId, instances, r) {
  *  would let anyone squat a client's id with different parameters, and the executors would run those instead.
  *  The Task is a static tuple, so abi.encode lays it out inline: 8 words, then the nonce. */
 export const taskId = (t, nonce32) => keccak_256(cat(
-  t.mepId, abiU(t.stimulusSeed), abiU(t.steps), abiU(t.commitStride), t.inputCommit,
+  t.mepId, abiU(t.stimulusSeed), abiU(t.steps), abiU(t.commitStride), t.initStateRoot,
   abiU(t.fee), abiU(t.deadline), abiU(t.redundancy), nonce32));
 const abiU = (n) => { const o = new Uint8Array(32); let x = BigInt(n); for (let i = 31; i >= 0; i--) { o[i] = Number(x & 255n); x >>= 8n; } return o; };
 

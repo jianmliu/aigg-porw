@@ -32,9 +32,9 @@ export function verifyClaim(resp, mep, expectedChallenge, { domain = null, block
   let addr = null;
   try { addr = recoverAddress(domain ? claimDigest(domain, c) : resp.claimHash, resp.signature); } catch { addr = null; } // malformed signature == invalid, never a crash
   if (!addr || !V.eq(addr, resp.address)) fail("signature");
-  r.signer = addr; r.slotSeed = V.slotSeed(c.challenge, c.deviceId);
-  r.instance = addr ? V.hex(addr) : null;
+  r.signer = addr; r.instance = addr ? V.hex(addr) : null;
   if (addr && resp.delegation) { const inst = verifyDelegation(resp.delegation.domain || domain, resp.delegation, V.hex(addr), blockNumber); if (!inst) fail("delegation"); r.instance = inst; }
+  r.slotSeed = r.instance ? V.slotSeed(c.challenge, r.instance) : null; // seeded by the instance the claim resolves to (the wallet behind a session key)
   return r;
 }
 
@@ -50,7 +50,7 @@ export function verifyOpening(o, claim, slotSeed, nTiles) {
 
 // Redundant re-execution of a TASK's inference with the verifier's own kernel + model copy.
 // `run` is the task's parameters plus the executor's claimed digest: { stimulusSeed, steps, execDigest }.
-// It is deliberately not a residency claim: under sketch-tile-keccak:v2 a claim attests residency only,
+// It is deliberately not a residency claim: under sketch-tile-keccak (since v2) a claim attests residency only,
 // and execution is attested per task by TaskMarket's Result.
 export function reexecute(kernel, payloadBytes, run) {
   const k = attachSpmv(kernel, kernel.exports);

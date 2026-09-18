@@ -50,7 +50,7 @@ try {
                    steps, exec: st.exec, fetchMs, leavesMs: st.leavesMs, backend: node.k.backend, hc: navigator.hardwareConcurrency, workers, iso: crossOriginIsolated, sorted: st.csr.sorted }),
     challenge: async (chHex, seed) => { const r = await node.challenge(st.mep.mepId, Uint8Array.from(chHex.match(/../g).map((h) => parseInt(h, 16))), { steps, commitStride: st.exec === "lif" ? Math.min(10, steps) : 1, stimulusSeed: seed });
       const c = r.claim; return { claim: { schemeDigest: hex(c.schemeDigest), mepId: hex(c.mepId), modelId: hex(c.modelId), partialsRoot: hex(c.partialsRoot),
-        coverageBytes: c.coverageBytes, challenge: hex(c.challenge), deviceId: hex(c.deviceId) },
+        coverageBytes: c.coverageBytes, challenge: hex(c.challenge) },
         claimHash: hex(r.claimHash), digest: hex(r.digest), signature: hex(r.signature), address: hex(r.address), delegation: r.delegation, timings: r.timings,
         result: { execDigest: hex(r.result.execDigest), execRoot: hex(r.result.execRoot), initStateRoot: r.result.initStateRoot ? hex(r.result.initStateRoot) : null, stimulated: r.result.stimulated } }; },
     open: (t) => { const o = node.open(st.mep.mepId, t); return { tileIdx: o.tileIdx, position: o.position, tile: hex(o.tile), sketch: o.sketch,

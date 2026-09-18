@@ -1,6 +1,6 @@
 // How much wasm memory one hosted brain costs a tab, and therefore how many a tab can hold.
 //
-// Under scheme sketch-tile-keccak:v2 a residency claim is 34 ms, so CPU stopped being what
+// Under scheme sketch-tile-keccak (since v2) a residency claim is 34 ms, so CPU stopped being what
 // limits `h`, the number of brains one tab hosts. This measures what does. The kernel is a bump
 // allocator (`porw_alloc`), so `porw_heap_mark()` is an exact high-water mark: the delta across
 // `loadModel` is precisely what that brain costs, with no page rounding and no GC noise.

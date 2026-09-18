@@ -1,4 +1,4 @@
-// model id (keccak weights Merkle root, scheme aigg:porw:sketch-tile-keccak:v2), synapse root and MEP id
+// model id (keccak weights Merkle root, scheme aigg:porw:sketch-tile-keccak:v3), synapse root and MEP id
 // of a payload file -- exactly the fields MEPRegistry.registerMEP pins.
 //   node model_id.mjs <payload.bin>
 import fs from "node:fs";

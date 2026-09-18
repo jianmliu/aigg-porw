@@ -10,7 +10,7 @@ import * as V from "./verify.js";
 import { startRelay } from "./relay.js";
 import { RelayClient } from "./relay_client.js";
 import { NodeService } from "./node_service.js";
-import { Aggregator, verifyClaimProof, claimLeafHash, leafOf } from "./aggregator.js";
+import { Aggregator, EpochTree, verifyClaimProof, claimLeafHash, leafOf } from "./aggregator.js";
 import { domains, walletAndSession } from "./export_fixtures_common.js";
 let fails = 0; const check = (n, ok) => { console.log((ok ? "  ok   " : "  FAIL ") + n); if (!ok) fails++; };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -37,5 +37,15 @@ const none = agg.proofFor(C.ws.wallet.address); check("an omitted instance gets 
 // determinism: another aggregator seeing the same claims builds the same root
 const agg2 = new Aggregator(cG, mep, challenge, { epoch: 1, domain: domains.claimManager, blockNumber: 100 }); for (const [, c] of agg.claims) agg2.claims.set(c.leaf.instance, c);
 check("two aggregators with the same claims -> identical root", V.hex(agg2.build().root) === call.root);
+// one root per epoch over several MEPs: a second brain's claims join the same tree, the leaf carries its mepId
+{ const mep2 = { ...mep, mepId: Uint8Array.from(mep.mepId, (b, i) => (i === 31 ? b ^ 0xff : b)) }; const agg3 = new Aggregator(cG, mep2, challenge, { epoch: 1, domain: domains.claimManager, blockNumber: 100 });
+  for (const [k, c] of agg.claims) agg3.claims.set(k, { ...c, leaf: { ...c.leaf, mepId: mep2.mepId } });
+  const T = new EpochTree([agg, agg3], 1); const rc = T.postRootCall(); const m1 = V.hex(mep.mepId), m2 = V.hex(mep2.mepId), a = A.ws.wallet.address;
+  check(`epoch tree: one root over ${rc.count} leaves of 2 MEPs, sorted by (mepId, instance), calldata has no mepId`, rc.count === 4 && rc.mepId === undefined && rc.epoch === 1 && T.tree.keys.every((k, i) => !i || T.tree.keys[i - 1] < k));
+  const p1 = T.proofFor(m1, a), p2 = T.proofFor(m2, a);
+  check("the same instance has one proof per MEP against the same root", verifyClaimProof(p1.payload, rc.root) && verifyClaimProof(p2.payload, rc.root) && p1.payload.index !== p2.payload.index && p1.payload.leaf.mepId === m1 && p2.payload.leaf.mepId === m2);
+  const swapped = JSON.parse(JSON.stringify(p1.payload)); swapped.leaf.mepId = m2; check("a leaf presented under another MEP does not verify (mepId is inside the leaf hash)", !verifyClaimProof(swapped, rc.root));
+  check("a (MEP, instance) the tree lacks gets no proof", T.proofFor(m2, C.ws.wallet.address) === null);
+  agg.epochTree = T; check("an aggregator attached to the shared tree serves proofs from the posted root", agg.proofFor(a).payload.root === rc.root && agg.postRootCall().count === 4); }
 for (const x of [A, B, C]) x.c.close(); cG.close(); await R.close();
 console.log(fails ? `${fails} FAILURES` : "ALL PASS"); process.exit(fails ? 1 : 0);

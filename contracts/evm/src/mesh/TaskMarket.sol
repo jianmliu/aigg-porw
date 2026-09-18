@@ -105,8 +105,8 @@ contract TaskMarket is ITaskMarket {
     function resultDigest(bytes32 taskId, bytes32 execDigest, bytes32 execRoot) public view returns (bytes32) { return PorwEIP712.digest(DOMAIN_SEPARATOR, PorwEIP712.resultStructHash(taskId, execDigest, execRoot)); }
     function resultOf(bytes32 taskId, address who) external view returns (bytes32 execDigest, bytes32 execRoot) { Result storage r = results[taskId][who]; return (r.execDigest, r.execRoot); }
     function taskInfo(bytes32 taskId) external view returns (bytes32 mepId, uint32 stimulusSeed, address client, uint32 steps, uint32 commitStride) { StoredTask storage st = tasks[taskId]; return (st.t.mepId, st.t.stimulusSeed, st.client, st.t.steps, st.t.commitStride); }
-    /// @notice the task's input commitment (int-lif: initStateRoot over state_0 derived from the stimulus set)
-    function taskInput(bytes32 taskId) external view returns (bytes32) { return tasks[taskId].t.inputCommit; }
+    /// @notice the state root agreed before step 1 (int-lif: over state_0, which anyone derives from the stimulus set)
+    function taskInitStateRoot(bytes32 taskId) external view returns (bytes32) { return tasks[taskId].t.initStateRoot; }
 
     function submitResult(bytes32 taskId, Result calldata r, bytes calldata signature) external {
         StoredTask storage st = tasks[taskId];
