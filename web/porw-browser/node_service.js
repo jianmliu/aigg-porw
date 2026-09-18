@@ -41,7 +41,12 @@ export class NodeService {
       const p = env.payload; if (env.mepId !== id || typeof p.taskId !== "string") return null;
       const ids = Array.isArray(p.stimulusIds) ? Uint32Array.from(p.stimulusIds) : null;
       // steps and commitStride are the TASK's: they are no longer pinned by the MEP, so the announcement carries them
-      const r = await this.node.execute(mepId, { steps: (p.steps >>> 0) || 1, commitStride: (p.commitStride >>> 0) || 1, stimulusSeed: p.stimulusSeed >>> 0, stimulusIds: ids });
+      const silence = Array.isArray(p.silenceIds) ? Uint32Array.from(p.silenceIds) : null;
+      const r = await this.node.execute(mepId, { steps: (p.steps >>> 0) || 1, commitStride: (p.commitStride >>> 0) || 1, stimulusSeed: p.stimulusSeed >>> 0, stimulusIds: ids, silenceIds: silence });
+      // The task on chain commits to state_0 (initStateRoot). If the announcement names it and this node built another
+      // one -- a stimulus or silence set it was not told about, or an announcement in a dialect it does not speak --
+      // signing the result would be signing a run of a different task. Refuse instead of being slashed for it.
+      if (typeof p.initStateRoot === "string" && r.result.initStateRoot && hex(r.result.initStateRoot) !== p.initStateRoot.toLowerCase()) { this.served.refused = (this.served.refused || 0) + 1; return { type: "result-refused", payload: { taskId: p.taskId, reason: "state_0 does not match the task's initStateRoot", built: hex(r.result.initStateRoot) } }; }
       const h = resultSigningHash(this.node.domains?.market, unhex(p.taskId), r.result.execDigest, r.result.execRoot);
       this.served.tasks++;
       const result = { taskId: p.taskId, execDigest: hex(r.result.execDigest), execRoot: hex(r.result.execRoot), signature: hex(signHash(h, this.node.key.priv)), signer: hex(this.node.key.address), delegation: this.node.delegation || null };

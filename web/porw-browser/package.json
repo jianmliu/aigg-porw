@@ -4,7 +4,7 @@
   "description": "",
   "main": "porw.js",
   "scripts": {
-    "test": "node test_wasm.mjs && node test_node.mjs - && node test_swarm.mjs && node test_pool.mjs && node test_dispute.mjs && node test_lif.mjs && node test_delta.mjs && node test_mem.mjs && node test_sample_wasm.mjs && node test_delta_wasm.mjs && node test_node_delta_wasm.mjs && node test_eip712.mjs && node test_relay.mjs && node test_relay_keepalive.mjs && node test_aggregator.mjs && node test_mep_terms.mjs",
+    "test": "node test_wasm.mjs && node test_node.mjs - && node test_swarm.mjs && node test_pool.mjs && node test_dispute.mjs && node test_lif.mjs && node test_delta.mjs && node test_mem.mjs && node test_sample_wasm.mjs && node test_delta_wasm.mjs && node test_node_delta_wasm.mjs && node test_eip712.mjs && node test_relay.mjs && node test_relay_keepalive.mjs && node test_aggregator.mjs && node test_mep_terms.mjs && node test_lif_silence.mjs",
     "build": "./build.sh"
   },
   "keywords": [],

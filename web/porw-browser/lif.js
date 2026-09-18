@@ -29,10 +29,11 @@ export function transition(S, I, i, step, seed) {
   let g = BigInt(S.g); g = g - ((g * BigInt(LIF.dtTauSQ16)) >> 16n) + I * BigInt(LIF.wUnitQ16);
   if (g > I32_MAX) g = I32_MAX; if (g < I32_MIN) g = I32_MIN;
   let v, refr, spike;
-  if (S.flags & 1) { spike = ext(i, step, seed); v = 0n; refr = 0; }
+  if (S.flags & 4) { spike = 0; v = 0n; refr = 0; } // silenced (bit2): never spikes, and silence wins over the stimulus
+  else if (S.flags & 1) { spike = ext(i, step, seed); v = 0n; refr = 0; }
   else if (S.refr > 0) { spike = 0; v = 0n; refr = S.refr - 1; }
   else { v = BigInt(S.v) + (((g - BigInt(S.v)) * BigInt(LIF.dtTauMQ16)) >> 16n); if (v >= BigInt(LIF.threshQ16)) { spike = 1; v = 0n; refr = LIF.refract; } else { spike = 0; refr = 0; } }
-  return { v: Number(v), g: Number(g), refr, flags: (S.flags & 1) | (spike << 1), count: (S.count + spike) >>> 0 };
+  return { v: Number(v), g: Number(g), refr, flags: (S.flags & 5) | (spike << 1), count: (S.count + spike) >>> 0 };
 }
 export const sameState = (a, b) => a.v === b.v && a.g === b.g && a.refr === b.refr && a.flags === b.flags && a.count === b.count;
 /** signed 10-byte record */

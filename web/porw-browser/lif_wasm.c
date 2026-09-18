@@ -12,7 +12,7 @@
  * synapse count (sign = presynaptic neurotransmitter). Records sorted by post.
  *
  * State per neuron (16 B): v i32 (Q16 mV above rest), g i32 (Q16 mV synaptic drive),
- * refr u16 (refractory steps left), flags u16 (bit0 stimulated, bit1 spiked this step),
+ * refr u16 (refractory steps left), flags u16 (bit0 stimulated, bit1 spiked this step, bit2 silenced),
  * count u32 (spikes so far). state_0: everything 0 except flags.bit0 on stimulated neurons.
  *
  * Transition, neuron i, step s >= 1, with I = sum over incoming k of w_k * spiked_{s-1}[pre_k]
@@ -22,7 +22,10 @@
  *   refr > 0   : spike = 0;               v1 = 0; refr1 = refr - 1
  *   else       : v1 = v + (((g1 - v) * DT_TAU_M) >> 16)
  *                spike = v1 >= THRESH;  if spike { v1 = 0; refr1 = REFRACT } else refr1 = 0
- *   count1 = count + spike;  flags1 = (flags & 1) | (spike << 1)
+ *   count1 = count + spike;  flags1 = (flags & 5) | (spike << 1)
+ * A SILENCED neuron (bit2) never spikes: spike = 0, v1 = 0, refr1 = 0, whatever else is set -- silence wins over the
+ * stimulus. Like bit0 it is part of state_0 and therefore of the task's initStateRoot, and it persists. Bits 3..15 are
+ * reserved and must be zero. A state with bit2 clear evolves exactly as it did before bit2 had a meaning.
  *   ext(i, s, seed) = fmix32(fmix32(i * GOLDEN32 + seed) + s * GOLDEN32) < EXT_P_Q32
  *
  * The pinned parameter set is folded into the execution-kind digest (see lif.js).
@@ -77,15 +80,23 @@ static inline lif_state_t lif_step_one(lif_state_t S, int64_t I, uint32_t i, uin
     g = g - sar64(g * (int64_t)DT_TAU_S_Q16, 16) + I * (int64_t)W_UNIT_Q16;
     if (g > INT32_MAX) g = INT32_MAX; if (g < INT32_MIN) g = INT32_MIN;
     lif_state_t R; R.g = (int32_t)g; uint32_t spike;
-    if (S.flags & 1u) { spike = porw_lif_ext(i, step, seed); R.v = 0; R.refr = 0; }
+    if (S.flags & 4u) { spike = 0; R.v = 0; R.refr = 0; }
+    else if (S.flags & 1u) { spike = porw_lif_ext(i, step, seed); R.v = 0; R.refr = 0; }
     else if (S.refr > 0) { spike = 0; R.v = 0; R.refr = (uint16_t)(S.refr - 1); }
     else {
         int64_t v = (int64_t)S.v + sar64((g - (int64_t)S.v) * (int64_t)DT_TAU_M_Q16, 16);
         if (v >= THRESH_Q16) { spike = 1; v = 0; R.refr = REFRACT; } else { spike = 0; R.refr = 0; }
         R.v = (int32_t)v;
     }
-    R.count = S.count + spike; R.flags = (uint16_t)((S.flags & 1u) | (spike << 1));
+    R.count = S.count + spike; R.flags = (uint16_t)((S.flags & 5u) | (spike << 1));
     return R;
+}
+
+/* silence set: OR bit2 into an already built state_0 (after state0_canonical / state0_set); ids must be < n */
+EXPORT("porw_lif_state0_silence")
+int porw_lif_state0_silence(lif_state_t *st, uint32_t n, const uint32_t *ids, uint32_t n_ids) {
+    for (uint32_t j = 0; j < n_ids; j++) { if (ids[j] >= n) return 2; st[ids[j]].flags |= 4u; }
+    return 0;
 }
 
 /* scatter step over all records (reference path): I[post] += w * spiked[pre]; acc = i64[n] scratch */
