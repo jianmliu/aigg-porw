@@ -565,3 +565,27 @@ challenger against an honest settled executor, at the price of a deposit it got 
   from a re-execution). It gains nothing by it. Making the digest adjudicable needs either a digest that is a function
   of the root (as a batch's is) or a bisection of the digest's own computation; neither is done here.
 
+## Batches in the browser node (2026-09)
+
+The contracts could settle and dispute a batch; nothing could execute one. Now the node can.
+
+- `web/porw-browser/batch.js` mirrors `PorwMeshHash` (run leaf, run-result leaf, batch digest, batch id) and the Run
+  phase (`bisectRuns`, the pair a party posts for a node of its result tree). `batch_vectors.json` holds four literals
+  that `test_batch.mjs` asserts from the JS side and `Batch.t.sol` from the Solidity side.
+- `PorwNode.executeBatch(mepId, { steps, commitStride, runs })` runs each `{ stimulusSeed, stimulusIds?, silenceIds? }` as
+  an ordinary committed run and keeps its seed, its `state_0` root, its `execRoot`, and its counts digest (which is for
+  the dataset; it is not consensus). Every run of a batch is, bit for bit, the run the single-task path produces. Only
+  the last run's state stays in the slot, so a dispute finds the run first (`batchNode`) and then reopens it
+  (`batchOpenRun(mepId, k)`: `openRun`'s arguments, and the run re-executed and checked against the root that was
+  committed for it). From there the int-lif dispute helpers answer for that run, unchanged.
+- `NodeService` serves `batch-announce`. Runs of a dataset share a handful of id sets, so an announcement may name them
+  once (`sets`) and let a run say `stimulusSet` / `silenceSet`. As for a single task, the node executes what it was told,
+  compares the root of the runs it built with the announced `initStateRoot`, and refuses to sign a batch whose runs are
+  not the task's. The reply carries every run's `execRoot`, `state_0` root and counts digest: those are the dataset's
+  rows, and `verifyRunResult` checks any one of them against the settled `execRoot`.
+- Two fixes that the batch needed and the single task was missing. The relay's envelope whitelist did not know
+  `result-refused`, so the refusal added with the silence set was dropped by every relay; and a requester waiting for a
+  `result` ignored it and waited out its timeout. Both message types are whitelisted now, and a refusal rejects the
+  request with its reason.
+
+What a batch costs an executor is its runs, one after another: a batch is sized against the task timeout, not against gas.

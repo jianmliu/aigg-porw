@@ -149,6 +149,21 @@ contract BatchTest is Test {
         assertEq(inst.bonded(liar), 2 ether - 0.5 ether, "slashed"); assertEq(honest.balance, 10 ether - 2 ether + 0.5 ether + 1 ether, "the honest executor gets the slash and the whole fee");
     }
 
+    /// The batch hashes, against the browser node's: web/porw-browser/batch_vectors.json holds the same four literals and
+    /// test_batch.mjs asserts them from the JS side (batch.js), so a drift on either side fails one of the two.
+    function idOf(ITaskMarket.Task calldata t, uint32 runs, bytes32 nonce) external pure returns (bytes32) { return PorwMeshHash.batchId(t, runs, nonce); }
+    function test_the_batch_hashes_are_the_browser_nodes() public view {
+        bytes32 init = bytes32(uint256(0xabababababababababababababababababababababababababababababababab)); bytes32 root = bytes32(uint256(0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd));
+        assertEq(PorwMeshHash.runLeaf(613, 7, init), 0x41c6a7f58eee976f41f4ed59485df80994de5e0294a17123ba24659f759a50c6, "runLeaf");
+        assertEq(PorwMeshHash.runResultLeaf(613, root), 0xf399d98da31382207e92a1e4b8e808dc0e7aad7390d55ec17798c85c57ba406e, "runResultLeaf");
+        assertEq(PorwMeshHash.batchDigest(root), 0xa1d52fb9d531952e95bc2165c934a183c0a95cb2797e1712f875a09a795b9147, "batchDigest");
+        ITaskMarket.Task memory t = ITaskMarket.Task({ mepId: bytes32(uint256(0x2222222222222222222222222222222222222222222222222222222222222222)), stimulusSeed: 0, steps: 40, commitStride: 10,
+            initStateRoot: bytes32(uint256(0x3333333333333333333333333333333333333333333333333333333333333333)), fee: 1 ether, deadline: 10000000, redundancy: 2 });
+        assertEq(this.idOf(t, 1000, bytes32(uint256(0x1111111111111111111111111111111111111111111111111111111111111111))), 0x7b3827c74a2ad294218f9186b447dda64a44c45bd862212a5a934a886840afaa, "batchId");
+        // and the test's own leaves above are the library's
+        assertEq(inputLeaves()[STAR], PorwMeshHash.runLeaf(STAR, seedOf(STAR), initOf(STAR))); (ITaskMarket.Result memory ra,) = FX.resultA0(); assertEq(resultLeaves(true)[STAR], PorwMeshHash.runResultLeaf(STAR, ra.execRoot));
+    }
+
     /// forge does not enforce EIP-170 in tests, and the chain does. The Run phase took this contract over the limit once
     /// before it shared `postChildren` with the neuron bisection; this is here so that the next addition finds out in CI.
     function test_the_contracts_still_fit_in_a_contract() public view {

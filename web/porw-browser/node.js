@@ -12,7 +12,8 @@ import { decodeHeader, attachSpmv } from "./model.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { claimHash, signHash, keypair } from "./claim.js";
 import { makeMep } from "./mep.js";
-import { hex, CSR_CHUNK, instanceWord } from "./verify.js";
+import { hex, CSR_CHUNK, instanceWord, merkleProof } from "./verify.js";
+import { batchTrees, levelsOf, childrenAt } from "./batch.js";
 import { claimDigest } from "./eip712.js";
 import { lifExecKind, countsDigest, decodeState, encodeState, transition } from "./lif.js";
 const LIF_STATE = 16, LIF_CHECKPOINT = 32;
@@ -23,6 +24,8 @@ export class PorwNode {
   buildTree(...args) { return this.withKernelOperation(() => this._buildTree(...args)); }
   residency(...args) { return this.withKernelOperation(() => this._residency(...args)); }
   execute(...args) { return this.withKernelOperation(() => this._execute(...args)); }
+  executeBatch(...args) { return this.withKernelOperation(() => this._executeBatch(...args)); }
+  batchOpenRun(...args) { return this.withKernelOperation(() => this._batchOpenRun(...args)); }
   challenge(...args) { return this.withKernelOperation(() => this._challenge(...args)); }
   runInference(...args) { return this.withKernelOperation(() => this._runInference(...args)); }
   lifStep(...args) { return this.withKernelOperation(() => this._lifStep(...args)); }
@@ -210,6 +213,37 @@ export class PorwNode {
     return { steps, commitStride, timings: t,
       result: { execDigest: st.execDigest, execRoot: st.execRoot, actRoots: st.actRoots, csrRoot: st.csr.csrTree.root, rowRoot: st.csr.rowTree.root, synapseRoot: st.csr.synapseRoot,
                 initStateRoot: st.initStateRoot || null, stimulated: st.stimulated ?? null } };
+  }
+
+  /** Execute a BATCH (TaskMarket.postBatch): `runs` = [{ stimulusSeed, stimulusIds?, silenceIds? }], all under the
+   *  task's `steps` and `commitStride`. Each run is an ordinary committed run; what is kept of it is its seed, its
+   *  state_0 root and its execRoot (and its counts digest, which is for the dataset and is not consensus). The result
+   *  is the batch's: execRoot over runResultLeaf(k, execRoot_k), execDigest a function of it. `runsRoot` is what the
+   *  task's initStateRoot has to be; a caller that was given the task's compares them before it signs.
+   *  Only the LAST run's state is left in the slot. A dispute finds a run first (`batchNode`) and then reopens it
+   *  (`batchOpenRun`), which re-executes that run so that the ordinary int-lif dispute helpers answer for it. */
+  async _executeBatch(mepId, { steps = 1, commitStride = 1, runs } = {}) {
+    const st = this.models.get(hex(mepId)); if (!st) throw new Error("unknown MEP"); if (st.exec !== "lif") throw new Error("batches are int-lif only");
+    const t0 = performance.now(), recs = [];
+    for (let k = 0; k < runs.length; k++) {
+      const r = runs[k]; this.execLie = this.batchLie && this.batchLie.run === k ? this.batchLie.lie : null; // test hook: a lie in ONE run
+      const x = await this._execute(mepId, { steps, commitStride, stimulusSeed: r.stimulusSeed >>> 0, stimulusIds: r.stimulusIds || null, silenceIds: r.silenceIds || null, commit: true });
+      recs.push({ seed: r.stimulusSeed >>> 0, initStateRoot: x.result.initStateRoot, execRoot: x.result.execRoot, countsDigest: x.result.execDigest });
+    }
+    const lieOf = (k) => (this.batchLie && this.batchLie.run === k ? this.batchLie.lie : null); this.execLie = lieOf(runs.length - 1); // the open run is the last: its replays are its own
+    const T = batchTrees(recs); st.batch = { steps, commitStride, inputs: runs, runs: recs, trees: T, levels: levelsOf(T.resultLeaves), open: runs.length - 1 };
+    return { steps, commitStride, timings: { batchMs: performance.now() - t0 }, runs: recs,
+      result: { execDigest: T.execDigest, execRoot: T.execRoot, initStateRoot: T.runsRoot, csrRoot: st.csr.csrTree.root, rowRoot: st.csr.rowTree.root, synapseRoot: st.csr.synapseRoot } };
+  }
+  /** the pair this node posts to `postChildren` in the Run phase, for node (level, idx) of its run-result tree */
+  batchNode(mepId, level, idx) { const b = this.models.get(hex(mepId))?.batch; if (!b) throw new Error("no batch"); return childrenAt(b.levels, level, idx); }
+  /** `openRun`'s arguments for run k, and the run itself reopened: after this the int-lif dispute helpers are run k's */
+  async _batchOpenRun(mepId, k) {
+    const st = this.models.get(hex(mepId)), b = st?.batch; if (!b) throw new Error("no batch"); if (!(k >= 0 && k < b.runs.length)) throw new Error("run out of range");
+    if (b.open !== k) { const r = b.inputs[k]; this.execLie = this.batchLie && this.batchLie.run === k ? this.batchLie.lie : null;
+      const x = await this._execute(mepId, { steps: b.steps, commitStride: b.commitStride, stimulusSeed: r.stimulusSeed >>> 0, stimulusIds: r.stimulusIds || null, silenceIds: r.silenceIds || null, commit: true }); // execLie stays: the dispute helpers replay THIS run
+      if (hex(x.result.execRoot) !== hex(b.runs[k].execRoot)) throw new Error("run " + k + " did not reproduce its committed execRoot"); b.open = k; }
+    return { run: k, execRoot: b.runs[k].execRoot, seed: b.runs[k].seed, initStateRoot: b.runs[k].initStateRoot, inputProof: merkleProof(b.trees.inputLeaves, k), resultProof: merkleProof(b.trees.resultLeaves, k) };
   }
 
   /** residency + execution in one call, for callers (tests, benches) that want both under one challenge */

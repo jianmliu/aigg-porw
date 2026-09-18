@@ -19,7 +19,7 @@ export const resultSigningHash = (domain, taskId32, digest32, root32) => (domain
 
 export class NodeService {
   /** `onResult(result)`: called with each signed task result (e.g. to hand it to a gas-sponsoring relayer for TaskMarket.submitResult) */
-  constructor(node, client, { maxTilesPerRequest = 64, onResult = null } = {}) { this.node = node; this.client = client; this.maxTiles = maxTilesPerRequest; this.served = { openings: 0, tasks: 0 }; this.unsubs = []; this.onResult = onResult; }
+  constructor(node, client, { maxTilesPerRequest = 64, maxRunsPerBatch = 4096, onResult = null } = {}) { this.node = node; this.client = client; this.maxTiles = maxTilesPerRequest; this.maxRuns = maxRunsPerBatch; this.served = { openings: 0, tasks: 0 }; this.unsubs = []; this.onResult = onResult; }
   /** run the epoch challenge for a MEP and announce the signed residency claim (auditors pick it up on the MEP topic) */
   async announce(mepId, challenge32) {
     const r = await this.node.residency(mepId, challenge32);
@@ -36,6 +36,27 @@ export class NodeService {
       const openings = tiles.filter((t) => Number.isInteger(t) && t >= 0 && t < st.nTiles).map((t) => openingToJson(this.node.open(mepId, t)));
       this.served.openings += openings.length;
       return { type: "open-response", payload: { openings } };
+    }));
+    // A BATCH (TaskMarket.postBatch): `runs` = [{ stimulusSeed, stimulusIds?, silenceIds? }]. The task's initStateRoot is
+    // the root of its runs, which this node can only know after it has built every run's state_0 -- so, as for a single
+    // task, it executes what it was told, compares, and refuses to sign a batch whose runs are not the task's.
+    this.unsubs.push(this.client.serve("batch-announce", id, async (env) => {
+      const p = env.payload; if (env.mepId !== id || typeof p.taskId !== "string" || !Array.isArray(p.runs) || p.runs.length < 2 || p.runs.length > this.maxRuns) return null;
+      // runs of a dataset share a handful of id sets, so an announcement may name them once (`sets`: name -> ids) and let a
+      // run say `stimulusSet` / `silenceSet`; inline `stimulusIds` / `silenceIds` still work. An unknown name is a refusal.
+      const sets = p.sets && typeof p.sets === "object" ? p.sets : {}; let unknown = null;
+      const idsOf = (inline, name) => { if (Array.isArray(inline)) return Uint32Array.from(inline); if (name == null) return null; if (!Array.isArray(sets[name])) { unknown = name; return null; } return Uint32Array.from(sets[name]); };
+      const runs = p.runs.map((r) => ({ stimulusSeed: r.stimulusSeed >>> 0, stimulusIds: idsOf(r.stimulusIds, r.stimulusSet), silenceIds: idsOf(r.silenceIds, r.silenceSet) }));
+      if (unknown !== null) return { type: "result-refused", payload: { taskId: p.taskId, reason: `the announcement names a set it does not carry: ${unknown}` } };
+      const r = await this.node.executeBatch(mepId, { steps: (p.steps >>> 0) || 1, commitStride: (p.commitStride >>> 0) || 1, runs });
+      if (typeof p.initStateRoot === "string" && hex(r.result.initStateRoot) !== p.initStateRoot.toLowerCase()) { this.served.refused = (this.served.refused || 0) + 1; return { type: "result-refused", payload: { taskId: p.taskId, reason: "the runs do not hash to the task's initStateRoot", built: hex(r.result.initStateRoot) } }; }
+      const h = resultSigningHash(this.node.domains?.market, unhex(p.taskId), r.result.execDigest, r.result.execRoot);
+      this.served.tasks++; this.served.runs = (this.served.runs || 0) + runs.length;
+      // per-run roots go back with the result: they are the dataset's rows, and a client checks any of them against the settled execRoot
+      const result = { taskId: p.taskId, execDigest: hex(r.result.execDigest), execRoot: hex(r.result.execRoot), runs: r.runs.map((x) => ({ execRoot: hex(x.execRoot), initStateRoot: hex(x.initStateRoot), countsDigest: hex(x.countsDigest) })),
+        signature: hex(signHash(h, this.node.key.priv)), signer: hex(this.node.key.address), delegation: this.node.delegation || null };
+      if (this.onResult) { try { await this.onResult(result); } catch {} }
+      return { type: "result", payload: result };
     }));
     this.unsubs.push(this.client.serve("task-announce", id, async (env) => {
       const p = env.payload; if (env.mepId !== id || typeof p.taskId !== "string") return null;
