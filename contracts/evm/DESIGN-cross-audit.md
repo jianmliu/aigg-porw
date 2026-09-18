@@ -453,3 +453,68 @@ share is a protocol rule or it is a social one. It is now a protocol rule.
 
 Tests: `test/MepTerms.t.sol` (8), and `web/porw-browser/test_mep_terms.mjs`, which pins the same id literal from the JS
 side (`mep.js: withTerms`).
+
+## The silence set and batched tasks (2026-09)
+
+A perturbation atlas (every cell type silenced, in a hundred individuals, under a dozen stimuli) is millions of runs.
+Two things stood between that and this market, and a measurement came first.
+
+**What one task costs** (`test/TaskGas.t.sol`, `forge test --match-contract TaskGas --isolate -vv`; figures as a receipt
+would give them: execution + 21,000 + calldata):
+
+| | postTask | submitResult (sum) | settle | total |
+|---|---|---|---|---|
+| redundancy 1 | 215,335 | 207,515 | 205,669 | 628,519 |
+| redundancy 2 | 215,335 | 419,097 | 229,755 | 864,187 |
+| redundancy 3 | 215,335 | 638,352 | 256,964 | 1,110,651 |
+| redundancy 2, MEP with terms | 215,335 | 417,589 | 253,335 | 886,259 |
+| redundancy 2, **30** instances enrolled instead of 3 | 215,335 | 1,415,005 | 727,710 | 2,358,050 |
+
+The last row is a finding, not a parameter. `executors()` rebuilds the stake-weighted vote list from every instance
+enrolled for the MEP, and `submitResult` and `settle` both call it: about **55,000 gas per enrolled instance per task**.
+A brain hosted by a thousand nodes cannot be tasked at all. It is not changed here (the fix is a sortition that does
+not scan: an incrementally maintained vote list, or sortition over bonded instances with an inclusion proof at
+`submitResult`), but every number below is on top of it.
+
+**The silence set** is flags bit2 of `state_0`. `state_0` already carries the stimulus set in bit0 and the task already
+commits to it (`initStateRoot`), so silencing a cell type is one more bit in a state the chain already binds, and
+nothing new on chain: `spike = 0, v = 0, refr = 0` whatever else is set (silence wins over the stimulus), and
+`flags' = (flags & 5) | spike << 1` so that it persists. A state with bit2 clear evolves exactly as before and no
+implementation could build one with it set, so every digest, vector and fixture stands and the exec kind is still
+`int-lif:v1`. Four implementations are held to each other state by state (`web/porw-browser/test_lif_silence.mjs`:
+the wasm kernel, `lif.js`, `int_lif.py`; `LifRowCheck.t.sol` pins the vectors where the bit decides the outcome).
+As a model variant the same atlas would have been a MEP per (individual, cell type).
+
+**A batch** (`TaskMarket.postBatch(task, runs, nonce)`, int-lif only) is a Task whose `initStateRoot` is the root over
+`runLeaf(k, seed_k, initStateRoot_k)` and whose `stimulusSeed` is 0. A run is fully described by its seed and its
+`state_0`, because the stimulus set and the silence set are both inside `state_0`. A batch result is still one
+`(execDigest, execRoot)`: `execRoot` is the root over `runResultLeaf(k, execRoot_k)`, and `execDigest` is a function of
+it, enforced at `submitResult`. So sortition, `submitResult`, `settle`, the fee, the royalty and a replicator's challenge
+are all untouched, and the honest path of a batch costs what one task costs:
+
+| | total gas | per run |
+|---|---|---|
+| one task, redundancy 2 | 864,187 | 864,187 |
+| a batch of 1,000 runs, redundancy 2 | 860,709 | **860** |
+
+A disagreement is bisected to the first run the parties differ on (`Phase.Run`: `postChildren`, the same rounds as the
+neuron bisection over another tree), each party opens its result for that run together with the run's input against
+the runs root (`openRun`), and from there it is that run's dispute, from `Phase.Step`, unchanged. `test/Batch.t.sol`
+runs it end to end: run 613 of 1,000 is the int-lif fixtures' task, and the liar is convicted of one signed term of one
+step of that run. Finding the run costs one party about 1.1M gas (ten rounds and the opening), once, on the dispute
+path only.
+
+Two decisions in it that are not obvious:
+
+- **A run's result is its `execRoot` and nothing else.** A single task's result has two fields, and a party that
+  submits the honest `execRoot` with a wrong `execDigest` creates a disagreement with no step to bisect to: the second
+  party's `revealRoots` reverts `"no divergence"`, so whoever reveals first wins by timeout. That is a defect of the
+  single-task path as it stands (the digest is not bound to the root), and it is not fixed here; the batch simply does
+  not reproduce it. The last segment root already commits every neuron's spike count.
+- **`open` and `bisect` are gone from `IExecutionDisputes`.** They were stubs that always reverted ("use market", "use
+  postChildren") and nothing referenced them. `ExecutionDisputes` was 1,826 bytes under the EIP-170 limit before the
+  Run phase and over it after; forge does not enforce the limit in tests, so `Batch.t.sol` now does. It is 194 bytes
+  under. The next feature in this contract needs custom errors or a split.
+
+Not done here: the browser node does not yet execute a batch (K runs, the two trees, the run openings), and the
+relayer does not announce one. The contracts and the rule are first because everything else is written against them.

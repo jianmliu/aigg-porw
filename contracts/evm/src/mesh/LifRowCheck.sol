@@ -6,6 +6,10 @@ pragma solidity ^0.8.20;
 ///         int_lif.py bit for bit: signed 64-bit intermediates, arithmetic (floor) shifts, int32
 ///         saturation of the synaptic drive. Parameters (Shiu et al. 2024, Q16 mV / Q32) are pinned
 ///         by the execution-kind digest that the MEP carries.
+///         flags: bit0 stimulated, bit1 spiked this step, bit2 SILENCED. A silenced neuron never spikes. Like bit0 it
+///         is set in state_0, so it is committed by the task's initStateRoot and needs no field of its own; it
+///         persists from step to step. A state with bit2 clear evolves exactly as it did before bit2 meant anything,
+///         which is why this is `int-lif:v1` still: no state any implementation could build ever had it set.
 library LifRowCheck {
     string constant KIND_ID = "aigg:exec:int-lif:v1";
     uint32 constant DT_TAU_M_Q16 = 328;      // 0.1 ms / 20 ms
@@ -34,7 +38,8 @@ library LifRowCheck {
         if (g < type(int32).min) g = type(int32).min;
         R.g = int32(g);
         uint32 spike;
-        if (S.flags & 1 != 0) { spike = ext(i, step, seed) ? 1 : 0; R.v = 0; R.refr = 0; }
+        if (S.flags & 4 != 0) { spike = 0; R.v = 0; R.refr = 0; } // silenced (bit2): never spikes; silence wins over the stimulus
+        else if (S.flags & 1 != 0) { spike = ext(i, step, seed) ? 1 : 0; R.v = 0; R.refr = 0; }
         else if (S.refr > 0) { spike = 0; R.v = 0; R.refr = S.refr - 1; }
         else {
             int64 v = int64(S.v) + (((g - int64(S.v)) * int64(uint64(DT_TAU_M_Q16))) >> 16);
@@ -42,7 +47,7 @@ library LifRowCheck {
             R.v = int32(v);
         }
         R.count = S.count + spike;
-        R.flags = uint16((S.flags & 1) | (spike << 1));
+        R.flags = uint16((S.flags & 5) | (spike << 1));
     }
     function same(State memory a, State memory b) internal pure returns (bool) { return a.v == b.v && a.g == b.g && a.refr == b.refr && a.flags == b.flags && a.count == b.count; }
     /// @dev leaf = keccak(LE32 i || LE32 v || LE32 g || LE16 refr || LE16 flags || LE32 count)

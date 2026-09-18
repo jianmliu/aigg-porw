@@ -41,10 +41,11 @@ def ext(n, step, seed):
     return fmix32((fmix32((i * GOLDEN32 + seed) & M32) + step * GOLDEN32) & M32) < EXT_P_Q32
 
 class State:
-    def __init__(self, n, stim_mask):
+    def __init__(self, n, stim_mask, silent_mask=None):
         self.v = np.zeros(n, np.int64); self.g = np.zeros(n, np.int64); self.refr = np.zeros(n, np.int64)
         self.stim = stim_mask.astype(bool); self.spiked = np.zeros(n, bool); self.count = np.zeros(n, np.int64)
-    def flags(self): return self.stim.astype(np.int64) | (self.spiked.astype(np.int64) << 1)
+        self.silent = np.zeros(n, bool) if silent_mask is None else silent_mask.astype(bool)   # flags bit2: never spikes; wins over stim
+    def flags(self): return self.stim.astype(np.int64) | (self.spiked.astype(np.int64) << 1) | (self.silent.astype(np.int64) << 2)
     def leaf_bytes(self):  # 20-byte leaf preimages (without keccak), for cross-checking commitments
         n = self.v.size
         out = np.zeros((n, 5), dtype="<u4")
@@ -62,16 +63,18 @@ def step(S: State, pre, post, w, step_idx, seed):
     I = np.bincount(post, weights=(w * S.spiked[pre].astype(np.int64)).astype(np.float64), minlength=n).astype(np.int64)
     g = S.g - ((S.g * DT_TAU_S_Q16) >> 16) + I * W_UNIT_Q16
     g = np.clip(g, I32_MIN, I32_MAX)
-    R = State(n, S.stim); R.g = g; R.count = S.count.copy()
+    R = State(n, S.stim, S.silent); R.g = g; R.count = S.count.copy()
     e = ext(n, step_idx, seed)
+    # silenced (flags bit2): never spikes, v and refr pinned to 0 (arrays start at zero); silence wins over the stimulus
+    sl = S.silent
     # stimulated
-    st = S.stim
+    st = S.stim & ~sl
     R.spiked[st] = e[st]; R.v[st] = 0; R.refr[st] = 0
     # refractory
-    rf = (~st) & (S.refr > 0)
+    rf = (~st) & (~sl) & (S.refr > 0)
     R.v[rf] = 0; R.refr[rf] = S.refr[rf] - 1
     # free
-    fr = (~st) & (S.refr == 0)
+    fr = (~st) & (~sl) & (S.refr == 0)
     v = S.v[fr] + (((g[fr] - S.v[fr]) * DT_TAU_M_Q16) >> 16)
     sp = v >= THRESH_Q16
     v[sp] = 0
@@ -79,10 +82,10 @@ def step(S: State, pre, post, w, step_idx, seed):
     R.count = S.count + R.spiked.astype(np.int64)
     return R
 
-def run(buf, seed, steps, stim_ids=None):
+def run(buf, seed, steps, stim_ids=None, silence_ids=None):
     n, _, pre, post, w = decode_v2(buf)
     mask = canonical_stim(n, seed) if stim_ids is None else np.isin(np.arange(n), stim_ids)
-    S = State(n, mask); traj = [S]
+    S = State(n, mask, None if silence_ids is None else np.isin(np.arange(n), silence_ids)); traj = [S]
     for s in range(1, steps + 1):
         S = step(S, pre, post, w, s, seed); traj.append(S)
     return traj

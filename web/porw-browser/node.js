@@ -178,7 +178,7 @@ export class PorwNode {
    *  `commit`: also build the per-step (spmv) or per-segment (int-lif) state commitments an execution
    *  DISPUTE needs -- on the real brain that is the majority of the work, and it is only ever read when
    *  two executors of the same task disagree, so a caller that just wants the answer can skip it. */
-  async _execute(mepId, { steps = 1, commitStride = 1, stimulusSeed = 1, stimulusIds = null, commit = true } = {}) {
+  async _execute(mepId, { steps = 1, commitStride = 1, stimulusSeed = 1, stimulusIds = null, silenceIds = null, commit = true } = {}) {
     const st = this.models.get(hex(mepId)); if (!st) throw new Error("unknown MEP");
     if (!(steps >= 1 && steps <= st.maxSteps)) throw new Error(`steps ${steps} exceeds this slot's capacity (${st.maxSteps})`);
     if (!(commitStride >= 1 && commitStride <= steps)) throw new Error("commitStride must be in 1..steps");
@@ -186,7 +186,7 @@ export class PorwNode {
     const k = this.k, sl = st.slot, t = {}; let t0 = performance.now();
     if (st.exec === "lif") {
       // canonical stimulus set from the seed (or an explicit task set); commitments are folded into the run
-      const r = await this._runLif(st, stimulusSeed, stimulusIds, commit);
+      const r = await this._runLif(st, stimulusSeed, stimulusIds, commit, silenceIds);
       st.execDigest = r.execDigest; st.actRoots = r.stateRoots; st.execRoot = r.execRoot; st.initStateRoot = r.initStateRoot; st.stimulated = r.stimulated;
       t.inferMs = r.inferMs; t.disputeCommitMs = r.commitMs;
     } else {
@@ -213,9 +213,9 @@ export class PorwNode {
   }
 
   /** residency + execution in one call, for callers (tests, benches) that want both under one challenge */
-  async _challenge(mepId, challenge32, { steps = 1, commitStride = 1, stimulusSeed = 1, stimulusIds = null, commit = true } = {}) {
+  async _challenge(mepId, challenge32, { steps = 1, commitStride = 1, stimulusSeed = 1, stimulusIds = null, silenceIds = null, commit = true } = {}) {
     const R = await this._residency(mepId, challenge32);
-    const X = await this._execute(mepId, { steps, commitStride, stimulusSeed, stimulusIds, commit });
+    const X = await this._execute(mepId, { steps, commitStride, stimulusSeed, stimulusIds, silenceIds, commit });
     return { ...R, result: X.result, timings: { ...R.timings, ...X.timings } };
   }
 
@@ -253,11 +253,15 @@ export class PorwNode {
 
   // ---- `aigg:exec:int-lif:v1` ----
   /** state_0 into `dst`: canonical set from the seed, or an explicit sorted id list (task input) */
-  lifState0(st, dst, seed, ids) {
-    const e = this.k.exports, n = st.hdr.neurons;
-    if (!ids) return e.porw_lif_state0_canonical(dst, n >>> 0, seed >>> 0) >>> 0;
-    const m = this.k.mark(); const p = this.k.alloc(ids.length * 4); this.k.u32(p, ids.length).set(ids);
-    const rc = e.porw_lif_state0_set(dst, n >>> 0, p, ids.length >>> 0); this.k.release(m); if (rc !== 0) throw new Error("state0 rc=" + rc); return ids.length;
+  lifState0(st, dst, seed, ids, silence = null) {
+    const e = this.k.exports, n = st.hdr.neurons; let stimulated;
+    if (!ids) stimulated = e.porw_lif_state0_canonical(dst, n >>> 0, seed >>> 0) >>> 0;
+    else { const m = this.k.mark(); const p = this.k.alloc(ids.length * 4); this.k.u32(p, ids.length).set(ids);
+      const rc = e.porw_lif_state0_set(dst, n >>> 0, p, ids.length >>> 0); this.k.release(m); if (rc !== 0) throw new Error("state0 rc=" + rc); stimulated = ids.length; }
+    // the silence set (flags bit2): neurons that never spike. Part of state_0, so of the task's initStateRoot
+    if (silence && silence.length) { const m = this.k.mark(); const p = this.k.alloc(silence.length * 4); this.k.u32(p, silence.length).set(silence);
+      const rc = e.porw_lif_state0_silence(dst, n >>> 0, p, silence.length >>> 0); this.k.release(m); if (rc !== 0) throw new Error("silence rc=" + rc); }
+    return stimulated;
   }
   async _lifStep(st, from, to, step, seed) {
     const k = this.k, e = k.exports, n = st.hdr.neurons, syn = st.bufPtr + st.hdr.synOffset;
@@ -283,10 +287,10 @@ export class PorwNode {
     return this._buildTree(L.leavesPtr, n, L.treePtr);
   }
   /** full run with per-step state commitments; keeps roots + checkpoints, returns the result artifacts */
-  async _runLif(st, seed, ids = null, commit = true) {
+  async _runLif(st, seed, ids = null, commit = true, silence = null) {
     const k = this.k, e = k.exports, n = st.hdr.neurons, L = st.slot.lif; let t0 = performance.now(), inferMs = 0, commitMs = 0;
     L.seed = seed; L.ids = ids; L.cache.clear();
-    const stimulated = this.lifState0(st, L.ping, seed, ids);
+    const stimulated = this.lifState0(st, L.ping, seed, ids, silence);
     k.u8(L.checkpoints.get(0), n * LIF_STATE).set(k.u8(L.ping, n * LIF_STATE));
     const initStateRoot = commit ? (await this._lifCommit(st, L.ping)).root : null; commitMs += performance.now() - t0;
     const roots = [], stride = st.commitStride; let cur = L.ping, nxt = L.pong;

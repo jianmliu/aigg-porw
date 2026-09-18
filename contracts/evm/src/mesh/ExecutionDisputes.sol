@@ -46,6 +46,10 @@ contract ExecutionDisputes is IExecutionDisputes {
     }
     struct LifDispute { bool lif; uint32 stride; uint32 segments; uint32 seg; bytes32 initStateRoot; }
     struct LifParty { bytes32[] stepRoots; bool refined; LifRowCheck.State state; int64[] sums; bool rowPosted; }
+    /// a batch dispute, before it becomes one run's dispute: where the run bisection is, and what each party opened
+    struct BatchDispute { uint32 runs; uint32 level; uint32 idx; } // the runs root is lifs[taskId].initStateRoot until the run is opened
+    mapping(bytes32 => BatchDispute) public batches;
+    mapping(bytes32 => mapping(address => bool)) internal runOpened;
     mapping(bytes32 => Dispute) public disputes;
     mapping(bytes32 => LifDispute) public lifs;
     mapping(bytes32 => mapping(address => LifParty)) internal lifParties;
@@ -72,12 +76,14 @@ contract ExecutionDisputes is IExecutionDisputes {
         }
         partyA[taskId] = a; partyB[taskId] = b;
         instances.hold(a); instances.hold(b); // neither party's bond leaves while this is open (a challenger has none: harmless)
-        (, parties[taskId][a].execRoot) = market.resultOf(taskId, a);
-        (, parties[taskId][b].execRoot) = market.resultOf(taskId, b);
-        emit DisputeRound(taskId, Phase.Step, 0, steps);
+        // `node` starts at each party's execRoot. Only a batch reads it there -- its execRoot is the root of the run-result
+        // tree, which the Run phase bisects -- and for a single task the neuron bisection sets it again before using it.
+        { (, bytes32 ra) = market.resultOf(taskId, a); parties[taskId][a].execRoot = ra; parties[taskId][a].node = ra; }
+        { (, bytes32 rb) = market.resultOf(taskId, b); parties[taskId][b].execRoot = rb; parties[taskId][b].node = rb; }
+        uint32 runs = market.batchRuns(taskId); uint32 top = 0;
+        if (runs != 0) { top = _levels(runs) - 1; batches[taskId] = BatchDispute(runs, top, 0); d.phase = Phase.Run; } // a batch: first find the run
+        emit DisputeRound(taskId, d.phase, top, runs != 0 ? 0 : steps);
     }
-    function open(bytes32, address, address) external payable { revert("use market"); }
-    function bisect(bytes32, uint256, bytes32) external pure { revert("use postChildren"); }
 
     /// @dev a party may act through its delegated session key (the tab's key); state is keyed by the instance.
     ///      The direct branch changes nothing for an instance -- `resolve` already returns a bonded signer
@@ -89,6 +95,26 @@ contract ExecutionDisputes is IExecutionDisputes {
     }
     function _party(bytes32 taskId) internal view returns (Party storage) { return parties[taskId][_who(taskId)]; }
     function _other(bytes32 taskId, address who) internal view returns (address) { return who == partyA[taskId] ? partyB[taskId] : partyA[taskId]; }
+
+    // ---- Run phase (batches): the run-result trees are bisected by `postChildren`, the same rounds as the neuron
+    //      bisection over another tree (width = runs, position in `batches`); then the run is opened ----
+    /// @notice At the leaf: each party opens ITS result for run `idx` (the run's own execRoot, bound to the leaf it was
+    ///         bisected to) together with the run's input against the task's runs root. Each party brings the input
+    ///         itself -- it executed it -- so neither can stall the other by withholding it. When both have opened,
+    ///         the dispute is run idx's: its seed, its state_0 root, the two execRoots, and `Phase.Step` as ever.
+    function openRun(bytes32 taskId, bytes32 runExecRoot, uint32 seed, bytes32 initStateRoot, bytes32[] calldata inputProof) external {
+        Dispute storage d = disputes[taskId]; BatchDispute storage bd = batches[taskId]; require(d.exists && d.phase == Phase.Run && bd.level == 0, "phase");
+        address me = _who(taskId); Party storage p = parties[taskId][me]; require(!runOpened[taskId][me], "opened");
+        bytes memory k = _le32(bd.idx); // the leaves of PorwMeshHash.runResultLeaf / runLeaf, with this contract's own LE32
+        require(keccak256(bytes.concat(k, runExecRoot)) == p.node, "run result");
+        require(_verify(lifs[taskId].initStateRoot, keccak256(bytes.concat(k, _le32(seed), initStateRoot)), bd.idx, bd.runs, inputProof), "run input");
+        p.execRoot = runExecRoot; runOpened[taskId][me] = true;
+        if (!runOpened[taskId][_other(taskId, me)]) return;
+        // both opened the same leaf of the same runs root, so they named the same input: the task's state_0 root stops
+        // being the root of the runs and becomes the run's
+        d.stimulusSeed = seed; lifs[taskId].initStateRoot = initStateRoot; d.phase = Phase.Step; d.deadline = uint64(block.number) + ROUND_BLOCKS;
+        emit DisputeRound(taskId, Phase.Step, bd.idx, d.steps);
+    }
 
     // ---- Step phase ----
     function revealRoots(bytes32 taskId, bytes32[] calldata actRoots) external {
@@ -131,23 +157,25 @@ contract ExecutionDisputes is IExecutionDisputes {
         _startNeuron(taskId, d, p, parties[taskId][o], lp.stepRoots[j], lq.stepRoots[j]);
     }
 
-    // ---- Neuron phase: each party posts the children of its current node ----
+    // ---- Neuron phase, and a batch's Run phase: each party posts the children of its current node ----
     function postChildren(bytes32 taskId, bytes32 left, bytes32 right) external {
-        Dispute storage d = disputes[taskId]; require(d.exists && d.phase == Phase.Neuron && d.level > 0, "phase");
+        Dispute storage d = disputes[taskId]; BatchDispute storage bd = batches[taskId]; bool run = d.phase == Phase.Run;
+        uint32 level = run ? bd.level : d.level; uint32 idx = run ? bd.idx : d.idx;
+        require(d.exists && (run || d.phase == Phase.Neuron) && level > 0, "phase");
         Party storage p = _party(taskId); require(!p.posted, "posted");
-        uint32 childWidth = _width(d.neurons, d.level - 1);
-        if (2 * d.idx + 1 >= childWidth) require(right == left, "single child"); // duplicate-last
+        if (2 * idx + 1 >= _width(run ? bd.runs : d.neurons, level - 1)) require(right == left, "single child"); // duplicate-last
         require(keccak256(bytes.concat(left, right)) == p.node, "not children");
         p.pair = [left, right]; p.posted = true;
         Party storage q = parties[taskId][_other(taskId, _who(taskId))];
         if (!q.posted) return;
         bool goLeft = p.pair[0] != q.pair[0];
         require(goLeft || p.pair[1] != q.pair[1], "children equal");
-        uint32 child = goLeft ? 2 * d.idx : 2 * d.idx + 1;
+        uint32 child = goLeft ? 2 * idx : 2 * idx + 1;
         p.node = goLeft ? p.pair[0] : p.pair[1]; q.node = goLeft ? q.pair[0] : q.pair[1];
-        p.posted = false; q.posted = false; d.idx = child; d.level -= 1; d.deadline = uint64(block.number) + ROUND_BLOCKS;
-        if (d.level == 0) { d.neuron = child; p.leaf = p.node; q.leaf = q.node; d.phase = Phase.Synapse; }
-        emit DisputeRound(taskId, d.phase, d.level, child);
+        p.posted = false; q.posted = false; d.deadline = uint64(block.number) + ROUND_BLOCKS;
+        if (run) { bd.idx = child; bd.level = level - 1; } // at level 0 the parties open the run (openRun)
+        else { d.idx = child; d.level = level - 1; if (level == 1) { d.neuron = child; p.leaf = p.node; q.leaf = q.node; d.phase = Phase.Synapse; } }
+        emit DisputeRound(taskId, d.phase, level - 1, child);
     }
 
     // ---- Row phase (inside Phase.Synapse): claimed activation bound to the leaf + partial sums ----
@@ -248,15 +276,18 @@ contract ExecutionDisputes is IExecutionDisputes {
 
     function timeout(bytes32 taskId) external {
         Dispute storage d = disputes[taskId]; require(d.exists && d.phase != Phase.Resolved && block.number > d.deadline, "not expired");
-        Party storage a = parties[taskId][partyA[taskId]]; Party storage b = parties[taskId][partyB[taskId]];
-        bool aDone; bool bDone;
-        if (d.phase == Phase.Step) { aDone = a.revealed; bDone = b.revealed; }
-        else if (d.phase == Phase.Refine) { aDone = lifParties[taskId][partyA[taskId]].refined; bDone = lifParties[taskId][partyB[taskId]].refined; }
-        else if (d.phase == Phase.Neuron) { aDone = a.posted; bDone = b.posted; }
-        else if (lifs[taskId].lif) { aDone = lifParties[taskId][partyA[taskId]].rowPosted; bDone = lifParties[taskId][partyB[taskId]].rowPosted; }
-        else { aDone = a.rowPosted; bDone = b.rowPosted; }
+        bool aDone = _done(taskId, d.phase, partyA[taskId]); bool bDone = _done(taskId, d.phase, partyB[taskId]);
         require(aDone != bDone, "both or neither"); // both silent: the dispute simply stalls (no evidence either way)
         _resolve(taskId, aDone ? partyB[taskId] : partyA[taskId], "timeout");
+    }
+    /// @dev has `who` posted what the current round asks of it
+    function _done(bytes32 taskId, Phase ph, address who) internal view returns (bool) {
+        Party storage p = parties[taskId][who];
+        if (ph == Phase.Run) return batches[taskId].level == 0 ? runOpened[taskId][who] : p.posted;
+        if (ph == Phase.Step) return p.revealed;
+        if (ph == Phase.Refine) return lifParties[taskId][who].refined;
+        if (ph == Phase.Neuron) return p.posted;
+        return lifs[taskId].lif ? lifParties[taskId][who].rowPosted : p.rowPosted;
     }
 
     function _resolve(bytes32 taskId, address loser, string memory) internal {
@@ -276,6 +307,7 @@ contract ExecutionDisputes is IExecutionDisputes {
     function _forget(bytes32 taskId, address a, address b) internal {
         delete disputes[taskId]; delete lifs[taskId]; delete partyA[taskId]; delete partyB[taskId];
         delete parties[taskId][a]; delete parties[taskId][b]; delete lifParties[taskId][a]; delete lifParties[taskId][b];
+        delete batches[taskId]; delete runOpened[taskId][a]; delete runOpened[taskId][b]; // a batch's run bisection starts over with the next challenger
     }
 
     /// @notice An executor beaten by a challenger was not alone: at redundancy > 1 the others settled on the same digest,

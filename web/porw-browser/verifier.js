@@ -64,13 +64,14 @@ export function reexecute(kernel, payloadBytes, run) {
 
 // Redundant re-execution of an `aigg:exec:int-lif:v1` run (no commitments): counts digest must match.
 import { countsDigest } from "./lif.js";
-export function reexecuteLif(kernel, payloadBytes, run, { stimulusIds = null } = {}) {
+export function reexecuteLif(kernel, payloadBytes, run, { stimulusIds = null, silenceIds = null } = {}) {
   const k = kernel, e = k.exports; const m = k.mark();
   const bufPtr = k.put(payloadBytes); const hdr = decodeHeader(payloadBytes); const n = hdr.neurons;
   if (hdr.version !== 2) throw new Error("int-lif needs a v2 payload");
   let cur = k.alloc(n * 16), nxt = k.alloc(n * 16); const acc = k.alloc(n * 8), counts = k.alloc(n * 4);
   if (stimulusIds) { const p = k.alloc(stimulusIds.length * 4); k.u32(p, stimulusIds.length).set(stimulusIds); if (e.porw_lif_state0_set(cur, n >>> 0, p, stimulusIds.length >>> 0) !== 0) throw new Error("state0"); }
   else e.porw_lif_state0_canonical(cur, n >>> 0, run.stimulusSeed >>> 0);
+  if (silenceIds && silenceIds.length) { const p = k.alloc(silenceIds.length * 4); k.u32(p, silenceIds.length).set(silenceIds); if (e.porw_lif_state0_silence(cur, n >>> 0, p, silenceIds.length >>> 0) !== 0) throw new Error("silence"); }
   for (let s = 1; s <= run.steps; s++) { const rc = e.porw_lif_step(bufPtr + hdr.synOffset, hdr.synapses >>> 0, cur, nxt, acc, n >>> 0, s >>> 0, run.stimulusSeed >>> 0); if (rc !== 0) throw new Error("lif rc=" + rc); [cur, nxt] = [nxt, cur]; }
   e.porw_lif_counts(cur, n >>> 0, counts);
   const c = new Uint32Array(k.u32(counts, n)); const digest = countsDigest(c); k.release(m);

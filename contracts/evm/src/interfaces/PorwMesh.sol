@@ -52,6 +52,23 @@ library PorwMeshHash {
     function taskId(ITaskMarket.Task calldata t, bytes32 nonce) internal pure returns (bytes32)
     { return keccak256(abi.encode(t, nonce)); }
 
+    // ---- batches: one task, many runs of the same brain (TaskMarket.postBatch) ----
+    /// @dev A batch is a Task whose `initStateRoot` is the root of its runs and whose `stimulusSeed` is 0: run k is the
+    ///      pair (seed_k, initStateRoot_k) -- the stimulus set AND the silence set are both inside state_0 -- under the
+    ///      task's steps and stride. The id covers the run count, so a batch is never the single task with the same fields.
+    function batchId(ITaskMarket.Task calldata t, uint32 runs, bytes32 nonce) internal pure returns (bytes32)
+    { return keccak256(abi.encode(keccak256(abi.encode(t, nonce)), runs)); }
+    function runLeaf(uint32 k, uint32 seed, bytes32 initStateRoot) internal pure returns (bytes32)
+    { return keccak256(abi.encodePacked(_le32(k), _le32(seed), initStateRoot)); }
+    /// @dev what an executor commits to for run k: the run's own execRoot. There is deliberately no per-run digest
+    ///      beside it. A digest that the root does not determine is something two parties can disagree about with no
+    ///      step to bisect to; the last segment root already commits every neuron's spike count.
+    function runResultLeaf(uint32 k, bytes32 execRoot) internal pure returns (bytes32)
+    { return keccak256(abi.encodePacked(_le32(k), execRoot)); }
+    /// @dev a batch result has ONE degree of freedom, the root of its run results; the digest is a function of it
+    function batchDigest(bytes32 execRoot) internal pure returns (bytes32) { return keccak256(abi.encodePacked("aigg:batch:v1", execRoot)); }
+    function _le32(uint32 x) private pure returns (bytes4) { return bytes4(uint32((x >> 24) | ((x >> 8) & 0xff00) | ((x << 8) & 0xff0000) | (x << 24))); }
+
     /// @dev sortition index j for (beacon, mep, key); the executor is votes[idx % votes.length]
     function sortition(bytes32 beacon, bytes32 mepId_, bytes32 key, uint32 j) internal pure returns (uint256)
     { return uint256(keccak256(abi.encodePacked(beacon, mepId_, key, j))); }
@@ -154,6 +171,8 @@ interface ITaskMarket {
     /// @notice a challenge lost; the task can be challenged again (for twice the deposit)
     event ChallengeFailed(bytes32 indexed taskId, address indexed challenger, address indexed defender);
     function postTask(Task calldata task, bytes32 nonce) external payable returns (bytes32 taskId);
+    /// @notice one task, `runs` runs of the same brain: see PorwMeshHash.batchId. int-lif only
+    function postBatch(Task calldata task, uint32 runs, bytes32 nonce) external payable returns (bytes32 taskId);
     /// @notice executors = sortition over IInstanceRegistry.eligibleVotes(mepId, epoch); anyone can compute
     function executors(bytes32 taskId) external view returns (address[] memory);
     function submitResult(bytes32 taskId, Result calldata result, bytes calldata signature) external;
@@ -169,11 +188,12 @@ interface IExecutionDisputes {
     /// @dev interactive bisection: step -> neuron -> synapse -> one term recomputed on-chain.
     ///      `Refine` exists only for execution kinds that commit segment roots (int-lif): the parties
     ///      post the per-step roots of the first differing segment before the neuron bisection.
-    enum Phase { Step, Refine, Neuron, Synapse, Resolved }
+    ///      `Run` exists only for a BATCH (TaskMarket.postBatch): the parties bisect the tree of per-run results down
+    ///      to the first run they disagree on and open it, and from there the dispute is that run's, from `Step`.
+    ///      It is last in the enum, not first in the order of play, so that no existing ordinal moves.
+    enum Phase { Step, Refine, Neuron, Synapse, Resolved, Run }
     event DisputeRound(bytes32 indexed taskId, Phase phase, uint256 lo, uint256 hi);
     event DisputeResolved(bytes32 indexed taskId, address loser, address winner);
-    function open(bytes32 taskId, address a, address b) external payable;
-    function bisect(bytes32 taskId, uint256 mid, bytes32 commitmentAtMid) external;
     struct RowBounds { uint32 start; bytes32[] startProof; uint32 end; bytes32[] endProof; } // rowStart[i], rowStart[i+1] in rowRoot
     struct ChunkOpening { uint32 c; bytes records; bytes32[] proof; }                          // CSR chunk containing k* (csrRoot)
     /// @notice Step phase: reveal actRoots bound to the party's execRoot
