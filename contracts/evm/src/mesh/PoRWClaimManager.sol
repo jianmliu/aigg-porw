@@ -43,6 +43,9 @@ contract PoRWClaimManager is IPoRWClaimManager {
     mapping(uint64 => bytes32) public beacon;
     /// @notice claimId -> (keccak(partialsRoot, coverageBytes, deviceId) with bit 0 cleared) | valid. Zero: no such claim.
     mapping(bytes32 => bytes32) public claimRecord;
+    /// @notice (epoch + 1) of the instance's most recent valid claim for a MEP; 0: none, or struck down by a fraud verdict.
+    ///         One reused word per (instance, MEP), so eligibility over a validity window of any length is a single read.
+    mapping(address => mapping(bytes32 => uint64)) public lastValidEpochPlus1;
     mapping(bytes32 => ChallengedClaim) public challenged;
     mapping(bytes32 => mapping(uint64 => OpenChallenge)) public challenges;
     struct EpochRoot { bytes32 root; uint64 count; }
@@ -78,6 +81,7 @@ contract PoRWClaimManager is IPoRWClaimManager {
         claimId = claimIdOf(instance, mepId, epoch);
         require(claimRecord[claimId] == bytes32(0), "claimed");
         claimRecord[claimId] = claimCommit(partialsRoot, coverageBytes, deviceId) | bytes32(uint256(1));
+        if (epoch + 1 > lastValidEpochPlus1[instance][mepId]) lastValidEpochPlus1[instance][mepId] = epoch + 1;
         emit ClaimSubmitted(claimId, instance, mepId, epoch);
         emit ClaimData(claimId, partialsRoot, coverageBytes, deviceId);
     }
@@ -176,6 +180,7 @@ contract PoRWClaimManager is IPoRWClaimManager {
 
     function _fraud(bytes32 claimId, ChallengedClaim storage c, OpenChallenge storage ch) internal {
         claimRecord[claimId] &= ~bytes32(uint256(1)); // still recorded (cannot be re-claimed), no longer valid
+        lastValidEpochPlus1[c.instance][c.mepId] = 0; // a residency fraud voids the standing of every earlier claim too: claim again to be eligible
         instances.slash(c.instance, SLASH_AMOUNT, ch.challenger, "porw:tile-fraud");
         (bool ok,) = ch.challenger.call{value: ch.deposit}(""); require(ok, "refund");
     }

@@ -6,6 +6,7 @@ import "./PorwEIP712.sol";
 
 interface IClaimValidity {
     function hasValidClaim(address instance, bytes32 mepId, uint64 epoch) external view returns (bool);
+    function lastValidEpochPlus1(address instance, bytes32 mepId) external view returns (uint64);
 }
 
 /// @notice Bonded fly-brain instances. The bond is the deployment's native asset (AI3 on Auto
@@ -58,7 +59,13 @@ contract InstanceRegistry is IInstanceRegistry {
         return address(0);
     }
 
-    function setClaimManager(address cm) external { require(msg.sender == owner && claimManager == address(0), "set"); claimManager = cm; slasher[cm] = true; }
+    /// @notice how many epochs a valid residency claim keeps its instance eligible. 1 (the default) is "a claim for the
+    ///         previous epoch"; k > 1 divides the standing cost of staying eligible by k, at the price of proving residency
+    ///         k times less often. Execution is enforced per task regardless, so what a longer window risks is liveness
+    ///         (an instance that dropped the model times out on its task), not a wrong result being paid.
+    uint64 public claimValidityEpochs = 1;
+    function setClaimManager(address cm) external { setClaimManager(cm, 1); }
+    function setClaimManager(address cm, uint64 validityEpochs) public { require(msg.sender == owner && claimManager == address(0), "set"); require(validityEpochs >= 1 && validityEpochs <= 64, "validity"); claimManager = cm; slasher[cm] = true; claimValidityEpochs = validityEpochs; }
     function setSlasher(address s, bool ok) external { require(msg.sender == owner, "owner"); slasher[s] = ok; }
 
     function bond(bytes32[] calldata mepIds) external payable {
@@ -86,7 +93,10 @@ contract InstanceRegistry is IInstanceRegistry {
     function isEligible(address inst, bytes32 mepId, uint64 epoch) public view returns (bool) {
         if (!isBondedFor(inst, mepId)) return false;
         if (epoch == 0 || claimManager == address(0)) return true; // bootstrap epoch: no prior claim can exist
-        return IClaimValidity(claimManager).hasValidClaim(inst, mepId, epoch - 1);
+        // the most recent valid claim is at most `claimValidityEpochs` old (a claim for `epoch` itself is fresher still); a
+        // fraud verdict zeroes the word, so a caught instance is out until it claims again
+        uint64 last = IClaimValidity(claimManager).lastValidEpochPlus1(inst, mepId);
+        return last != 0 && last - 1 + claimValidityEpochs >= epoch;
     }
 
     /// @notice stake-weighted vote list for sortition (each eligible instance repeated weight times)
