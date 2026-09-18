@@ -166,7 +166,7 @@ manifest records the rules, the counts and the sha256 of the three source files.
 
 | export | records | bytes | note |
 |---|---|---|---|
-| `malecns-v1.0-min5` | 6,242,118 | 63.8 MB (15,566 tiles) | sha256 `c5619f70…52c9`; model_id `0x1ea92843…8a71`, synapseRoot `0x151f7065…196c`, mep_id (scheme `sketch-tile-keccak:v2`, int-lif) `0xa6d41fac…9b88` |
+| `malecns-v1.0-min5` | 6,242,118 | 63.8 MB (15,566 tiles) | sha256 `c5619f70…52c9`; model_id `0x1ea92843…8a71`, synapseRoot `0x151f7065…196c`, mep_id (scheme `sketch-tile-keccak:v3`, int-lif) `0xcb250f8e…90ab` |
 | `malecns-v1.0-min1` | 25,582,938 | 257 MB | the base to sample individuals from (`FLYDELTAv2` with `min_syn 5`) |
 
 Checked: at `--min-syn 1` the neuron, edge and synapse totals (166,700 / 25,582,938 / 124,177,617) equal an independent
