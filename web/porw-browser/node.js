@@ -6,7 +6,8 @@
 // sketches the resident tiles and signs the claim (no inference -- nothing ever adjudicated it), and
 // `execute()` runs the model for a task with the step count and commit stride the task specifies.
 import { TILE_BYTES, attachTrees, treeNodeAt, treeBuildParallel } from "./porw.js";
-import { applyDelta, decodeDelta, decodeDelta2, decodeDelta3, isDelta2, isDelta3 } from "./delta.js";
+import { isDelta2, isDelta3 } from "./delta.js";
+import { uploadDeltaBase, applyDeltaWasm } from "./delta_wasm.js";
 import { decodeHeader, attachSpmv } from "./model.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { claimHash, signHash, keypair } from "./claim.js";
@@ -15,9 +16,25 @@ import { hex, CSR_CHUNK } from "./verify.js";
 import { claimDigest } from "./eip712.js";
 import { lifExecKind, countsDigest, decodeState, encodeState, transition } from "./lif.js";
 const LIF_STATE = 16, LIF_CHECKPOINT = 32;
+const busyMemories = new WeakSet();
 
 export class PorwNode {
-  async buildTree(leavesPtr, n, treePtr) { return this.pool ? treeBuildParallel(this.pool, leavesPtr, n, treePtr) : this.k.treeBuildInto(leavesPtr, n, treePtr); }
+  // Internal helpers compose within the operation; public entry points acquire it once.
+  buildTree(...args) { return this.withKernelOperation(() => this._buildTree(...args)); }
+  residency(...args) { return this.withKernelOperation(() => this._residency(...args)); }
+  execute(...args) { return this.withKernelOperation(() => this._execute(...args)); }
+  challenge(...args) { return this.withKernelOperation(() => this._challenge(...args)); }
+  runInference(...args) { return this.withKernelOperation(() => this._runInference(...args)); }
+  lifStep(...args) { return this.withKernelOperation(() => this._lifStep(...args)); }
+  lifCommit(...args) { return this.withKernelOperation(() => this._lifCommit(...args)); }
+  runLif(...args) { return this.withKernelOperation(() => this._runLif(...args)); }
+  lifStateAt(...args) { return this.withKernelOperation(() => this._lifStateAt(...args)); }
+  lifSegmentRoots(...args) { return this.withKernelOperation(() => this._lifSegmentRoots(...args)); }
+  lifNode(...args) { return this.withKernelOperation(() => this._lifNode(...args)); }
+  lifOpenState(...args) { return this.withKernelOperation(() => this._lifOpenState(...args)); }
+  lifPartialSums(...args) { return this.withKernelOperation(() => this._lifPartialSums(...args)); }
+  lifStates(...args) { return this.withKernelOperation(() => this._lifStates(...args)); }
+  async _buildTree(leavesPtr, n, treePtr) { return this.pool ? treeBuildParallel(this.pool, leavesPtr, n, treePtr) : this.k.treeBuildInto(leavesPtr, n, treePtr); }
   /** `domains.claimManager` / `domains.market`: EIP-712 domains (chainId, verifying contract) — claims and results are then
    *  signed as typed data by this node's key (the wallet itself, or a session key the wallet delegated: `delegation`). */
   constructor(kernel, { privHex = null, deviceId = null, pool = null, domains = null, delegation = null } = {}) {
@@ -27,21 +44,47 @@ export class PorwNode {
     this.key = keypair(privHex);
     this.deviceId = deviceId || keccak_256(this.key.address); // demo: device id derived from the reward key
     this.models = new Map(); // mepId hex -> resident model state
+    this.deltaBases = new Map(); // model id -> immutable resident base handle; no JS payload retained
     this.lies = new Map();   // test hook: `${mepIdHex}:${tileIdx}` -> corrupted sketch
   }
   /** Load a released fly-brain payload and register it under a MEP. */
   /** `maxSteps`: the largest task this slot's per-step buffers are sized for. It is a local capacity, not
    *  part of the MEP -- the step count of an actual run comes from the task. */
-  async loadModel(name, payloadBytes, { maxSteps = 2, exec = null } = {}) {
+  // Heap marks are shared by every wrapper of a memory. A replay may rewind
+  // scratch after an await, so it must not overlap loading or another replay.
+  async withKernelOperation(fn) {
+    if (busyMemories.has(this.k.memory)) throw new Error("a kernel operation is already in progress");
+    busyMemories.add(this.k.memory);
+    try { return await fn(); } finally { busyMemories.delete(this.k.memory); }
+  }
+  async withModelLoad(fn) {
+    return this.withKernelOperation(async () => {
+      const mark = this.k.mark(), bases = new Set(this.deltaBases.keys());
+      try { return await fn(); }
+      catch (error) {
+        this.k.release(mark);
+        for (const id of this.deltaBases.keys()) if (!bases.has(id)) this.deltaBases.delete(id);
+        throw error;
+      }
+    });
+  }
+  async loadModel(name, payloadBytes, opts = {}) {
+    return this.withModelLoad(() => {
+      const hdr = decodeHeader(payloadBytes), byteLength = payloadBytes.length;
+      return this._loadResidentModel(name, { kernel: this.k, ptr: this.k.put(payloadBytes), byteLength, hdr }, opts);
+    });
+  }
+  /** Internal adoption: the caller owns this payload in the same kernel, with no second k.put. */
+  async _loadResidentModel(name, resident, { maxSteps = 2, exec = null } = {}) {
     const k = this.k, t0 = performance.now();
-    const bufPtr = k.put(payloadBytes);
-    const nTiles = Math.floor(payloadBytes.length / TILE_BYTES);
-    const hdr = decodeHeader(payloadBytes);
+    if (resident.kernel !== k) throw new Error("resident payload belongs to another kernel");
+    if (!Number.isSafeInteger(maxSteps) || maxSteps < 1) throw new Error("maxSteps must be a positive integer");
+    const bufPtr = resident.ptr, nTiles = Math.floor(resident.byteLength / TILE_BYTES), hdr = resident.hdr;
     const e = k.exports, nodes = k.treeNodes(nTiles);
     const wLeavesPtr = k.alloc(nTiles * 32);
     if (this.pool) await this.pool.map("porw_weights_leaves", nTiles, (f, c) => [bufPtr + f * TILE_BYTES, c, f, wLeavesPtr + f * 32]);
     else e.porw_weights_leaves(bufPtr, nTiles >>> 0, 0, wLeavesPtr);
-    const weightsTree = await this.buildTree(wLeavesPtr, nTiles, k.alloc(nodes * 32));
+    const weightsTree = await this._buildTree(wLeavesPtr, nTiles, k.alloc(nodes * 32));
     const modelId = weightsTree.root;
     exec = exec || (hdr.version === 2 ? "lif" : "spmv"); if (exec === "lif" && hdr.version !== 2) throw new Error("int-lif needs a v2 payload");
     // fixed per-slot regions, reused every challenge (no allocation growth)
@@ -56,8 +99,8 @@ export class PorwNode {
                      await this.pool.map("porw_rowstart_leaves", n + 1, (f, c) => [csr.rowStartPtr + f * 4, c, f, rowLeaves + f * 32]); }
     else { if (e.porw_csr_chunk_leaves(syn, csr.permPtr, ns >>> 0, CSR_CHUNK, 0, csr.nChunks >>> 0, csrLeaves) !== 0) throw new Error("csr leaves");
            e.porw_rowstart_leaves(csr.rowStartPtr, (n + 1) >>> 0, 0, rowLeaves); }
-    csr.csrTree = await this.buildTree(csrLeaves, csr.nChunks, k.alloc(k.treeNodes(csr.nChunks) * 32));
-    csr.rowTree = await this.buildTree(rowLeaves, n + 1, k.alloc(k.treeNodes(n + 1) * 32));
+    csr.csrTree = await this._buildTree(csrLeaves, csr.nChunks, k.alloc(k.treeNodes(csr.nChunks) * 32));
+    csr.rowTree = await this._buildTree(rowLeaves, n + 1, k.alloc(k.treeNodes(n + 1) * 32));
     csr.synapseRoot = k.keccak256(new Uint8Array([...csr.csrTree.root, ...csr.rowTree.root]));
     // the MEP is derivable only now: mep_id binds the CSR structure as well as the weights
     const mep = makeMep({ name, modelId, execKind: exec === "lif" ? lifExecKind() : undefined, neurons: hdr.neurons, synapses: hdr.synapses, synapseRoot: csr.synapseRoot });
@@ -77,15 +120,31 @@ export class PorwNode {
   /** Load a FLYDELTA delta on top of its base payload: the applied bytes are the model (same model_id / MEP as
    *  publishing them directly); `st.delta` records the binding. `baseModelId` skips recomputing the base's id.
    *  `opts` reaches loadModel, so a caller sizes this slot with `maxSteps` the same way. */
+  loadDeltaBase(bytes, opts = {}) {
+    if (busyMemories.has(this.k.memory)) throw new Error("a kernel operation is already in progress");
+    return this._registerDeltaBase(bytes, opts);
+  }
+  _registerDeltaBase(bytes, opts) {
+    const mark = this.k.mark(), candidate = uploadDeltaBase(this.k, bytes, opts), id = hex(candidate.modelId);
+    const resident = this.deltaBases.get(id);
+    if (resident) this.k.release(mark); else this.deltaBases.set(id, candidate);
+    const handle = resident || candidate;
+    return handle;
+  }
   async loadDelta(baseBytes, deltaBytes, { baseModelId = null, resolve = null, ...opts } = {}) {
-    const d = isDelta3(deltaBytes) ? decodeDelta3(deltaBytes) : isDelta2(deltaBytes) ? decodeDelta2(deltaBytes) : decodeDelta(deltaBytes); const applied = applyDelta(baseBytes, deltaBytes, { baseModelId, resolve }); // resolve(idHex): ancestors of a v3 cross
-    const st = await this.loadModel(d.name, applied, opts); st.delta = { version: isDelta3(deltaBytes) ? 3 : isDelta2(deltaBytes) ? 2 : 1, parents: d.parentA ? [d.parentA, d.parentB] : null, baseModelId: d.baseModelId, baseDA: d.baseDA, ops: d.ops.length, seed: d.seed ?? null, bytes: deltaBytes.length }; return st;
+    return this.withModelLoad(async () => {
+      const base = baseBytes instanceof Uint8Array ? this._registerDeltaBase(baseBytes, { baseModelId }) : baseBytes;
+      const applied = applyDeltaWasm(this.k, base, deltaBytes, { resolve }), d = applied.delta;
+      const st = await this._loadResidentModel(d.name, applied, opts);
+      st.delta = { version: isDelta3(deltaBytes) ? 3 : isDelta2(deltaBytes) ? 2 : 1, parents: d.parentA ? [d.parentA, d.parentB] : null, baseModelId: d.baseModelId, baseDA: d.baseDA, ops: d.ops.length, seed: d.seed ?? null, bytes: deltaBytes.length };
+      return st;
+    });
   }
   /** A residency claim: sketch every resident tile under a challenge the instance cannot choose, commit the
    *  sketches, sign. That is all of it. No inference happens here, because no verdict ever read one: a claim
    *  is invalidated only by the tile fraud proof, which adjudicates a challenged tile against `partialsRoot`
    *  and the model root. Execution belongs to `execute()` and is attested per task. */
-  async residency(mepId, challenge32) {
+  async _residency(mepId, challenge32) {
     const st = this.models.get(hex(mepId)); if (!st) throw new Error("unknown MEP");
     const k = this.k, n = st.nTiles, t = {};
     let t0 = performance.now();
@@ -98,7 +157,7 @@ export class PorwNode {
     t.sketchMs = performance.now() - t0; t0 = performance.now();
     if (this.pool) await this.pool.map("porw_partials_leaves", n, (f, c) => [0, sl.sketchesPtr + f * 4, c, f, sl.pLeavesPtr + f * 32]);
     else e.porw_partials_leaves(0, sl.sketchesPtr, n >>> 0, 0, sl.pLeavesPtr);
-    st.partialsTree = await this.buildTree(sl.pLeavesPtr, n, sl.pTreePtr);
+    st.partialsTree = await this._buildTree(sl.pLeavesPtr, n, sl.pTreePtr);
     st.partialsRoot = st.partialsTree.root;
     t.commitMs = performance.now() - t0;
     const claim = { schemeDigest: st.mep.schemeDigest, mepId: st.mep.mepId, modelId: st.modelId, partialsRoot: st.partialsRoot,
@@ -111,7 +170,7 @@ export class PorwNode {
    *  `commit`: also build the per-step (spmv) or per-segment (int-lif) state commitments an execution
    *  DISPUTE needs -- on the real brain that is the majority of the work, and it is only ever read when
    *  two executors of the same task disagree, so a caller that just wants the answer can skip it. */
-  async execute(mepId, { steps = 1, commitStride = 1, stimulusSeed = 1, stimulusIds = null, commit = true } = {}) {
+  async _execute(mepId, { steps = 1, commitStride = 1, stimulusSeed = 1, stimulusIds = null, commit = true } = {}) {
     const st = this.models.get(hex(mepId)); if (!st) throw new Error("unknown MEP");
     if (!(steps >= 1 && steps <= st.maxSteps)) throw new Error(`steps ${steps} exceeds this slot's capacity (${st.maxSteps})`);
     if (!(commitStride >= 1 && commitStride <= steps)) throw new Error("commitStride must be in 1..steps");
@@ -119,13 +178,13 @@ export class PorwNode {
     const k = this.k, sl = st.slot, t = {}; let t0 = performance.now();
     if (st.exec === "lif") {
       // canonical stimulus set from the seed (or an explicit task set); commitments are folded into the run
-      const r = await this.runLif(st, stimulusSeed, stimulusIds, commit);
+      const r = await this._runLif(st, stimulusSeed, stimulusIds, commit);
       st.execDigest = r.execDigest; st.actRoots = r.stateRoots; st.execRoot = r.execRoot; st.initStateRoot = r.initStateRoot; st.stimulated = r.stimulated;
       t.inferMs = r.inferMs; t.disputeCommitMs = r.commitMs;
     } else {
       const e = k.exports;
       e.porw_spmv_stimulus(sl.acts[0].ptr, st.hdr.neurons >>> 0, stimulusSeed >>> 0);
-      await this.runInference(st);
+      await this._runInference(st);
       const last = sl.acts[st.steps].ptr, a = k.u32(last, st.hdr.neurons);
       st.execDigest = keccak_256(new Uint8Array(a.buffer, a.byteOffset, a.byteLength));
       t.inferMs = performance.now() - t0; t0 = performance.now();
@@ -135,7 +194,7 @@ export class PorwNode {
         const A = sl.acts[sIdx], nn = st.hdr.neurons;
         if (this.pool) await this.pool.map("porw_act_leaves", nn, (f, c) => [A.ptr + f * 4, c, f, A.leavesPtr + f * 32]);
         else e.porw_act_leaves(A.ptr, nn >>> 0, 0, A.leavesPtr);
-        A.tree = await this.buildTree(A.leavesPtr, nn, A.treePtr); st.actRoots.push(A.tree.root);
+        A.tree = await this._buildTree(A.leavesPtr, nn, A.treePtr); st.actRoots.push(A.tree.root);
       }
       st.execRoot = commit ? k.merkleRoot(new Uint8Array(st.actRoots.flatMap((r) => [...r]))) : null;
       t.disputeCommitMs = performance.now() - t0;
@@ -146,14 +205,14 @@ export class PorwNode {
   }
 
   /** residency + execution in one call, for callers (tests, benches) that want both under one challenge */
-  async challenge(mepId, challenge32, { steps = 1, commitStride = 1, stimulusSeed = 1, stimulusIds = null, commit = true } = {}) {
-    const R = await this.residency(mepId, challenge32);
-    const X = await this.execute(mepId, { steps, commitStride, stimulusSeed, stimulusIds, commit });
+  async _challenge(mepId, challenge32, { steps = 1, commitStride = 1, stimulusSeed = 1, stimulusIds = null, commit = true } = {}) {
+    const R = await this._residency(mepId, challenge32);
+    const X = await this._execute(mepId, { steps, commitStride, stimulusSeed, stimulusIds, commit });
     return { ...R, result: X.result, timings: { ...R.timings, ...X.timings } };
   }
 
   /** steps of deterministic inference in place on actPtr; parallel CSR rows with a pool, scatter otherwise (bit-identical) */
-  async runInference(st) {
+  async _runInference(st) {
     const k = this.k, e = k.exports, n = st.hdr.neurons, syn = st.bufPtr + st.hdr.synOffset, acts = st.slot.acts;
     for (let s = 1; s <= st.steps; s++) {
       const a = acts[s - 1].ptr, b = acts[s].ptr;
@@ -192,7 +251,7 @@ export class PorwNode {
     const m = this.k.mark(); const p = this.k.alloc(ids.length * 4); this.k.u32(p, ids.length).set(ids);
     const rc = e.porw_lif_state0_set(dst, n >>> 0, p, ids.length >>> 0); this.k.release(m); if (rc !== 0) throw new Error("state0 rc=" + rc); return ids.length;
   }
-  async lifStep(st, from, to, step, seed) {
+  async _lifStep(st, from, to, step, seed) {
     const k = this.k, e = k.exports, n = st.hdr.neurons, syn = st.bufPtr + st.hdr.synOffset;
     let rc;
     if (this.pool && st.csr.sorted) await this.pool.map("porw_lif_step_rows_direct", n, (i0, c) => [syn, st.csr.rowStartPtr, from, to, n, i0, i0 + c, step, seed]);
@@ -209,23 +268,23 @@ export class PorwNode {
       } else { const b = k.u8(to + i * LIF_STATE, LIF_STATE); const dv = new DataView(b.buffer, b.byteOffset, LIF_STATE); dv.setInt32(0, dv.getInt32(0, true) + L.delta, true); } // lie in the state itself
     }
   }
-  async lifCommit(st, statePtr) {
+  async _lifCommit(st, statePtr) {
     const k = this.k, e = k.exports, n = st.hdr.neurons, L = st.slot.lif;
     if (this.pool) await this.pool.map("porw_lif_state_leaves", n, (f, c) => [statePtr + f * LIF_STATE, c, f, L.leavesPtr + f * 32]);
     else e.porw_lif_state_leaves(statePtr, n >>> 0, 0, L.leavesPtr);
-    return this.buildTree(L.leavesPtr, n, L.treePtr);
+    return this._buildTree(L.leavesPtr, n, L.treePtr);
   }
   /** full run with per-step state commitments; keeps roots + checkpoints, returns the result artifacts */
-  async runLif(st, seed, ids = null, commit = true) {
+  async _runLif(st, seed, ids = null, commit = true) {
     const k = this.k, e = k.exports, n = st.hdr.neurons, L = st.slot.lif; let t0 = performance.now(), inferMs = 0, commitMs = 0;
     L.seed = seed; L.ids = ids; L.cache.clear();
     const stimulated = this.lifState0(st, L.ping, seed, ids);
     k.u8(L.checkpoints.get(0), n * LIF_STATE).set(k.u8(L.ping, n * LIF_STATE));
-    const initStateRoot = commit ? (await this.lifCommit(st, L.ping)).root : null; commitMs += performance.now() - t0;
+    const initStateRoot = commit ? (await this._lifCommit(st, L.ping)).root : null; commitMs += performance.now() - t0;
     const roots = [], stride = st.commitStride; let cur = L.ping, nxt = L.pong;
     for (let s = 1; s <= st.steps; s++) {
-      t0 = performance.now(); await this.lifStep(st, cur, nxt, s, seed); inferMs += performance.now() - t0;
-      if (commit && (s % stride === 0 || s === st.steps)) { t0 = performance.now(); roots.push((await this.lifCommit(st, nxt)).root); commitMs += performance.now() - t0; } // segment root
+      t0 = performance.now(); await this._lifStep(st, cur, nxt, s, seed); inferMs += performance.now() - t0;
+      if (commit && (s % stride === 0 || s === st.steps)) { t0 = performance.now(); roots.push((await this._lifCommit(st, nxt)).root); commitMs += performance.now() - t0; } // segment root
       if (L.checkpoints.has(s)) k.u8(L.checkpoints.get(s), n * LIF_STATE).set(k.u8(nxt, n * LIF_STATE));
       [cur, nxt] = [nxt, cur];
     }
@@ -235,37 +294,37 @@ export class PorwNode {
     return { initStateRoot, stateRoots: roots, segments: roots.length, execRoot: commit ? k.merkleRoot(new Uint8Array(roots.flatMap((r) => [...r]))) : null, execDigest: countsDigest(counts), counts, stimulated, inferMs, commitMs };
   }
   /** materialize state_s (replay from the nearest checkpoint) and its tree; cached (small LRU) */
-  async lifStateAt(st, s) {
+  async _lifStateAt(st, s) {
     const k = this.k, n = st.hdr.neurons, L = st.slot.lif;
     if (L.cache.has(s)) return L.cache.get(s);
     let c = s - (s % LIF_CHECKPOINT); const m = k.mark();
     const a = k.alloc(n * LIF_STATE), b = k.alloc(n * LIF_STATE); k.u8(a, n * LIF_STATE).set(k.u8(L.checkpoints.get(c), n * LIF_STATE));
-    let cur = a, nxt = b; for (let t = c + 1; t <= s; t++) { await this.lifStep(st, cur, nxt, t, L.seed); [cur, nxt] = [nxt, cur]; }
+    let cur = a, nxt = b; for (let t = c + 1; t <= s; t++) { await this._lifStep(st, cur, nxt, t, L.seed); [cur, nxt] = [nxt, cur]; }
     const state = new Uint8Array(k.u8(cur, n * LIF_STATE)); k.release(m);
     // tree over a dedicated region so several steps can be cached at once
     const statePtr = k.alloc(n * LIF_STATE); k.u8(statePtr, n * LIF_STATE).set(state);
     const leavesPtr = k.alloc(n * 32), treePtr = k.alloc(k.treeNodes(n) * 32);
     if (this.pool) await this.pool.map("porw_lif_state_leaves", n, (f, cnt) => [statePtr + f * LIF_STATE, cnt, f, leavesPtr + f * 32]); else k.exports.porw_lif_state_leaves(statePtr, n >>> 0, 0, leavesPtr);
-    const tree = await this.buildTree(leavesPtr, n, treePtr);
+    const tree = await this._buildTree(leavesPtr, n, treePtr);
     const entry = { statePtr, tree }; L.cache.set(s, entry); return entry;
   }
   /** per-step state roots inside segment `seg` (steps seg*stride+1 .. min((seg+1)*stride, steps)); one replay pass */
-  async lifSegmentRoots(mepId, seg) {
+  async _lifSegmentRoots(mepId, seg) {
     const st = this.models.get(hex(mepId)), k = this.k, n = st.hdr.neurons, L = st.slot.lif, stride = st.commitStride;
-    const s0 = seg * stride, s1 = Math.min(s0 + stride, st.steps); const { statePtr } = await this.lifStateAt(st, s0);
+    const s0 = seg * stride, s1 = Math.min(s0 + stride, st.steps); const { statePtr } = await this._lifStateAt(st, s0);
     const m = k.mark(); const a = k.alloc(n * LIF_STATE), b = k.alloc(n * LIF_STATE); k.u8(a, n * LIF_STATE).set(k.u8(statePtr, n * LIF_STATE));
     let cur = a, nxt = b; const roots = [];
-    for (let t = s0 + 1; t <= s1; t++) { await this.lifStep(st, cur, nxt, t, L.seed); roots.push((await this.lifCommit(st, nxt)).root); [cur, nxt] = [nxt, cur]; }
+    for (let t = s0 + 1; t <= s1; t++) { await this._lifStep(st, cur, nxt, t, L.seed); roots.push((await this._lifCommit(st, nxt)).root); [cur, nxt] = [nxt, cur]; }
     k.release(m); return { s0, s1, roots };
   }
-  async lifNode(mepId, step, level, idx) { const st = this.models.get(hex(mepId)); const { tree } = await this.lifStateAt(st, step); return treeNodeAt(this.k, tree, level, idx); }
-  async lifOpenState(mepId, step, i) { const st = this.models.get(hex(mepId)); const { statePtr, tree } = await this.lifStateAt(st, step);
+  async _lifNode(mepId, step, level, idx) { const st = this.models.get(hex(mepId)); const { tree } = await this._lifStateAt(st, step); return treeNodeAt(this.k, tree, level, idx); }
+  async _lifOpenState(mepId, step, i) { const st = this.models.get(hex(mepId)); const { statePtr, tree } = await this._lifStateAt(st, step);
     return { step, i, state: decodeState(this.k.u8(statePtr + i * LIF_STATE, LIF_STATE)), proof: this.k.treeProof(tree, i) }; }
-  async lifPartialSums(mepId, step, i) { const st = this.models.get(hex(mepId)), k = this.k, e = k.exports, n = st.hdr.neurons;
-    const { statePtr } = await this.lifStateAt(st, step - 1);
+  async _lifPartialSums(mepId, step, i) { const st = this.models.get(hex(mepId)), k = this.k, e = k.exports, n = st.hdr.neurons;
+    const { statePtr } = await this._lifStateAt(st, step - 1);
     const R = k.u32(st.csr.rowStartPtr, n + 1); const k0 = R[i], k1 = R[i + 1]; const m = k.mark(); const out = k.alloc(Math.max(1, k1 - k0) * 8);
     const rc = e.porw_lif_partial_sums(st.bufPtr + st.hdr.synOffset, st.csr.permPtr, statePtr, n >>> 0, k0, k1, out);
     const sums = Array.from(new BigInt64Array(k.memory.buffer, out, k1 - k0)); k.release(m); if (rc !== 0) throw new Error("partial sums rc=" + rc);
     return { k0, k1, sums }; }
-  lifStates(mepId, step) { return this.lifStateAt(this.models.get(hex(mepId)), step).then(({ statePtr }) => new Uint8Array(this.k.u8(statePtr, this.models.get(hex(mepId)).hdr.neurons * LIF_STATE))); }
+  _lifStates(mepId, step) { return this._lifStateAt(this.models.get(hex(mepId)), step).then(({ statePtr }) => new Uint8Array(this.k.u8(statePtr, this.models.get(hex(mepId)).hdr.neurons * LIF_STATE))); }
 }
