@@ -145,3 +145,8 @@ base's `model_id`. `diff --base a.bin --target b.bin --out b.delta` builds the d
 ops.json` builds one from `[[pre, post, w], ...]` (w = 0 deletes), `apply` rebuilds the target payload byte for byte
 and writes a manifest with the base and result model ids, `info` decodes a delta. `w != 0` sets a record, `w == 0`
 deletes it; neurons are unchanged.
+
+`make2 --base base.bin --seed N --name NAME --out x.delta [--min-syn 5] [--mean-ratio 1.0] [--r-table r.json] [--ops ops.json]`
+writes a **FLYDELTAv2** procedural delta (a synthetic individual: every count resampled with a deterministic integer
+negative-binomial sampler, bit-identical to `web/porw-browser/sample.js`); `apply` works for both versions. Sample from
+a `--min-syn 1` export so individuals can gain connections, and let `min_syn 5` in the delta produce the published graph.

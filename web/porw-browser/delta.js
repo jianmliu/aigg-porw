@@ -12,7 +12,8 @@
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import * as V from "./verify.js";
 import { decodeHeader } from "./model.js";
-export const MAGIC_DELTA = "FLYDELTAv1\0\0"; const MAGIC_V2 = "FLYBRAINv2\0\0"; const TILE = V.TILE_BYTES; const REC = 10;
+import { hash64, nbTable, rOf, sampleFromTable, DEFAULT_R_TABLE } from "./sample.js";
+export const MAGIC_DELTA = "FLYDELTAv1\0\0", MAGIC_DELTA2 = "FLYDELTAv2\0\0"; const MAGIC_V2 = "FLYBRAINv2\0\0"; const TILE = V.TILE_BYTES; const REC = 10;
 const enc = (s) => new TextEncoder().encode(s), dec = (b) => new TextDecoder().decode(b);
 /** model_id of a payload: keccak weights Merkle root over its 4 KiB tiles */
 export function modelIdOf(bytes) { const n = Math.floor(bytes.length / TILE); const lv = []; for (let t = 0; t < n; t++) lv.push(V.weightsLeaf(t, bytes.subarray(t * TILE, (t + 1) * TILE))); return V.merkleRoot(lv); }
@@ -58,6 +59,7 @@ export function encodePayload(base, name, recs) {
  * passed (already verified by the caller); throws on a delete of a record the base does not have.
  */
 export function applyDelta(base, deltaBytes, { baseModelId = null } = {}) {
+  if (isDelta2(deltaBytes)) return applyDelta2(base, deltaBytes, { baseModelId });
   const d = decodeDelta(deltaBytes); const h = decodeHeader(base); if (h.version !== 2) throw new Error("FLYBRAINv2 base required");
   if (h.neurons !== d.neurons) throw new Error(`neuron count mismatch: base ${h.neurons}, delta ${d.neurons}`);
   const mid = baseModelId || modelIdOf(base); if (!V.eq(mid, d.baseModelId)) throw new Error(`base model id mismatch: base ${V.hex(mid)}, delta binds ${V.hex(d.baseModelId)}`);
@@ -83,4 +85,53 @@ export function diffPayloads(base, target, { name = null, baseDA = "" } = {}) {
     else { if (a[i].w !== b[j].w) ops.push(b[j]); i++; j++; }
   }
   return encodeDelta({ baseModelId: modelIdOf(base), neurons: hb.neurons, name: name ?? ht.name, baseDA, ops });
+}
+
+// ------------------------------------------------------------------ FLYDELTAv2: procedural individuals ----------
+// MAGIC "FLYDELTAv2\0\0" | base model_id (32 B) | u64 neurons | u64 seed | u16 min_syn | u32 mean_ratio_q16 | u16 r_rows
+// | rows: u32 c_from | u16 r_q8 | u32 ops | u16 name_len | name | u16 base_da_len | base_da | ops (10 B each)
+// apply: every base record's count c = |w| is resampled (sample.js), records with c' < min_syn dropped, sign kept,
+// then the explicit ops (set / insert / lenient delete), then the payload is written as for v1.
+export const isDelta2 = (bytes) => new TextDecoder("latin1").decode(bytes.subarray(0, 12)) === MAGIC_DELTA2;
+export function decodeDelta2(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.length < 76 || !isDelta2(bytes)) throw new Error("bad delta2 magic");
+  const baseModelId = bytes.slice(12, 44); const neurons = Number(dv.getBigUint64(44, true)); const seed = dv.getBigUint64(52, true); const minSyn = dv.getUint16(60, true); const meanRatioQ16 = dv.getUint32(62, true); const nrows = dv.getUint16(66, true);
+  let off = 68; const rTable = []; for (let i = 0; i < nrows; i++) { rTable.push([dv.getUint32(off, true), dv.getUint16(off + 4, true)]); off += 6; }
+  for (let i = 1; i < nrows; i++) if (rTable[i - 1][0] >= rTable[i][0]) throw new Error("r table rows must ascend"); if (!nrows || rTable[0][0] !== 1) throw new Error("r table must start at c=1");
+  const nops = dv.getUint32(off, true); off += 4; const nameLen = dv.getUint16(off, true); off += 2; const name = dec(bytes.subarray(off, off + nameLen)); off += nameLen; const daLen = dv.getUint16(off, true); off += 2; const baseDA = dec(bytes.subarray(off, off + daLen)); off += daLen;
+  if (off + nops * REC !== bytes.length) throw new Error("delta length mismatch");
+  const ops = new Array(nops); for (let i = 0; i < nops; i++) ops[i] = readRec(dv, off + i * REC);
+  for (let i = 0; i < nops; i++) { if (ops[i].pre >= neurons || ops[i].post >= neurons) throw new Error(`op ${i}: neuron index out of range`); if (i && cmp(ops[i - 1], ops[i]) >= 0) throw new Error(`op ${i}: ops must be sorted by (post, pre) and unique`); }
+  return { baseModelId, neurons, seed, minSyn, meanRatioQ16, rTable, name, baseDA, ops };
+}
+export function encodeDelta2({ baseModelId, neurons, seed, name, baseDA = "", minSyn = 5, meanRatioQ16 = 65536, rTable = DEFAULT_R_TABLE, ops = [] }) {
+  if (baseModelId.length !== 32) throw new Error("baseModelId must be 32 bytes"); if (!rTable.length || rTable[0][0] !== 1) throw new Error("r table must start at c=1");
+  for (let i = 1; i < rTable.length; i++) if (rTable[i - 1][0] >= rTable[i][0]) throw new Error("r table rows must ascend");
+  const sorted = ops.map((o) => ({ pre: o.pre >>> 0, post: o.post >>> 0, w: o.w | 0 })).sort(cmp);
+  for (let i = 0; i < sorted.length; i++) { const o = sorted[i]; if (o.pre >= neurons || o.post >= neurons) throw new Error("op out of range"); if (i && cmp(sorted[i - 1], o) === 0) throw new Error("duplicate op"); }
+  const nameB = enc(name), daB = enc(baseDA); const out = new Uint8Array(68 + 6 * rTable.length + 4 + 2 + nameB.length + 2 + daB.length + sorted.length * REC); const dv = new DataView(out.buffer);
+  out.set(enc(MAGIC_DELTA2), 0); out.set(baseModelId, 12); dv.setBigUint64(44, BigInt(neurons), true); dv.setBigUint64(52, BigInt(seed), true); dv.setUint16(60, minSyn, true); dv.setUint32(62, meanRatioQ16 >>> 0, true); dv.setUint16(66, rTable.length, true);
+  let off = 68; for (const [cFrom, rq] of rTable) { dv.setUint32(off, cFrom >>> 0, true); dv.setUint16(off + 4, rq, true); off += 6; }
+  dv.setUint32(off, sorted.length, true); off += 4; dv.setUint16(off, nameB.length, true); off += 2; out.set(nameB, off); off += nameB.length; dv.setUint16(off, daB.length, true); off += 2; out.set(daB, off); off += daB.length;
+  for (let i = 0; i < sorted.length; i++) writeRec(dv, off + i * REC, sorted[i]);
+  return out;
+}
+/** resampled counts for the base records (Int32Array of |w|) under (seed, meanRatio, rTable): one CDF table per distinct count */
+export function sampleCounts(recs, seed, meanRatioQ16, rTable) {
+  const seedLo = Number(seed & 0xffffffffn) >>> 0, seedHi = Number(seed >> 32n) >>> 0; const tables = new Map(); const out = new Int32Array(recs.length);
+  for (let i = 0; i < recs.length; i++) {
+    const c = Math.abs(recs[i].w); let t = tables.get(c); if (!t) { t = nbTable(c, rOf(c, rTable), meanRatioQ16); tables.set(c, t); }
+    out[i] = Math.min(32767, sampleFromTable(t, hash64(seedLo, seedHi, recs[i].pre, recs[i].post)));
+  }
+  return out;
+}
+export function applyDelta2(base, deltaBytes, { baseModelId = null } = {}) {
+  const d = decodeDelta2(deltaBytes); const h = decodeHeader(base); if (h.version !== 2) throw new Error("FLYBRAINv2 base required");
+  if (h.neurons !== d.neurons) throw new Error(`neuron count mismatch: base ${h.neurons}, delta ${d.neurons}`);
+  const mid = baseModelId || modelIdOf(base); if (!V.eq(mid, d.baseModelId)) throw new Error(`base model id mismatch: base ${V.hex(mid)}, delta binds ${V.hex(d.baseModelId)}`);
+  const src = records(base); const c2 = sampleCounts(src, d.seed, d.meanRatioQ16, d.rTable);
+  let out = []; for (let i = 0; i < src.length; i++) if (c2[i] >= d.minSyn) out.push({ pre: src[i].pre, post: src[i].post, w: src[i].w < 0 ? -c2[i] : c2[i] });
+  if (d.ops.length) { const opKey = new Map(d.ops.map((o) => [o.post * h.neurons + o.pre, o])); out = out.filter((r) => !opKey.has(r.post * h.neurons + r.pre)); for (const o of d.ops) if (o.w !== 0) out.push(o); }
+  out.sort(cmp); return encodePayload(base, d.name, out);
 }
