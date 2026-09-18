@@ -12,8 +12,8 @@ import { decodeHeader, attachSpmv } from "./model.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { claimHash, signHash, keypair } from "./claim.js";
 import { makeMep } from "./mep.js";
-import { hex, CSR_CHUNK, instanceWord, merkleProof } from "./verify.js";
-import { batchTrees, levelsOf, childrenAt } from "./batch.js";
+import { hex, CSR_CHUNK, instanceWord, merkleProof, merkleRoot } from "./verify.js";
+import { batchTrees, levelsOf, childrenAt, runLeaf } from "./batch.js";
 import { claimDigest } from "./eip712.js";
 import { lifExecKind, countsDigest, decodeState, encodeState, transition } from "./lif.js";
 const LIF_STATE = 16, LIF_CHECKPOINT = 32;
@@ -26,6 +26,7 @@ export class PorwNode {
   execute(...args) { return this.withKernelOperation(() => this._execute(...args)); }
   executeBatch(...args) { return this.withKernelOperation(() => this._executeBatch(...args)); }
   batchOpenRun(...args) { return this.withKernelOperation(() => this._batchOpenRun(...args)); }
+  batchRunsRoot(...args) { return this.withKernelOperation(() => this._batchRunsRoot(...args)); }
   challenge(...args) { return this.withKernelOperation(() => this._challenge(...args)); }
   runInference(...args) { return this.withKernelOperation(() => this._runInference(...args)); }
   lifStep(...args) { return this.withKernelOperation(() => this._lifStep(...args)); }
@@ -234,6 +235,16 @@ export class PorwNode {
     const T = batchTrees(recs); st.batch = { steps, commitStride, inputs: runs, runs: recs, trees: T, levels: levelsOf(T.resultLeaves), open: runs.length - 1, openResult: last };
     return { steps, commitStride, timings: { batchMs: performance.now() - t0 }, runs: recs,
       result: { execDigest: T.execDigest, execRoot: T.execRoot, initStateRoot: T.runsRoot, csrRoot: st.csr.csrTree.root, rowRoot: st.csr.rowTree.root, synapseRoot: st.csr.synapseRoot } };
+  }
+  /** What a CLIENT needs before it can post a batch: the task's initStateRoot, i.e. the root over the runs' seeds and
+   *  state_0 roots. Builds and commits each run's state_0 and executes nothing, so it costs one state tree per run. */
+  async _batchRunsRoot(mepId, runs) {
+    const st = this.models.get(hex(mepId)); if (!st) throw new Error("unknown MEP"); if (st.exec !== "lif") throw new Error("batches are int-lif only");
+    const L = st.slot.lif, leaves = [], inits = [];
+    for (let k = 0; k < runs.length; k++) { const r = runs[k]; this.lifState0(st, L.ping, r.stimulusSeed >>> 0, r.stimulusIds || null, r.silenceIds || null);
+      const root = (await this._lifCommit(st, L.ping)).root; inits.push(root); leaves.push(runLeaf(k, r.stimulusSeed >>> 0, root)); }
+    L.cache.clear(); if (st.batch) st.batch.open = -1; // the slot's state is no run's any more
+    return { runsRoot: merkleRoot(leaves), initStateRoots: inits };
   }
   /** the pair this node posts to `postChildren` in the Run phase, for node (level, idx) of its run-result tree */
   batchNode(mepId, level, idx) { const b = this.models.get(hex(mepId))?.batch; if (!b) throw new Error("no batch"); return childrenAt(b.levels, level, idx); }
