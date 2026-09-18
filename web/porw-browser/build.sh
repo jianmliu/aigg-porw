@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 CC="${CC:-clang}"
-SRC="sketch_wasm.c commit_wasm.c spmv_wasm.c dispute_wasm.c lif_wasm.c"
+SRC="sketch_wasm.c commit_wasm.c spmv_wasm.c dispute_wasm.c lif_wasm.c sample_wasm.c delta_wasm.c"
 COMMON="--target=wasm32 -O3 -msimd128 -mbulk-memory -nostdlib -std=c11 -Wall -Wextra -Wl,--no-entry -Wl,--export=__heap_base -Wl,--max-memory=4294967296"
 "$CC" $COMMON -Wl,--initial-memory=1048576 -o sketch.wasm $SRC
 "$CC" $COMMON -matomics -Wl,--import-memory -Wl,--shared-memory -Wl,--export=__stack_pointer \

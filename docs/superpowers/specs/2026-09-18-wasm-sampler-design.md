@@ -1,0 +1,13 @@
+# WASM delta sampler
+
+The user selected Issue #14 option B: move the sampler into WASM. Preserve deterministic FLYDELTA v1/v2/v3 bytes and all commitments. JS and Python remain independent references.
+
+Implement exact fixed-point arithmetic in C, compiled into the existing single/shared WASM kernels: hash64, lnQ60, expQ256, NB CDF and inverse sampling. No floating point approximations. Validate CDF output against JS and Python including extreme serialized parameters. Records are grouped by base count, with one CDF at a time in less than 385 KiB of scratch, reclaimed after each genotype operation.
+
+Keep small delta parsing and ancestor resolution in JS. Keep base bytes, genotype arrays, sampled records and applied payloads in WASM. A resident base handle owns a kernel pointer, byte length, header and verified model id, with no retained full JS array. Direct application returns an output pointer and length. Resolve v3 parents by hash, reject cycles/missing/foreign/explicit-op ancestors, preserve inheritance domains and pre-threshold genotypes.
+
+PorwNode accepts a resident base handle and adopts the applied payload without a second copy. Existing byte-array loadDelta callers remain supported by uploading once. Temporary tables/genotypes are reclaimed; memory growth must not leave cached detached views. Expose base allocation cost and preserve existing model-memory estimates for ordinary loads.
+
+Acceptance: exact CDFs, v1/v2/v3 output bytes, model_id, synapseRoot, mep_id and execution match the references; repeated individuals reuse a resident base; failure paths reclaim scratch; both WASM builds pass existing tests. Add reproducible benchmark reporting time and heap use, without claiming an unmeasured speedup.
+
+Review constraints: support the 257-bit value 2^256 and full multiply/divide intermediates; preserve floor division for negative values. Cover MR 0/max, R 1/max, signed weight -32768, inverse-CDF equality/max, forced tail and underflow stopping. CDF workspace has an explicit bounded peak and cannot grow with every possible count. Validate resolver hash and parent restrictions before cache reuse. Bound ancestor traversal. Node model loads reject overlapping operations on a kernel and roll back failed allocations. Base handles are kernel-owned, remain valid until heap rewind/reset, and must not be used after manual heap manipulation. Byte-array callers reuse bases by identity instead of accumulating duplicates. Benchmark separately reports persistent base/output and WASM buffer high-water (a page-rounded upper bound on scratch, not a precise process-RSS figure).
