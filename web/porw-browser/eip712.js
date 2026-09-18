@@ -1,5 +1,5 @@
 // EIP-712 typed data for the mesh (mirrors contracts/evm/src/mesh/PorwEIP712.sol):
-//   Claim(bytes32 schemeDigest,bytes32 mepId,bytes32 modelId,bytes32 partialsRoot,uint64 coverageBytes,bytes32 challenge,bytes32 deviceId)
+//   Claim(bytes32 schemeDigest,bytes32 mepId,bytes32 modelId,bytes32 partialsRoot,uint64 coverageBytes,bytes32 challenge)
 //   Result(bytes32 taskId,bytes32 execDigest,bytes32 execRoot)
 //   Delegation(address instance,address session,uint64 expiry)
 // Two independent hashing paths: hand-coded struct digests (what the node signs) and a generic
@@ -16,7 +16,7 @@ const word = (bytes) => { const o = new Uint8Array(32); o.set(bytes, 32 - bytes.
 const wordBig = (n) => { const o = new Uint8Array(32); let x = BigInt(n); for (let i = 31; i >= 0; i--) { o[i] = Number(x & 255n); x >>= 8n; } return o; };
 export const TYPES = {
   EIP712Domain: [{ name: "name", type: "string" }, { name: "version", type: "string" }, { name: "chainId", type: "uint256" }, { name: "verifyingContract", type: "address" }],
-  Claim: [{ name: "schemeDigest", type: "bytes32" }, { name: "mepId", type: "bytes32" }, { name: "modelId", type: "bytes32" }, { name: "partialsRoot", type: "bytes32" }, { name: "coverageBytes", type: "uint64" }, { name: "challenge", type: "bytes32" }, { name: "deviceId", type: "bytes32" }],
+  Claim: [{ name: "schemeDigest", type: "bytes32" }, { name: "mepId", type: "bytes32" }, { name: "modelId", type: "bytes32" }, { name: "partialsRoot", type: "bytes32" }, { name: "coverageBytes", type: "uint64" }, { name: "challenge", type: "bytes32" }],
   Result: [{ name: "taskId", type: "bytes32" }, { name: "execDigest", type: "bytes32" }, { name: "execRoot", type: "bytes32" }],
   Delegation: [{ name: "instance", type: "address" }, { name: "session", type: "address" }, { name: "expiry", type: "uint64" }],
 };
@@ -26,13 +26,13 @@ export const domain = (chainId, verifyingContract) => ({ name: NAME, version: VE
 export const domainSeparator = (d) => keccak_256(cat(typeHash("EIP712Domain"), keccak_256(utf8(d.name)), keccak_256(utf8(d.version)), wordBig(d.chainId), word(unhex(d.verifyingContract))));
 export const digest = (d, structHash) => keccak_256(cat(new Uint8Array([0x19, 0x01]), domainSeparator(d), structHash));
 // ---- hand-coded struct hashes (node side) ----
-export const claimStructHash = (c) => keccak_256(cat(typeHash("Claim"), c.schemeDigest, c.mepId, c.modelId, c.partialsRoot, wordBig(c.coverageBytes), c.challenge, c.deviceId));
+export const claimStructHash = (c) => keccak_256(cat(typeHash("Claim"), c.schemeDigest, c.mepId, c.modelId, c.partialsRoot, wordBig(c.coverageBytes), c.challenge));
 export const claimDigest = (d, c) => digest(d, claimStructHash(c));
 export const resultDigest = (d, taskId32, execDigest32, execRoot32) => digest(d, keccak_256(cat(typeHash("Result"), taskId32, execDigest32, execRoot32)));
 export const delegationDigest = (d, instance20, session20, expiry) => digest(d, keccak_256(cat(typeHash("Delegation"), word(instance20), word(session20), wordBig(expiry))));
 // ---- eth_signTypedData_v4 JSON (wallet side) ----
 export const typedData = (d, primaryType, message) => ({ types: { EIP712Domain: TYPES.EIP712Domain, [primaryType]: TYPES[primaryType] }, primaryType, domain: d, message });
-export const claimMessage = (c) => ({ schemeDigest: hex(c.schemeDigest), mepId: hex(c.mepId), modelId: hex(c.modelId), partialsRoot: hex(c.partialsRoot), coverageBytes: String(c.coverageBytes), challenge: hex(c.challenge), deviceId: hex(c.deviceId) });
+export const claimMessage = (c) => ({ schemeDigest: hex(c.schemeDigest), mepId: hex(c.mepId), modelId: hex(c.modelId), partialsRoot: hex(c.partialsRoot), coverageBytes: String(c.coverageBytes), challenge: hex(c.challenge) });
 /** generic EIP-712 encoder over the JSON (primitive fields only: bytes32, uintN, address, string) — the wallet's view */
 export function hashTypedData(td) {
   const enc = (type, v) => {

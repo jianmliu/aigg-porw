@@ -155,7 +155,8 @@ uint32_t porw_merkle_proof(const uint8_t *leaves, uint32_t n, uint32_t index, ui
     return depth;
 }
 
-/* slot_seed = LE u32 of the first 4 bytes of keccak256(challenge32 || device32) */
+/* slot_seed = LE u32 of the first 4 bytes of keccak256(challenge32 || word32); word32 = the claiming instance's address,
+   left-padded to 32 bytes (abi.encode) */
 EXPORT("porw_slot_seed")
 uint32_t porw_slot_seed(const uint8_t *challenge, const uint8_t *device_id) {
     kctx c; kinit(&c); kupdate(&c, challenge, 32); kupdate(&c, device_id, 32);

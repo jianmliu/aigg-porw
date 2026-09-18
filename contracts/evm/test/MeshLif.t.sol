@@ -51,7 +51,7 @@ contract MeshLifTest is Test {
         if (ofA) { if (k == 0) (r, sig) = FX.resultA0(); else if (k == 1) (r, sig) = FX.resultA1(); else (r, sig) = FX.resultA2(); }
         else     { if (k == 0) (r, sig) = FX.resultB0(); else if (k == 1) (r, sig) = FX.resultB1(); else (r, sig) = FX.resultB2(); }
     }
-    /// task k: the stimulus set's initStateRoot as inputCommit; A and B disagree -> dispute (LIF mode)
+    /// task k: the stimulus set's initStateRoot; A and B disagree -> dispute (LIF mode)
     function postAndSubmit(uint256 k) internal returns (bytes32 taskId) {
         vm.roll(2 * FX.EPOCH_BLOCKS); vm.difficulty(7); cm.rollEpoch();
         ITaskMarket.Task memory t = FX.task(); // steps and stride ride on the task now, and the id binds them

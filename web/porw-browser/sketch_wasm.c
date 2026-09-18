@@ -121,15 +121,17 @@ static uintptr_t heap_top = 0;
 EXPORT("porw_alloc")
 void *porw_alloc(uint32_t n) {
     if (heap_top == 0) heap_top = (uintptr_t)&__heap_base;
-    uintptr_t p = (heap_top + 15u) & ~(uintptr_t)15u;
-    uintptr_t end = p + n;
-    uintptr_t have = (uintptr_t)__builtin_wasm_memory_size(0) * 65536u;
+    uint64_t p = ((uint64_t)heap_top + 15u) & ~(uint64_t)15u;
+    uint64_t end = p + n;
+    /* The heap mark is wasm32 too: never let alignment or addition wrap it. */
+    if (end >= ((uint64_t)1 << 32)) return 0;
+    uint64_t have = (uint64_t)__builtin_wasm_memory_size(0) * 65536u;
     if (end > have) {
-        uintptr_t need = (end - have + 65535u) / 65536u;
+        uintptr_t need = (uintptr_t)((end - have + 65535u) / 65536u);
         if (__builtin_wasm_memory_grow(0, need) == (uintptr_t)-1) return 0;
     }
-    heap_top = end;
-    return (void *)p;
+    heap_top = (uintptr_t)end;
+    return (void *)(uintptr_t)p;
 }
 
 EXPORT("porw_reset_heap") void porw_reset_heap(void) { heap_top = (uintptr_t)&__heap_base; }

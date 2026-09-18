@@ -8,7 +8,7 @@ import { keccak_256 } from "@noble/hashes/sha3.js";
 import { resultDigest } from "./eip712.js";
 
 const cat = (...p) => { const o = new Uint8Array(p.reduce((s, x) => s + x.length, 0)); let i = 0; for (const x of p) { o.set(x, i); i += x.length; } return o; };
-export const claimToJson = (r) => { const c = r.claim; return { claim: { schemeDigest: hex(c.schemeDigest), mepId: hex(c.mepId), modelId: hex(c.modelId), partialsRoot: hex(c.partialsRoot), coverageBytes: c.coverageBytes, challenge: hex(c.challenge), deviceId: hex(c.deviceId) },
+export const claimToJson = (r) => { const c = r.claim; return { claim: { schemeDigest: hex(c.schemeDigest), mepId: hex(c.mepId), modelId: hex(c.modelId), partialsRoot: hex(c.partialsRoot), coverageBytes: c.coverageBytes, challenge: hex(c.challenge) },
   claimHash: hex(r.claimHash), signature: hex(r.signature), address: hex(r.address), delegation: r.delegation || null }; };
 export const claimFromJson = (j) => ({ claim: Object.fromEntries(Object.entries(j.claim).map(([k, v]) => [k, typeof v === "string" ? unhex(v) : v])), claimHash: unhex(j.claimHash), signature: unhex(j.signature), address: unhex(j.address), delegation: j.delegation || null });
 export const openingToJson = (o) => ({ tileIdx: o.tileIdx, position: o.position, tile: hex(o.tile), sketch: o.sketch, partialsProof: o.partialsProof.map(hex), weightsProof: o.weightsProof.map(hex) });

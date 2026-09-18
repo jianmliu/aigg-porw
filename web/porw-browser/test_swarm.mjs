@@ -4,7 +4,7 @@ let fails = 0; const check = (n, ok) => { console.log((ok ? "  ok   " : "  FAIL 
 const addr = (i) => keccak_256(new Uint8Array([i])).subarray(12);
 const inst = Array.from({ length: 50 }, (_, i) => ({ address: addr(i), weight: 1 + (i % 4), eligible: i % 7 !== 0 }));
 const beacon = keccak_256(new Uint8Array([9])), mep = keccak_256(new Uint8Array([1]));
-const task = (seed) => ({ mepId: mep, stimulusSeed: seed, steps: 2, commitStride: 1, inputCommit: new Uint8Array(32), fee: 0n, deadline: 0, redundancy: 3 });
+const task = (seed) => ({ mepId: mep, stimulusSeed: seed, steps: 2, commitStride: 1, initStateRoot: new Uint8Array(32), fee: 0n, deadline: 0, redundancy: 3 });
 const t = taskId(task(1), new Uint8Array(32));
 const a1 = assign(beacon, mep, t, inst, 3), a2 = assign(beacon, mep, t, inst, 3);
 check("assignment is deterministic (any node computes the same executors)", JSON.stringify(a1.executors.map((x) => [...x.address])) === JSON.stringify(a2.executors.map((x) => [...x.address])));
