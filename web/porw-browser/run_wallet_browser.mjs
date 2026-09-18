@@ -7,6 +7,7 @@ import fs from "node:fs"; import http from "node:http"; import path from "node:p
 import { chromium } from "playwright";
 import { TILE_BYTES } from "./porw.js";
 import { makeMep } from "./mep.js";
+import { decodeHeader } from "./model.js";
 import { keypair } from "./claim.js";
 import { synthesizePayload } from "./synth.js";
 import * as V from "./verify.js";
@@ -18,8 +19,8 @@ import { Auditor } from "./auditor.js";
 import { domains, CHAIN_ID, CM_ADDR, MK_ADDR, REG_ADDR } from "./export_fixtures_common.js";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const payload = synthesizePayload("wallet-browser", 6000, 60000); const steps = 2;
-const nT = Math.floor(payload.length / TILE_BYTES); const lv = []; for (let t = 0; t < nT; t++) lv.push(V.weightsLeaf(t, payload.subarray(t * TILE_BYTES, (t + 1) * TILE_BYTES)));
-const mep = makeMep({ name: "wallet-browser", modelId: V.merkleRoot(lv), steps }); const mepHex = V.hex(mep.mepId);
+const prof = V.profileOf(payload, decodeHeader(payload));
+const mep = makeMep({ name: "wallet-browser", ...prof }); const mepHex = V.hex(mep.mepId);
 const R1 = await startRelay({ name: "r1" });
 const MIME = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm", ".json": "application/json" };
 const server = http.createServer((req, res) => { const u = new URL(req.url, "http://x");
@@ -46,7 +47,7 @@ console.log(`tab: wallet ${w.wallet} delegated session ${w.session}; wallet prom
 const U = keypair("0x" + "44".repeat(32)); const cU = new RelayClient([R1.url], U); await cU.connect();
 const challenge = Vf.freshChallenge(); const aud = new Auditor(cU, mep, challenge, { samples: 16, timeoutMs: 20000, domain: domains.claimManager, blockNumber: 1000 }); aud.watch();
 const chHex = Array.from(challenge, (x) => x.toString(16).padStart(2, "0")).join("");
-const ann = await page.evaluate(([c]) => window.porwNode.announce(c, 1), [chHex]); await new Promise((r) => setTimeout(r, 200)); const res = await aud.audits[0];
+const ann = await page.evaluate(([c]) => window.porwNode.announce(c), [chHex]); await new Promise((r) => setTimeout(r, 200)); const res = await aud.audits[0];
 const delOk = E.verifyDelegation(domains.registry, w.delegation, w.session, 1000) === wallet.address.toLowerCase();
 console.log(`audit: claim ok=${res.claimOk} (EIP-712, signer = session ${res.from}), resolved instance = ${res.instance} (wallet? ${res.instance === wallet.address.toLowerCase()}), delegation valid=${delOk}, ${res.verdicts.length} openings ${res.verdicts.every((v) => v.verdict === "no_fraud") ? "all no_fraud" : "NOT all"}, claimId ${res.escalation ? "n/a" : "keyed by the wallet"}`);
 const onePrompt = prompts.length === 1 && prompts[0] === "Delegation";

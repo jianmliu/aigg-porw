@@ -11,7 +11,7 @@ Greenfield for weights). Nothing here changes a PoRW scheme id.
 A browser instance has no TEE. Its execution proof cannot come from hardware, so it comes
 from three things the browser node already produces deterministically:
 
-1. **Residency** — a PoRW claim over the model (`sketch-tile-keccak:v1`), audited by
+1. **Residency** — a PoRW claim over the model (`sketch-tile-keccak:v2`), audited by
    sampled tile openings; the on-chain adjudicator is the existing
    `PorwVerifier.verifyTileFraudProofKeccak` (measured 1,106,534 gas).
 2. **Deterministic execution** — integer fixed-point SpMV (`aigg:exec:int-spmv-q16:v1`):
@@ -32,15 +32,15 @@ MEP, stake-gated (opening a thousand tabs is free; a bond is not).
 | artifact | encoding (keccak256 of `abi.encodePacked(...)`) | where |
 |---|---|---|
 | `model_id` | weights Merkle root (keccak leaves `LE64 tile ‖ tile`) | `commit_wasm.c`, fixture-locked |
-| `mep_id` | `(bytes32 schemeDigest, bytes32 modelId, bytes32 execKind, uint32 steps, uint32 clampQ16)` | `mep.js`; `BrowserClaim.t.sol` |
-| residency claim | `(schemeDigest, mepId, modelId, partialsRoot, uint64 coverageBytes, challenge, deviceId, execDigest, uint32 stimulusSeed)`; the raw keccak is the off-chain identifier, the on-chain signature is the **EIP-712** `Claim` digest (§3a), `ecrecover` | `claim.js`; `BrowserClaim.t.sol` |
+| `mep_id` | `(bytes32 schemeDigest, bytes32 modelId, bytes32 execKind, uint32 neurons, uint32 synapses, bytes32 synapseRoot)` — every field a function of the model bytes, so anyone derives the same id and registration is not a race; **no run parameters**, so one brain is one residency set | `mep.js`; `BrowserClaim.t.sol` |
+| residency claim | `(schemeDigest, mepId, modelId, partialsRoot, uint64 coverageBytes, challenge, deviceId)` — residency only; the raw keccak is the off-chain identifier, the on-chain signature is the **EIP-712** `Claim` digest (§3a), `ecrecover` | `claim.js`; `BrowserClaim.t.sol` |
 | tile opening | `(tileIdx, tile[4096], s_tile, partialsIndex, partialsProof[], weightsProof[])` | `node.js` → `verifyTileFraudProofKeccak` |
 | execution result | `execDigest = keccak(act_final as LE u32[])`; `execRoot = merkle([actRoot[1..steps]])` with `actRoot[s]` over leaves `keccak(LE32 i ‖ LE32 act_s[i])` (§5) | `spmv_wasm.c`, `dispute_wasm.c`, `node.js` |
 | CSR commitments (per model) | `csrRoot` over chunk leaves `keccak(LE32 c ‖ 64 post-sorted records)`, `rowRoot` over `keccak(LE32 i ‖ LE32 rowStart[i])` (n+1 leaves), `synapseRoot = keccak(csrRoot ‖ rowRoot)` | `dispute_wasm.c`, `node.js`, `verify.js` |
-| task id | `keccak(mepId ‖ uint32 stimulusSeed ‖ nonce32)` | `swarm.js` |
+| task id | `keccak(abi.encode(Task, nonce32))` — the whole task, so a squatter cannot take the id with different parameters | `swarm.js` |
 | assignment | index sortition over stake-weighted eligible votes (§4) | `swarm.js` `assignSortition` |
 
-Scheme digest `keccak256("aigg:porw:sketch-tile-keccak:v1")` and exec kind
+Scheme digest `keccak256("aigg:porw:sketch-tile-keccak:v2")` and exec kind
 `keccak256("aigg:exec:int-spmv-q16:v1")` are pinned constants.
 
 One MEP per released brain (female FlyWire adult brain, male CNS, …): same scheme,
@@ -58,8 +58,9 @@ but every synapse read becomes a random access into the payload.
 Modularized at trust/state boundaries (aigg-spec §2.1). Small modules may share a
 deployable, but each owns its state.
 
-- **`IMEPRegistry`** — `registerMEP(mepId, modelId, schemeDigest, execKind, steps,
-  clampQ16, weightsDA, synapseRoot)`. `weightsDA` is a content pointer for the
+- **`IMEPRegistry`** — `registerMEP(modelId, schemeDigest, execKind, neurons, synapses,
+  synapseRoot, weightsDA)`. Step count and commit stride are **not** here: they are
+  per-task (`ITaskMarket.Task`), read only by the dispute machinery. `weightsDA` is a content pointer for the
   bytes (Greenfield object id / DSN piece / IPFS CID); `synapseRoot` is the Merkle
   root over synapse records **sorted by post-neuron** (CSR order) with per-neuron
   range boundaries — needed only by the execution fraud proof (§5). The registry is
@@ -70,14 +71,14 @@ deployable, but each owns its state.
   manager / disputes. Eligibility for epoch `e` = bonded ∧ has an unchallenged (or
   successfully defended) residency claim for `e−1` on that MEP.
 - **`IPoRWClaimManager`** — `submitClaim(claim, sig)` per (instance, MEP, epoch):
-  stores `partialsRoot`, `coverageBytes`, `execDigest`; `challengeOpening(claimId,
+  stores `partialsRoot`, `coverageBytes`, `deviceId`; `challengeOpening(claimId,
   tileIdx)` with a deposit opens a window `OPENING_WINDOW`; the instance answers
   `respondOpening(...)`, verified by `PorwVerifier.verifyTileFraudProofKeccak`
   (Fraud ⇒ slash + pay challenger; NoFraud ⇒ challenger's deposit to instance;
   timeout ⇒ treated as fraud). The honest path is **off-chain**: beacon-selected
   auditors (§4) sample openings directly from the node and only escalate on-chain
   when a check fails, so per-epoch on-chain cost is one claim tx per (instance, MEP).
-- **`ITaskMarket`** — `postTask(mepId, stimulusSeed, inputCommit, fee, deadline)`;
+- **`ITaskMarket`** — `postTask(mepId, stimulusSeed, steps, commitStride, inputCommit, fee, deadline, redundancy)`, with `1 ≤ commitStride ≤ steps` and every dispute round bounded by `MAX_ROOTS` (int-lif: `ceil(steps/commitStride)` and `commitStride`; int-spmv-q16: `steps`), so the honest party can always post;
   executors are the sortition set (§4); each submits `submitResult(taskId,
   execDigest, execRoot, sig)`. `settle(taskId)`: all `r` agree ⇒ pay from `fee` and
   the epoch budget, record the fact (`TaskSettled`); any disagreement ⇒
@@ -88,8 +89,8 @@ deployable, but each owns its state.
   chains where one claim tx per instance per epoch is too expensive (BSC), an
   **untrusted aggregator** (`web/porw-browser/aggregator.js`) collects the epoch's
   signed claims over the relay, verifies each, builds one Merkle tree (leaves
-  `keccak(abi.encode(instance, partialsRoot, coverageBytes, deviceId, execDigest,
-  stimulusSeed, keccak(sig)))`, sorted by instance) and posts one root per (MEP, epoch).
+  `keccak(abi.encode(instance, partialsRoot, coverageBytes, deviceId, keccak(sig)))`,
+  sorted by instance) and posts one root per (MEP, epoch).
   An instance fetches its inclusion proof over the relay (`claim-proof-request`) and
   `materializeClaim`s only when it needs on-chain eligibility (it wants tasks that epoch)
   or is audited; the signature is verified at materialization, so a junk leaf cannot be
@@ -106,7 +107,7 @@ Claims and results are typed data (`PorwEIP712.sol`, `web/porw-browser/eip712.js
 `{name "PoRW Mesh", version "1", chainId, verifyingContract}` (the claim manager for
 `Claim`, the task market for `Result`, the instance registry for `Delegation`), structs
 `Claim(bytes32 schemeDigest,bytes32 mepId,bytes32 modelId,bytes32 partialsRoot,uint64
-coverageBytes,bytes32 challenge,bytes32 deviceId,bytes32 execDigest,uint32 stimulusSeed)`,
+coverageBytes,bytes32 challenge,bytes32 deviceId)`,
 `Result(bytes32 taskId,bytes32 execDigest,bytes32 execRoot)`,
 `Delegation(address instance,address session,uint64 expiry)`. Signatures are low-s only.
 

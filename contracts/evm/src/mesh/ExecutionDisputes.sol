@@ -20,7 +20,7 @@ import "./LifRowCheck.sol";
 ///   Timeouts: a party that doesn't post within ROUND_BLOCKS loses.
 /// Execution kinds are dispatched on MEP.execKind at open time:
 ///   int-spmv-q16 : per-step activation roots; row = min(sum >> 16, clamp); u64 sums.
-///   int-lif      : segment state roots every `stride` = MEP.clampQ16 steps -> Refine phase (per-step roots of
+///   int-lif      : segment state roots every `stride` = Task.commitStride steps -> Refine phase (per-step roots of
 ///                  the first differing segment, bound to the committed segment root) -> state-tree bisection ->
 ///                  row = LifRowCheck.transition(state_{s-1}[i], last signed sum) -> term = w(int16) * spiked(pre).
 ///                  The agreed root before step 1 is the task's inputCommit (initStateRoot).
@@ -54,20 +54,21 @@ contract ExecutionDisputes is IExecutionDisputes {
     function openDispute(bytes32 taskId, address a, address b) external {
         require(msg.sender == address(market), "market");
         require(!disputes[taskId].exists, "open");
-        (bytes32 mepId, uint32 seed,) = market.taskInfo(taskId);
+        // steps and the commit stride come from the TASK: both parties executed the same stored Task, and
+        // postTask has already bounded them so every round of this dispute is postable.
+        (bytes32 mepId, uint32 seed,, uint32 steps, uint32 stride) = market.taskInfo(taskId);
         IMEPRegistry.MEP memory m = meps.getMEP(mepId);
         Dispute storage d = disputes[taskId];
-        d.mepId = mepId; d.neurons = m.neurons; d.synapses = m.synapses; d.steps = m.steps; d.stimulusSeed = seed; d.synapseRoot = m.synapseRoot;
+        d.mepId = mepId; d.neurons = m.neurons; d.synapses = m.synapses; d.steps = steps; d.stimulusSeed = seed; d.synapseRoot = m.synapseRoot;
         d.phase = Phase.Step; d.exists = true; d.deadline = uint64(block.number) + ROUND_BLOCKS;
         if (m.execKind == LifRowCheck.execKind()) {
-            require(m.clampQ16 >= 1, "stride");
             LifDispute storage ld = lifs[taskId];
-            ld.lif = true; ld.stride = m.clampQ16; ld.segments = (m.steps + m.clampQ16 - 1) / m.clampQ16; ld.initStateRoot = market.taskInput(taskId);
+            ld.lif = true; ld.stride = stride; ld.segments = (steps + stride - 1) / stride; ld.initStateRoot = market.taskInput(taskId);
         }
         partyA[taskId] = a; partyB[taskId] = b;
         (, parties[taskId][a].execRoot) = market.resultOf(taskId, a);
         (, parties[taskId][b].execRoot) = market.resultOf(taskId, b);
-        emit DisputeRound(taskId, Phase.Step, 0, m.steps);
+        emit DisputeRound(taskId, Phase.Step, 0, steps);
     }
     function open(bytes32, address, address) external payable { revert("use market"); }
     function bisect(bytes32, uint256, bytes32) external pure { revert("use postChildren"); }

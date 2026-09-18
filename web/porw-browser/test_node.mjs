@@ -10,22 +10,24 @@ import { synthesizePayload } from "./synth.js";
 const female = dir && dir !== "-" ? new Uint8Array(fs.readFileSync(dir + "/female.bin")) : synthesizePayload("flywire-female", 20000, 200000);
 const male   = dir && dir !== "-" ? new Uint8Array(fs.readFileSync(dir + "/male.bin"))   : synthesizePayload("male-cns", 16000, 150000);
 let fails = 0; const check = (n, ok) => { console.log((ok ? "  ok   " : "  FAIL ") + n); if (!ok) fails++; };
-const indepModelId = (p) => { const n = Math.floor(p.length / TILE_BYTES); const l = []; for (let t = 0; t < n; t++) l.push(V.weightsLeaf(t, p.subarray(t * TILE_BYTES, (t + 1) * TILE_BYTES))); return V.merkleRoot(l); };
+import { decodeHeader } from "./model.js";
+const indepProfile = (p) => V.profileOf(p, decodeHeader(p)); // model id + CSR roots from the public bytes alone
 
 // --- node hosts two released brains, each its own MEP ---
 const node = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "11".repeat(32) });
-const F = await node.loadModel("flywire-female", female, { steps: 3 }), M = await node.loadModel("male-cns", male, { steps: 2 });
+const F = await node.loadModel("flywire-female", female, { maxSteps: 3 }), M = await node.loadModel("male-cns", male, { maxSteps: 2 });
 console.log(`female: ${F.nTiles} tiles mep ${V.hex(F.mep.mepId).slice(0, 14)}… | male: ${M.nTiles} tiles mep ${V.hex(M.mep.mepId).slice(0, 14)}…`);
-// the verifier derives both MEPs independently from the public model bytes + published profile params
-const mepF = makeMep({ name: "flywire-female", modelId: indepModelId(female), steps: 3 });
-const mepM = makeMep({ name: "male-cns", modelId: indepModelId(male), steps: 2 });
+// the verifier derives both MEPs independently from the public model bytes alone: under
+// sketch-tile-keccak:v2 every field of mep_id is a function of those bytes and the exec kind
+const mepF = makeMep({ name: "flywire-female", ...indepProfile(female) });
+const mepM = makeMep({ name: "male-cns", ...indepProfile(male) });
 check("female MEP id (node) == verifier's independent MEP id", V.eq(F.mep.mepId, mepF.mepId));
 check("male MEP id (node) == verifier's independent MEP id", V.eq(M.mep.mepId, mepM.mepId));
 check("distinct brains -> distinct model ids and MEP ids", !V.eq(mepF.modelId, mepM.modelId) && !V.eq(mepF.mepId, mepM.mepId));
 
 // --- one challenge, a signed claim per MEP ---
 const ch = Vf.freshChallenge();
-const rf = await node.challenge(mepF.mepId, ch, { stimulusSeed: 1 }), rm = await node.challenge(mepM.mepId, ch, { stimulusSeed: 1 });
+const rf = await node.challenge(mepF.mepId, ch, { steps: 3, stimulusSeed: 1 }), rm = await node.challenge(mepM.mepId, ch, { steps: 2, stimulusSeed: 1 });
 console.log(`female claim: sketch ${rf.timings.sketchMs.toFixed(1)} ms, commit ${rf.timings.commitMs.toFixed(1)} ms, infer ${rf.timings.inferMs.toFixed(1)} ms`);
 const vf = Vf.verifyClaim(rf, mepF, ch), vm = Vf.verifyClaim(rm, mepM, ch);
 check("female claim verifies (scheme, mep, model, challenge, hash, signature)", vf.ok);
@@ -42,14 +44,16 @@ for (const [tag, r, mep, v, st] of [["female", rf, mepF, vf, F], ["male", rm, me
   check(`${tag}: ${sample.length} sampled openings verify, recomputed sketch == committed`, res.every((x) => x.verdict === "no_fraud"));
 }
 // --- redundant re-execution per MEP (another node recomputes the deterministic inference) ---
-check("female: redundant re-execution digest matches claim", Vf.reexecute(await loadKernelFromBytes(wasm), female, rf.claim, mepF).matches);
-check("male: redundant re-execution digest matches claim", Vf.reexecute(await loadKernelFromBytes(wasm), male, rm.claim, mepM).matches);
-check("re-executing female claim with the male MEP's steps does NOT match", !Vf.reexecute(await loadKernelFromBytes(wasm), female, rf.claim, mepM).matches);
+const runF = { stimulusSeed: 1, steps: 3, execDigest: rf.result.execDigest }, runM = { stimulusSeed: 1, steps: 2, execDigest: rm.result.execDigest };
+check("female: redundant re-execution digest matches the task result", Vf.reexecute(await loadKernelFromBytes(wasm), female, runF).matches);
+check("male: redundant re-execution digest matches the task result", Vf.reexecute(await loadKernelFromBytes(wasm), male, runM).matches);
+check("re-executing the female run with a different step count does NOT match", !Vf.reexecute(await loadKernelFromBytes(wasm), female, { ...runF, steps: 2 }).matches);
+check("a residency claim carries no execution artifact", !("execDigest" in rf.claim) && !("stimulusSeed" in rf.claim));
 
 // --- fraud: a lie in one tile of one MEP is caught by that MEP's audit only ---
 const liar = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "22".repeat(32) });
-const LF = await liar.loadModel("flywire-female", female, { steps: 3 }); liar.lies.set(`${V.hex(LF.mep.mepId)}:7`, 12345);
-const lr = await liar.challenge(LF.mep.mepId, ch, { stimulusSeed: 1 }); const lv = Vf.verifyClaim(lr, mepF, ch);
+const LF = await liar.loadModel("flywire-female", female, { maxSteps: 3 }); liar.lies.set(`${V.hex(LF.mep.mepId)}:7`, 12345);
+const lr = await liar.challenge(LF.mep.mepId, ch, { steps: 3, stimulusSeed: 1 }); const lv = Vf.verifyClaim(lr, mepF, ch);
 check("liar's claim is well-formed and signed (fraud not visible from the claim alone)", lv.ok);
 const lo = Vf.verifyOpening(liar.open(LF.mep.mepId, 7), lr.claim, lv.slotSeed, LF.nTiles);
 check(`opening of lied tile -> '${lo.verdict}'`, lo.verdict === "fraud" && lo.weightsOk && lo.partialsOk);
@@ -60,7 +64,7 @@ check("forged tile bytes -> 'invalid'", Vf.verifyOpening(o, rf.claim, vf.slotSee
 // --- artifact for the on-chain (forge) test ---
 const c = rf.claim;
 if (outJson) fs.writeFileSync(outJson, JSON.stringify({ schemeDigest: V.hex(c.schemeDigest), mepId: V.hex(c.mepId), modelId: V.hex(c.modelId), partialsRoot: V.hex(c.partialsRoot),
-  coverageBytes: c.coverageBytes, challenge: V.hex(c.challenge), deviceId: V.hex(c.deviceId), execDigest: V.hex(c.execDigest), stimulusSeed: c.stimulusSeed,
-  mep: { name: mepF.name, execKind: V.hex(mepF.execKind), steps: mepF.steps, clampQ16: mepF.clampQ16 },
+  coverageBytes: c.coverageBytes, challenge: V.hex(c.challenge), deviceId: V.hex(c.deviceId),
+  mep: { name: mepF.name, execKind: V.hex(mepF.execKind), neurons: mepF.neurons, synapses: mepF.synapses, synapseRoot: V.hex(mepF.synapseRoot) },
   claimHash: V.hex(rf.claimHash), signature: V.hex(rf.signature), signer: V.hex(rf.address) }, null, 2));
 console.log(fails ? `${fails} FAILURES` : "ALL PASS"); process.exit(fails ? 1 : 0);

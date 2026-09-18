@@ -8,27 +8,39 @@ pragma solidity ^0.8.20;
 
 /// @dev CSR chunk size for synapse-record leaves (dispute openings)
 uint32 constant CSR_CHUNK = 64;
-/// @dev keccak256("aigg:porw:sketch-tile-keccak:v1")
-bytes32 constant SCHEME_SKETCH_TILE_KECCAK_V1 = 0x718b2eb3b33a6d18d904363ee1cc2fb797e344af10132ebfd93aef8d5d72e4b4;
+/// @dev keccak256("aigg:porw:sketch-tile-keccak:v2")
+/// @dev v2 vs v1: a residency claim attests residency only. `execDigest` and `stimulusSeed` are gone from
+///      the Claim (nothing ever adjudicated them -- the only verdict that can invalidate a claim is the tile
+///      fraud proof, which reads partialsRoot and the model root), and `steps` / the commit stride moved off
+///      the MEP onto the Task, where the dispute machinery is the only thing that reads them. The sketch and
+///      tile math is unchanged: this is a change of what the mesh signs, not of how bytes are committed.
+bytes32 constant SCHEME_SKETCH_TILE_KECCAK_V2 = 0x743502825425e31852a0adb96c797d7ac839afdef315e8c24b68db6e58d4be2e;
 
 library PorwMeshHash {
-    /// @dev mep_id = keccak256(abi.encodePacked(schemeDigest, modelId, execKind, steps, clampQ16))
-    function mepId(bytes32 schemeDigest, bytes32 modelId, bytes32 execKind, uint32 steps, uint32 clampQ16)
+    /// @dev mep_id = keccak256(abi.encodePacked(schemeDigest, modelId, execKind, neurons, synapses, synapseRoot))
+    ///      Every field is a function of the model bytes and the execution kind, so two honest registrants
+    ///      derive the same id and a front-runner can only register the correct profile. Step count and commit
+    ///      stride are NOT here: they are per-task, and folding them in used to split one brain's residency set
+    ///      (and its bonds, claims and sortition pool) across every step count anyone wanted to run.
+    function mepId(bytes32 schemeDigest, bytes32 modelId, bytes32 execKind, uint32 neurons, uint32 synapses, bytes32 synapseRoot)
         internal pure returns (bytes32)
-    { return keccak256(abi.encodePacked(schemeDigest, modelId, execKind, steps, clampQ16)); }
+    { return keccak256(abi.encodePacked(schemeDigest, modelId, execKind, neurons, synapses, synapseRoot)); }
 
     /// @dev residency claim hash — the raw identifier auditors use off-chain; the on-chain signature is
     ///      over the EIP-712 Claim digest (PorwEIP712), signed by the wallet or a delegated session key
     function claimHash(
         bytes32 schemeDigest, bytes32 mepId_, bytes32 modelId, bytes32 partialsRoot, uint64 coverageBytes,
-        bytes32 challenge, bytes32 deviceId, bytes32 execDigest, uint32 stimulusSeed
+        bytes32 challenge, bytes32 deviceId
     ) internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked(schemeDigest, mepId_, modelId, partialsRoot, coverageBytes, challenge, deviceId, execDigest, stimulusSeed));
+        return keccak256(abi.encodePacked(schemeDigest, mepId_, modelId, partialsRoot, coverageBytes, challenge, deviceId));
     }
 
-    /// @dev task id = keccak256(mepId ‖ stimulusSeed ‖ nonce)
-    function taskId(bytes32 mepId_, uint32 stimulusSeed, bytes32 nonce) internal pure returns (bytes32)
-    { return keccak256(abi.encodePacked(mepId_, stimulusSeed, nonce)); }
+    /// @dev task id binds EVERY parameter of the task, not just (mep, seed, nonce): steps and the commit
+    ///      stride live on the Task now, and an id that did not cover them would let anyone front-run a
+    ///      client's post with the same (mepId, seed, nonce) and different parameters -- the client's own
+    ///      postTask would revert "posted" and the executors would run the squatter's task.
+    function taskId(ITaskMarket.Task calldata t, bytes32 nonce) internal pure returns (bytes32)
+    { return keccak256(abi.encode(t, nonce)); }
 
     /// @dev sortition index j for (beacon, mep, key); the executor is votes[idx % votes.length]
     function sortition(bytes32 beacon, bytes32 mepId_, bytes32 key, uint32 j) internal pure returns (uint256)
@@ -40,10 +52,8 @@ interface IMEPRegistry {
         bytes32 modelId;      // weights Merkle root (content address of the model)
         bytes32 schemeDigest; // pinned PoRW scheme
         bytes32 execKind;     // keccak256("aigg:exec:int-spmv-q16:v1")
-        uint32 steps;
-        uint32 clampQ16;
-        uint32 neurons;       // registry metadata pinned at registration (act-tree width)
-        uint32 synapses;      // registry metadata pinned at registration (CSR chunk count)
+        uint32 neurons;       // act-tree width (bound into mep_id)
+        uint32 synapses;      // CSR record count (bound into mep_id)
         bytes32 synapseRoot;  // keccak256(csrRoot || rowRoot): csrRoot over keccak(LE32 c || 64 post-sorted records), rowRoot over keccak(LE32 i || LE32 rowStart[i])
         bytes weightsDA;      // content pointer for the bytes (Greenfield object / DSN piece / CID)
     }
@@ -67,14 +77,15 @@ interface IInstanceRegistry {
 }
 
 interface IPoRWClaimManager {
+    /// @dev residency only: the sketch of every resident tile, committed under a challenge the instance
+    ///      cannot choose, bound to its device. No execution artifact appears here because none is ever
+    ///      adjudicated -- `respondOpening` decides a tile against partialsRoot and the model root.
     struct Claim {
         bytes32 mepId;
         bytes32 partialsRoot;
         uint64 coverageBytes;
         bytes32 challenge;   // epoch beacon-derived public challenge
         bytes32 deviceId;
-        bytes32 execDigest;
-        uint32 stimulusSeed;
     }
     /// @dev tile opening as consumed by PorwVerifier.verifyTileFraudProofKeccak
     struct Opening {
@@ -86,8 +97,8 @@ interface IPoRWClaimManager {
         bytes32[] weightsProof;
     }
     /// @dev aggregated path: one Merkle root per (MEP, epoch, aggregator) over claim leaves
-    ///      leaf = keccak256(abi.encode(instance, partialsRoot, coverageBytes, deviceId, execDigest, stimulusSeed, keccak256(signature)))
-    struct ClaimLeaf { address instance; bytes32 partialsRoot; uint64 coverageBytes; bytes32 deviceId; bytes32 execDigest; uint32 stimulusSeed; bytes signature; }
+    ///      leaf = keccak256(abi.encode(instance, partialsRoot, coverageBytes, deviceId, keccak256(signature)))
+    struct ClaimLeaf { address instance; bytes32 partialsRoot; uint64 coverageBytes; bytes32 deviceId; bytes signature; }
     event EpochRootPosted(bytes32 indexed mepId, uint64 indexed epoch, address indexed aggregator, bytes32 root, uint64 count);
     event ClaimSubmitted(bytes32 indexed claimId, address indexed instance, bytes32 indexed mepId, uint64 epoch);
     event OpeningChallenged(bytes32 indexed claimId, uint64 tileIdx, address challenger);
@@ -103,7 +114,10 @@ interface IPoRWClaimManager {
 }
 
 interface ITaskMarket {
-    struct Task { bytes32 mepId; uint32 stimulusSeed; bytes32 inputCommit; uint256 fee; uint64 deadline; uint8 redundancy; }
+    /// @dev `steps` and `commitStride` are per-task: the dispute machinery is the only thing that reads them,
+    ///      and both executors read the same stored Task. `commitStride` is the segment-root granularity for
+    ///      int-lif (it was the MEP's misnamed `clampQ16`); int-spmv-q16 commits every step and ignores it.
+    struct Task { bytes32 mepId; uint32 stimulusSeed; uint32 steps; uint32 commitStride; bytes32 inputCommit; uint256 fee; uint64 deadline; uint8 redundancy; }
     struct Result { bytes32 execDigest; bytes32 execRoot; } // execRoot = merkle([actRoot[1..steps]])
     event TaskPosted(bytes32 indexed taskId, bytes32 indexed mepId, uint8 redundancy);
     event ResultSubmitted(bytes32 indexed taskId, address indexed executor, bytes32 execDigest);
@@ -139,7 +153,7 @@ interface IExecutionDisputes {
     function proveSynapseTerm(bytes32 taskId, uint32 kStar, bytes32 csrRoot, bytes32 rowRoot, RowBounds calldata bounds, ChunkOpening calldata chunk, uint32 actPre, bytes32[] calldata actProof) external;
     function timeout(bytes32 taskId) external;
 
-    // ---- `aigg:exec:int-lif:v1` (segment roots every `stride` = MEP.clampQ16 steps; state leaves) ----
+    // ---- `aigg:exec:int-lif:v1` (segment roots every `stride` = Task.commitStride steps; state leaves) ----
     /// @dev a neuron's state opened against a state root (LifRowCheck.stateLeaf)
     struct StateOpening { int32 v; int32 g; uint16 refr; uint16 flags; uint32 count; bytes32[] proof; }
     struct LifTermProof { uint32 kStar; bytes32 csrRoot; bytes32 rowRoot; RowBounds bounds; ChunkOpening chunk; StateOpening self; StateOpening pre; }

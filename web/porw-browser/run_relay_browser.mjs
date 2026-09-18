@@ -6,6 +6,7 @@ import fs from "node:fs"; import http from "node:http"; import path from "node:p
 import { chromium } from "playwright";
 import { loadKernelFromBytes, TILE_BYTES } from "./porw.js";
 import { makeMep } from "./mep.js";
+import { decodeHeader } from "./model.js";
 import { keypair, recoverAddress } from "./claim.js";
 import { synthesizePayload } from "./synth.js";
 import * as V from "./verify.js";
@@ -18,8 +19,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const a = Object.fromEntries(process.argv.slice(2).reduce((acc, v, i, arr) => { if (v.startsWith("--")) acc.push([v.slice(2), arr[i + 1] && !arr[i + 1].startsWith("--") ? arr[i + 1] : "1"]); return acc; }, []));
 const steps = Number(a.steps || 2), samples = Number(a.samples || 16);
 const payload = a.payload ? new Uint8Array(fs.readFileSync(a.payload)) : synthesizePayload("relay-browser", 8000, 80000);
-const nT = Math.floor(payload.length / TILE_BYTES); const lv = []; for (let t = 0; t < nT; t++) lv.push(V.weightsLeaf(t, payload.subarray(t * TILE_BYTES, (t + 1) * TILE_BYTES)));
-const mep = makeMep({ name: "relay-browser", modelId: V.merkleRoot(lv), steps }); const mepHex = V.hex(mep.mepId);
+const prof = V.profileOf(payload, decodeHeader(payload));
+const mep = makeMep({ name: "relay-browser", ...prof }); const mepHex = V.hex(mep.mepId);
 const R1 = await startRelay({ name: "r1" }), R2 = await startRelay({ name: "r2" });
 const MIME = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm", ".json": "application/json" };
 const server = http.createServer((req, res) => { const u = new URL(req.url, "http://x");
@@ -38,7 +39,7 @@ console.log(`tab: ${info.nTiles} tiles, ${info.neurons} neurons, mep match=${inf
 const U = keypair("0x" + "44".repeat(32)); const cU = new RelayClient([R1.url, R2.url], U); await cU.connect();
 const challenge = Vf.freshChallenge(); const aud = new Auditor(cU, mep, challenge, { samples, timeoutMs: 20000 }); aud.watch();
 const chHex = Array.from(challenge, (x) => x.toString(16).padStart(2, "0")).join("");
-let t0 = performance.now(); const ann = await page.evaluate(([c]) => window.porwNode.announce(c, 1), [chHex]);
+let t0 = performance.now(); const ann = await page.evaluate(([c]) => window.porwNode.announce(c), [chHex]);
 await new Promise((r) => setTimeout(r, 200)); const res = await aud.audits[0]; const auditMs = performance.now() - t0;
 console.log(`audit over the relay: claim ok=${res.claimOk}, ${res.verdicts.length} openings ${res.verdicts.every((v) => v.verdict === "no_fraud") ? "all no_fraud" : "NOT all no_fraud"} in ${auditMs.toFixed(0)} ms (tab served ${JSON.stringify((await page.evaluate(() => window.porwNode.served())))}, auditor dedupe ${cU.duplicates})`);
 // a task from a client process -> the tab executes and returns a signed result

@@ -7,7 +7,7 @@ import * as D from "./dispute.js";
 let fails = 0; const check = (n, ok) => { console.log((ok ? "  ok   " : "  FAIL ") + n); if (!ok) fails++; };
 const wasm = fs.readFileSync(new URL("./sketch.wasm", import.meta.url));
 const payload = synthesizePayload("dispute-test", 5000, 60000); const steps = 2, seed = 3; const ch = new Uint8Array(32).fill(7);
-const mk = async (priv, lie) => { const nd = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + priv.repeat(32) }); if (lie) nd.execLie = lie; const st = await nd.loadModel("dispute-test", payload, { steps }); const r = await nd.challenge(st.mep.mepId, ch, { stimulusSeed: seed }); return { nd, st, r, mep: st.mep.mepId }; };
+const mk = async (priv, lie) => { const nd = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + priv.repeat(32) }); if (lie) nd.execLie = lie; const st = await nd.loadModel("dispute-test", payload, { maxSteps: steps }); const r = await nd.challenge(st.mep.mepId, ch, { steps, stimulusSeed: seed }); return { nd, st, r, mep: st.mep.mepId }; };
 const A = await mk("11"), B = await mk("22", { step: 2, neuron: 123, delta: 777 });
 const n = A.st.hdr.neurons;
 // commitments: execRoot == merkle(actRoots) recomputed with noble from A's activations

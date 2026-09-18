@@ -32,9 +32,9 @@ contract MeshLifTest is Test {
         disp = new ExecutionDisputes(meps, inst, market, ROUND, SLASH);
         inst.setClaimManager(address(cm)); inst.setSlasher(address(disp), true); market.setDisputes(address(disp));
         assertEq(FX.EXEC_KIND, LifRowCheck.execKind(), "the node's exec kind digest == the contract's");
-        mepId = meps.registerMEP(IMEPRegistry.MEP({ modelId: FX.MODEL_ID, schemeDigest: FX.SCHEME_DIGEST, execKind: FX.EXEC_KIND, steps: FX.STEPS, clampQ16: FX.STRIDE,
+        mepId = meps.registerMEP(IMEPRegistry.MEP({ modelId: FX.MODEL_ID, schemeDigest: FX.SCHEME_DIGEST, execKind: FX.EXEC_KIND,
             neurons: FX.NEURONS, synapses: FX.SYNAPSES, synapseRoot: FX.SYNAPSE_ROOT, weightsDA: bytes("greenfield://flywire") }));
-        assertEq(mepId, FX.MEP_ID, "mep id (stride in field 5)");
+        assertEq(mepId, FX.MEP_ID, "mep id (no run parameters in it)");
         bytes32[] memory ids = new bytes32[](1); ids[0] = mepId;
         vm.deal(A, 10 ether); vm.prank(A); inst.bond{value: 2 ether}(ids);
         vm.deal(B, 10 ether); vm.prank(B); inst.bond{value: 2 ether}(ids);
@@ -54,8 +54,8 @@ contract MeshLifTest is Test {
     /// task k: the stimulus set's initStateRoot as inputCommit; A and B disagree -> dispute (LIF mode)
     function postAndSubmit(uint256 k) internal returns (bytes32 taskId) {
         vm.roll(2 * FX.EPOCH_BLOCKS); vm.difficulty(7); cm.rollEpoch();
-        ITaskMarket.Task memory t = ITaskMarket.Task({ mepId: mepId, stimulusSeed: FX.STIMULUS_SEED, inputCommit: FX.INIT_STATE_ROOT, fee: 1 ether, deadline: uint64(block.number + 50), redundancy: 2 });
-        taskId = market.postTask{value: 1 ether}(t, FX.nonces()[k]);
+        ITaskMarket.Task memory t = FX.task(); // steps and stride ride on the task now, and the id binds them
+        taskId = market.postTask{value: FX.TASK_FEE}(t, FX.nonces()[k]);
         assertEq(taskId, FX.taskIds()[k], "task id");
         (ITaskMarket.Result memory ra, bytes memory sa) = result(k, true); market.submitResult(taskId, ra, sa);
         (ITaskMarket.Result memory rb, bytes memory sb) = result(k, false); market.submitResult(taskId, rb, sb);

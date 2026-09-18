@@ -8,7 +8,12 @@ let fails = 0; const check = (name, ok) => { console.log((ok ? "  ok   " : "  FA
 
 // keccak256 vs noble on assorted inputs (incl. multi-block)
 for (const n of [0, 1, 135, 136, 137, 4104, 10000]) { const b = new Uint8Array(n).map((_, i) => (i * 31 + 7) & 0xff); check(`keccak256(${n} B) == noble`, V.eq(k.keccak256(b), V.keccak(b))); }
-check("scheme digest matches fixture", V.hex(V.schemeDigest()) === fx.scheme.digest_keccak256);
+// The commitment primitives below are the v1 conformance vectors and they still hold byte for byte: v2 changed
+// what the MESH signs (the residency claim's fields, and where steps/stride live), not how bytes are committed.
+// The scheme digest is a domain separator for the claim, so it moves; the spec repo should publish the same
+// primitive vector set under the v2 id.
+check("scheme id is sketch-tile-keccak:v2", V.SCHEME_ID === "aigg:porw:sketch-tile-keccak:v2" && V.eq(V.schemeDigest(), V.keccak(new TextEncoder().encode(V.SCHEME_ID))));
+check("v1 primitive vectors still apply (only the claim encoding changed)", fx.scheme.id === "aigg:porw:sketch-tile-keccak:v1");
 
 // fixture reference buffer: byte i = ((i*2654435761 mod 2^64) >> 7) & 0xff
 const nT = fx.reference_buffer.n_tiles, buf = new Uint8Array(nT * TILE_BYTES);

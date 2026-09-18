@@ -5,6 +5,7 @@ import "../interfaces/PorwMesh.sol";
 import "./InstanceRegistry.sol";
 import "./PoRWClaimManager.sol";
 import "./PorwEIP712.sol";
+import "./LifRowCheck.sol";
 
 interface IDisputeOpener { function openDispute(bytes32 taskId, address a, address b) external; }
 
@@ -12,6 +13,14 @@ interface IDisputeOpener { function openDispute(bytes32 taskId, address a, addre
 ///         Unanimous results settle and pay; any disagreement opens an execution dispute;
 ///         after resolution the executors agreeing with the winner are paid.
 contract TaskMarket is ITaskMarket {
+    /// @notice the largest `bytes32[]` a single dispute round may require a party to post. int-spmv-q16 reveals
+    ///         one root per step; int-lif reveals one per SEGMENT and then one per step inside the first
+    ///         differing segment, so its two arrays are ceil(steps/commitStride) and commitStride. An unbounded
+    ///         task would make the honest party's round physically unpostable and hand the dispute to whoever
+    ///         moves second -- which is why this is checked at postTask: the parameters are the client's now.
+    ///         512 roots is ~16 KiB of calldata and ~10M gas to store, well inside a BNB Chain block; it admits
+    ///         the production shape (5000 int-lif steps at stride 500 -> 10 segments) with room to spare.
+    uint32 public constant MAX_ROOTS = 512;
     uint64 public immutable TASK_TIMEOUT;
     IMEPRegistry public immutable meps;
     InstanceRegistry public immutable instances;
@@ -31,10 +40,16 @@ contract TaskMarket is ITaskMarket {
     function postTask(Task calldata t, bytes32 nonce) external payable returns (bytes32 taskId) {
         require(msg.value == t.fee, "fee");
         require(t.redundancy >= 1, "r");
-        meps.getMEP(t.mepId);
+        require(t.steps >= 1 && t.commitStride >= 1 && t.commitStride <= t.steps, "steps");
+        IMEPRegistry.MEP memory m = meps.getMEP(t.mepId);
+        if (m.execKind == LifRowCheck.execKind()) {
+            require((t.steps + t.commitStride - 1) / t.commitStride <= MAX_ROOTS && t.commitStride <= MAX_ROOTS, "dispute rounds");
+        } else {
+            require(t.steps <= MAX_ROOTS && t.commitStride == 1, "dispute rounds"); // int-spmv-q16 commits every step
+        }
         uint64 e = claimManager.currentEpoch();
         require(claimManager.beacon(e) != bytes32(0), "no beacon");
-        taskId = PorwMeshHash.taskId(t.mepId, t.stimulusSeed, nonce);
+        taskId = PorwMeshHash.taskId(t, nonce);
         require(!tasks[taskId].exists, "posted");
         tasks[taskId] = StoredTask(t, msg.sender, e, uint64(block.number), true, false, false);
         emit TaskPosted(taskId, t.mepId, t.redundancy);
@@ -62,7 +77,7 @@ contract TaskMarket is ITaskMarket {
     /// @notice the EIP-712 digest an executor signs for a result
     function resultDigest(bytes32 taskId, bytes32 execDigest, bytes32 execRoot) public view returns (bytes32) { return PorwEIP712.digest(DOMAIN_SEPARATOR, PorwEIP712.resultStructHash(taskId, execDigest, execRoot)); }
     function resultOf(bytes32 taskId, address who) external view returns (bytes32 execDigest, bytes32 execRoot) { Result storage r = results[taskId][who]; return (r.execDigest, r.execRoot); }
-    function taskInfo(bytes32 taskId) external view returns (bytes32 mepId, uint32 stimulusSeed, address client) { StoredTask storage st = tasks[taskId]; return (st.t.mepId, st.t.stimulusSeed, st.client); }
+    function taskInfo(bytes32 taskId) external view returns (bytes32 mepId, uint32 stimulusSeed, address client, uint32 steps, uint32 commitStride) { StoredTask storage st = tasks[taskId]; return (st.t.mepId, st.t.stimulusSeed, st.client, st.t.steps, st.t.commitStride); }
     /// @notice the task's input commitment (int-lif: initStateRoot over state_0 derived from the stimulus set)
     function taskInput(bytes32 taskId) external view returns (bytes32) { return tasks[taskId].t.inputCommit; }
 

@@ -11,6 +11,7 @@ import * as D from "./dispute.js";
 import * as L from "./lif.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import * as E from "./eip712.js";
+import { taskId as swarmTaskId } from "./swarm.js";
 import { domains, walletAndSession, CHAIN_ID, CM_ADDR, MK_ADDR, REG_ADDR, DELEGATION_EXPIRY } from "./export_fixtures_common.js";
 
 const [out, epochBlocksArg, epochArg, prevrandaoArg] = process.argv.slice(2);
@@ -23,16 +24,18 @@ const H = V.hex;
 const wasm = fs.readFileSync(new URL("./sketch.wasm", import.meta.url));
 const payload = synthesizePayloadV2("lif-mesh", 4000, 120000);
 const steps = 40, stride = 10, stimulusSeed = 5; const nonces = [21, 22, 23].map((v) => new Uint8Array(32).fill(v));
+// the task, pinned: taskId = keccak256(abi.encode(task, nonce)) binds every field, so the Solidity test posts exactly this
+const TASK = { stimulusSeed, steps, commitStride: stride, fee: 10n ** 18n, deadline: 10_000_000, redundancy: 2 };
 const stimulusIds = Uint32Array.from({ length: 300 }, (_, j) => j * 7);
-const mk = async (priv, lie) => { const ws = await walletAndSession(priv[0] + "a", priv); const nd = new PorwNode(await loadKernelFromBytes(wasm), { privHex: ws.sessionPriv, domains, delegation: ws.delegation }); if (lie) nd.execLie = lie; const st = await nd.loadModel("lif-mesh", payload, { steps, commitStride: stride }); return { nd, st, ws }; };
+const mk = async (priv, lie) => { const ws = await walletAndSession(priv[0] + "a", priv); const nd = new PorwNode(await loadKernelFromBytes(wasm), { privHex: ws.sessionPriv, domains, delegation: ws.delegation }); if (lie) nd.execLie = lie; const st = await nd.loadModel("lif-mesh", payload, { maxSteps: steps }); return { nd, st, ws }; };
 const A = await mk("11"); const mep = A.st.mep, mepId = mep.mepId, n = A.st.hdr.neurons;
 const epochStart = EPOCH * EPOCH_BLOCKS; const beacon = keccak_256(cat(be256(PREVRANDAO), be256(epochStart))); const challenge = keccak_256(cat(beacon, mepId));
 
 // residency claims (canonical stimulus run), then the task run with the explicit stimulus set
-const claimA = await A.nd.challenge(mepId, challenge, { stimulusSeed });
-const Bc = await mk("22"); const claimB = await Bc.nd.challenge(mepId, challenge, { stimulusSeed });
-const claimJson = (r) => { const c = r.claim; return { mepId: H(c.mepId), partialsRoot: H(c.partialsRoot), coverageBytes: c.coverageBytes, challenge: H(c.challenge), deviceId: H(c.deviceId), execDigest: H(c.execDigest), stimulusSeed: c.stimulusSeed, signature: H(r.signature), signer: H(r.address) }; };
-const rA = await A.nd.challenge(mepId, challenge, { stimulusSeed, stimulusIds });
+const claimA = await A.nd.challenge(mepId, challenge, { steps, commitStride: stride, stimulusSeed });
+const Bc = await mk("22"); const claimB = await Bc.nd.challenge(mepId, challenge, { steps, commitStride: stride, stimulusSeed });
+const claimJson = (r) => { const c = r.claim; return { mepId: H(c.mepId), partialsRoot: H(c.partialsRoot), coverageBytes: c.coverageBytes, challenge: H(c.challenge), deviceId: H(c.deviceId), signature: H(r.signature), signer: H(r.address) }; };
+const rA = await A.nd.challenge(mepId, challenge, { steps, commitStride: stride, stimulusSeed, stimulusIds });
 // the lied neuron: not stimulated, in-degree >= 3, free (not refractory) at step 22 so the input matters at step 23
 const sLie = 23; const s22 = await A.nd.lifStates(mepId, sLie - 1); let neuron = -1, len = 0;
 for (let i = 1; i < n; i++) { if (i % 7 === 0) continue; const S = L.decodeState(s22, i * 16); if (S.refr > 0 || (S.flags & 1)) continue; const ps = await A.nd.lifPartialSums(mepId, sLie, i); if (ps.sums.length < 3) continue;
@@ -40,9 +43,9 @@ for (let i = 1; i < n; i++) { if (i % 7 === 0) continue; const S = L.decodeState
 if (neuron < 0) throw new Error("no suitable neuron");
 const B1 = await mk("22", { step: sLie, neuron, delta: 5000 });            // lie in the state (caught by the row check)
 const B2 = await mk("22", { step: sLie, neuron, delta: 40, kind: "input" }); // lie in the input sum (caught at the single term)
-const rB1 = await B1.nd.challenge(mepId, challenge, { stimulusSeed, stimulusIds }), rB2 = await B2.nd.challenge(mepId, challenge, { stimulusSeed, stimulusIds });
+const rB1 = await B1.nd.challenge(mepId, challenge, { steps, commitStride: stride, stimulusSeed, stimulusIds }), rB2 = await B2.nd.challenge(mepId, challenge, { steps, commitStride: stride, stimulusSeed, stimulusIds });
 if (!V.eq(rA.result.initStateRoot, rB1.result.initStateRoot)) throw new Error("initStateRoot");
-const taskIds = nonces.map((nonce) => keccak_256(cat(mepId, be32(stimulusSeed), nonce)));
+const taskIds = nonces.map((nonce) => swarmTaskId({ ...TASK, mepId, inputCommit: rA.result.initStateRoot }, nonce));
 const resultSig = (P, r, taskId) => { const h = E.resultDigest(domains.market, taskId, r.result.execDigest, r.result.execRoot); return { execDigest: H(r.result.execDigest), execRoot: H(r.result.execRoot), signature: H(signHash(h, P.nd.key.priv)), signer: H(P.nd.key.address) }; };
 
 // dispute path: segment -> refine -> bisection (per liar) -> row -> term
@@ -71,8 +74,8 @@ const rec = L.recordSigned(chunk.records.subarray((kStar - chunk.k0) * 10, (kSta
 const pre = await A.nd.lifOpenState(mepId, sLie - 1, rec.pre);
 const so = (o) => ({ ...o.state, proof: o.proof.map(H) });
 const F = {
-  params: { epochBlocks: EPOCH_BLOCKS, epoch: EPOCH, epochStart, prevrandao: Number(PREVRANDAO), beacon: H(beacon), challenge: H(challenge), steps, stride, stimulusSeed, nonces: nonces.map(H), taskIds: taskIds.map(H), stimulusIds: Array.from(stimulusIds) },
-  mep: { mepId: H(mepId), modelId: H(mep.modelId), schemeDigest: H(mep.schemeDigest), execKind: H(mep.execKind), steps: mep.steps, clampQ16: mep.clampQ16, neurons: n, synapses: A.st.hdr.synapses, synapseRoot: H(rA.result.synapseRoot), csrRoot: H(rA.result.csrRoot), rowRoot: H(rA.result.rowRoot) },
+  params: { epochBlocks: EPOCH_BLOCKS, epoch: EPOCH, epochStart, prevrandao: Number(PREVRANDAO), beacon: H(beacon), challenge: H(challenge), steps, stride, stimulusSeed, nonces: nonces.map(H), taskIds: taskIds.map(H), stimulusIds: Array.from(stimulusIds), task: { fee: String(TASK.fee), deadline: TASK.deadline, redundancy: TASK.redundancy } },
+  mep: { mepId: H(mepId), modelId: H(mep.modelId), schemeDigest: H(mep.schemeDigest), execKind: H(mep.execKind), neurons: n, synapses: A.st.hdr.synapses, synapseRoot: H(rA.result.synapseRoot), csrRoot: H(rA.result.csrRoot), rowRoot: H(rA.result.rowRoot) },
   instances: { A: A.ws.wallet.address, B: B1.ws.wallet.address }, sessions: { A: H(A.nd.key.address), B: H(B1.nd.key.address) }, delegations: { A: A.ws.delegation, B: B1.ws.delegation },
   eip712: { chainId: CHAIN_ID, claimManager: CM_ADDR, market: MK_ADDR, registry: REG_ADDR, expiry: DELEGATION_EXPIRY }, claimA: claimJson(claimA), claimB: claimJson(claimB),
   initStateRoot: H(rA.result.initStateRoot), resultsA: taskIds.map((t) => resultSig(A, rA, t)), resultsB: [resultSig(B2, rB2, taskIds[0]), resultSig(B1, rB1, taskIds[1]), resultSig(B1, rB1, taskIds[2])],
@@ -93,7 +96,7 @@ function writeSolidity(F, dir) {
   const arrI64 = (name, a) => `    function ${name}() internal pure returns (int64[] memory a) { a = new int64[](${a.length});${a.map((v, i) => ` a[${i}] = ${v};`).join("")} }\n`;
   const bytesFn = (name, hexv) => `    function ${name}() internal pure returns (bytes memory) { return hex"${hexv.slice(2)}"; }\n`;
   const claimFn = (name, c) => `    function ${name}() internal pure returns (IPoRWClaimManager.Claim memory c, bytes memory sig) {
-        c = IPoRWClaimManager.Claim({ mepId: ${c.mepId}, partialsRoot: ${c.partialsRoot}, coverageBytes: ${c.coverageBytes}, challenge: ${c.challenge}, deviceId: ${c.deviceId}, execDigest: ${c.execDigest}, stimulusSeed: ${c.stimulusSeed} });
+        c = IPoRWClaimManager.Claim({ mepId: ${c.mepId}, partialsRoot: ${c.partialsRoot}, coverageBytes: ${c.coverageBytes}, challenge: ${c.challenge}, deviceId: ${c.deviceId} });
         sig = hex"${c.signature.slice(2)}";
     }\n`;
   const resultFn = (name, r) => `    function ${name}() internal pure returns (ITaskMarket.Result memory r, bytes memory sig) { r = ITaskMarket.Result({ execDigest: ${r.execDigest}, execRoot: ${r.execRoot} }); sig = hex"${r.signature.slice(2)}"; }\n`;
@@ -110,7 +113,8 @@ library LifMeshFixtures {
     uint64 constant EPOCH_BLOCKS = ${P.epochBlocks}; uint64 constant EPOCH = ${P.epoch}; uint256 constant EPOCH_START = ${P.epochStart}; uint256 constant PREVRANDAO = ${P.prevrandao};
     bytes32 constant BEACON = ${P.beacon}; bytes32 constant CHALLENGE = ${P.challenge}; uint32 constant STIMULUS_SEED = ${P.stimulusSeed};
     bytes32 constant MEP_ID = ${M.mepId}; bytes32 constant MODEL_ID = ${M.modelId}; bytes32 constant SCHEME_DIGEST = ${M.schemeDigest}; bytes32 constant EXEC_KIND = ${M.execKind};
-    uint32 constant STEPS = ${M.steps}; uint32 constant STRIDE = ${M.clampQ16}; uint32 constant NEURONS = ${M.neurons}; uint32 constant SYNAPSES = ${M.synapses};
+    uint32 constant STEPS = ${P.steps}; uint32 constant STRIDE = ${P.stride}; uint32 constant NEURONS = ${M.neurons}; uint32 constant SYNAPSES = ${M.synapses};
+    uint256 constant TASK_FEE = ${P.task.fee}; uint64 constant TASK_DEADLINE = ${P.task.deadline}; uint8 constant TASK_REDUNDANCY = ${P.task.redundancy};
     bytes32 constant SYNAPSE_ROOT = ${M.synapseRoot}; bytes32 constant CSR_ROOT = ${M.csrRoot}; bytes32 constant ROW_ROOT = ${M.rowRoot}; bytes32 constant INIT_STATE_ROOT = ${F.initStateRoot};
     address constant A = ${checksum(F.instances.A)}; address constant B = ${checksum(F.instances.B)}; // bonded wallets
     address constant SESSION_A = ${checksum(F.sessions.A)}; address constant SESSION_B = ${checksum(F.sessions.B)};
@@ -123,6 +127,10 @@ library LifMeshFixtures {
 `;
   const delFn = (name, d) => `    function ${name}() internal pure returns (address instance, address session, uint64 expiry, bytes memory sig) { instance = ${checksum(d.instance)}; session = ${checksum(d.session)}; expiry = ${d.expiry}; sig = hex"${d.sig.slice(2)}"; }\n`;
   sol += delFn("delegationA", F.delegations.A) + delFn("delegationB", F.delegations.B);
+  sol += `    /// @dev the exact Task the ids were derived from -- taskId = keccak256(abi.encode(task, nonce))
+    function task() internal pure returns (ITaskMarket.Task memory t) {
+        t = ITaskMarket.Task({ mepId: MEP_ID, stimulusSeed: STIMULUS_SEED, steps: STEPS, commitStride: STRIDE, inputCommit: INIT_STATE_ROOT, fee: TASK_FEE, deadline: TASK_DEADLINE, redundancy: TASK_REDUNDANCY });
+    }\n`;
   sol += arr32("nonces", P.nonces) + arr32("taskIds", P.taskIds) + claimFn("claimA", F.claimA) + claimFn("claimB", F.claimB);
   F.resultsA.forEach((r, i) => { sol += resultFn(`resultA${i}`, r); }); F.resultsB.forEach((r, i) => { sol += resultFn(`resultB${i}`, r); });
   sol += arr32("segRootsA", Dd.segRootsA) + arr32("segRootsB1", Dd.segRootsB1) + arr32("segRootsB2", Dd.segRootsB2) + arr32("stepRootsA", Dd.stepRootsA) + arr32("stepRootsB1", Dd.stepRootsB1) + arr32("stepRootsB2", Dd.stepRootsB2);

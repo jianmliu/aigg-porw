@@ -48,28 +48,31 @@ export function verifyOpening(o, claim, slotSeed, nTiles) {
   return { tileIdx: o.tileIdx, weightsOk, partialsOk, recomputed, committed: o.sketch, verdict };
 }
 
-// Redundant re-execution of the claimed inference with the verifier's own kernel + model copy.
-export function reexecute(kernel, payloadBytes, claim, mep) {
+// Redundant re-execution of a TASK's inference with the verifier's own kernel + model copy.
+// `run` is the task's parameters plus the executor's claimed digest: { stimulusSeed, steps, execDigest }.
+// It is deliberately not a residency claim: under sketch-tile-keccak:v2 a claim attests residency only,
+// and execution is attested per task by TaskMarket's Result.
+export function reexecute(kernel, payloadBytes, run) {
   const k = attachSpmv(kernel, kernel.exports);
   const bufPtr = k.put(payloadBytes); const hdr = decodeHeader(payloadBytes);
-  const act = k.spmvStimulus(hdr.neurons, claim.stimulusSeed);
-  k.spmvRun(bufPtr, hdr, act, mep.steps);
+  const act = k.spmvStimulus(hdr.neurons, run.stimulusSeed);
+  k.spmvRun(bufPtr, hdr, act, run.steps);
   const a = k.u32(act, hdr.neurons);
   const digest = keccak_256(new Uint8Array(a.buffer, a.byteOffset, a.byteLength));
-  return { digest, matches: V.eq(digest, claim.execDigest) };
+  return { digest, matches: V.eq(digest, run.execDigest) };
 }
 
 // Redundant re-execution of an `aigg:exec:int-lif:v1` run (no commitments): counts digest must match.
 import { countsDigest } from "./lif.js";
-export function reexecuteLif(kernel, payloadBytes, claim, mep, { stimulusIds = null } = {}) {
+export function reexecuteLif(kernel, payloadBytes, run, { stimulusIds = null } = {}) {
   const k = kernel, e = k.exports; const m = k.mark();
   const bufPtr = k.put(payloadBytes); const hdr = decodeHeader(payloadBytes); const n = hdr.neurons;
   if (hdr.version !== 2) throw new Error("int-lif needs a v2 payload");
   let cur = k.alloc(n * 16), nxt = k.alloc(n * 16); const acc = k.alloc(n * 8), counts = k.alloc(n * 4);
   if (stimulusIds) { const p = k.alloc(stimulusIds.length * 4); k.u32(p, stimulusIds.length).set(stimulusIds); if (e.porw_lif_state0_set(cur, n >>> 0, p, stimulusIds.length >>> 0) !== 0) throw new Error("state0"); }
-  else e.porw_lif_state0_canonical(cur, n >>> 0, claim.stimulusSeed >>> 0);
-  for (let s = 1; s <= mep.steps; s++) { const rc = e.porw_lif_step(bufPtr + hdr.synOffset, hdr.synapses >>> 0, cur, nxt, acc, n >>> 0, s >>> 0, claim.stimulusSeed >>> 0); if (rc !== 0) throw new Error("lif rc=" + rc); [cur, nxt] = [nxt, cur]; }
+  else e.porw_lif_state0_canonical(cur, n >>> 0, run.stimulusSeed >>> 0);
+  for (let s = 1; s <= run.steps; s++) { const rc = e.porw_lif_step(bufPtr + hdr.synOffset, hdr.synapses >>> 0, cur, nxt, acc, n >>> 0, s >>> 0, run.stimulusSeed >>> 0); if (rc !== 0) throw new Error("lif rc=" + rc); [cur, nxt] = [nxt, cur]; }
   e.porw_lif_counts(cur, n >>> 0, counts);
   const c = new Uint32Array(k.u32(counts, n)); const digest = countsDigest(c); k.release(m);
-  return { digest, matches: V.eq(digest, claim.execDigest), counts: c };
+  return { digest, matches: V.eq(digest, run.execDigest), counts: c };
 }
