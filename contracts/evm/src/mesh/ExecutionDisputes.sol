@@ -7,7 +7,12 @@ import "./InstanceRegistry.sol";
 import "./TaskMarket.sol";
 import "./LifRowCheck.sol";
 
-/// @notice Interactive execution fraud proof between two executors of the same task:
+/// @notice Interactive execution fraud proof between two parties holding different results for the same task.
+///         Usually both are sortitioned executors that disagreed at `settle`; the second may instead be a
+///         non-executor that bought standing with `TaskMarket.challengeResult` after the task settled. The game
+///         below is identical either way -- it only ever compares two committed execRoots -- and the difference
+///         shows up once, in `_resolve`: a challenger has no bond to slash, so it stakes a deposit instead.
+///         The phases:
 ///   Step   : both reveal actRoots (bound to their execRoot); first differing step s*.
 ///   Neuron : descend both parties' activation trees for s*: each round every party posts the two
 ///            children of its current node (bound by keccak(l||r) == node); the contract follows the
@@ -66,6 +71,7 @@ contract ExecutionDisputes is IExecutionDisputes {
             ld.lif = true; ld.stride = stride; ld.segments = (steps + stride - 1) / stride; ld.initStateRoot = market.taskInitStateRoot(taskId);
         }
         partyA[taskId] = a; partyB[taskId] = b;
+        instances.hold(a); instances.hold(b); // neither party's bond leaves while this is open (a challenger has none: harmless)
         (, parties[taskId][a].execRoot) = market.resultOf(taskId, a);
         (, parties[taskId][b].execRoot) = market.resultOf(taskId, b);
         emit DisputeRound(taskId, Phase.Step, 0, steps);
@@ -73,8 +79,14 @@ contract ExecutionDisputes is IExecutionDisputes {
     function open(bytes32, address, address) external payable { revert("use market"); }
     function bisect(bytes32, uint256, bytes32) external pure { revert("use postChildren"); }
 
-    /// @dev a party may act through its delegated session key (the tab's key); state is keyed by the instance
-    function _who(bytes32 taskId) internal view returns (address w) { w = instances.resolve(msg.sender); require(w != address(0) && (w == partyA[taskId] || w == partyB[taskId]), "party"); }
+    /// @dev a party may act through its delegated session key (the tab's key); state is keyed by the instance.
+    ///      The direct branch changes nothing for an instance -- `resolve` already returns a bonded signer
+    ///      unchanged -- and it is what lets a CHALLENGER play: it is not an instance, has no bond and no
+    ///      session key, so `resolve` would give address(0) and it could not post a single round.
+    function _who(bytes32 taskId) internal view returns (address w) {
+        if (msg.sender == partyA[taskId] || msg.sender == partyB[taskId]) return msg.sender;
+        w = instances.resolve(msg.sender); require(w != address(0) && (w == partyA[taskId] || w == partyB[taskId]), "party");
+    }
     function _party(bytes32 taskId) internal view returns (Party storage) { return parties[taskId][_who(taskId)]; }
     function _other(bytes32 taskId, address who) internal view returns (address) { return who == partyA[taskId] ? partyB[taskId] : partyA[taskId]; }
 
@@ -251,9 +263,36 @@ contract ExecutionDisputes is IExecutionDisputes {
         Dispute storage d = disputes[taskId];
         address winner = _other(taskId, loser);
         d.phase = Phase.Resolved; d.loser = loser;
-        instances.slash(loser, SLASH_AMOUNT, winner, "porw:exec-fraud");
+        // A challenger has no bond, so `slash` would be a no-op against it (the registry caps at bonded[inst]).
+        // Its punishment is the deposit, settled by the market.
+        address c = market.challenger(taskId);
+        if (loser != c) instances.slash(loser, SLASH_AMOUNT, winner, "porw:exec-fraud");
+        instances.release(loser); instances.release(winner);
         market.onDisputeResolved(taskId, loser, winner);
         emit DisputeResolved(taskId, loser, winner);
+        // A challenge that lost leaves the task challengeable again, so this dispute's state must not block the next one.
+        if (c != address(0) && loser == c) _forget(taskId, loser, winner);
+    }
+    function _forget(bytes32 taskId, address a, address b) internal {
+        delete disputes[taskId]; delete lifs[taskId]; delete partyA[taskId]; delete partyB[taskId];
+        delete parties[taskId][a]; delete parties[taskId][b]; delete lifParties[taskId][a]; delete lifParties[taskId][b];
+    }
+
+    /// @notice An executor beaten by a challenger was not alone: at redundancy > 1 the others settled on the same digest,
+    ///         and a digest proven wrong is wrong for everyone who asserted it. Permissionless and per executor, rather than
+    ///         a loop over `executors()` inside the resolution: that roster is a live view, an instance that asks to exit
+    ///         drops off it at once, and a verdict must not depend on it. Anyone -- in practice the challenger, who is paid
+    ///         the slash -- names an executor whose recorded result equals the repudiated one. Challenge path only: where two
+    ///         executors disagreed at `settle` the market already withholds payment from the losing side.
+    mapping(bytes32 => mapping(address => bool)) public agreeingSlashed;
+    function slashAgreeing(bytes32 taskId, address executor) external {
+        address beaten = market.repudiatedExecutor(taskId); require(beaten != address(0), "not repudiated");
+        require(executor != beaten && market.submitted(taskId, executor), "not an agreeing executor"); // the beaten one paid already
+        require(!agreeingSlashed[taskId][executor], "slashed");
+        (bytes32 dig, bytes32 root) = market.resultOf(taskId, beaten); (bytes32 d2, bytes32 r2) = market.resultOf(taskId, executor);
+        require(d2 == dig && r2 == root, "another result");
+        agreeingSlashed[taskId][executor] = true;
+        instances.slash(executor, SLASH_AMOUNT, market.challenger(taskId), "porw:exec-fraud");
     }
 
     // ---- helpers (LE32 leaves, counted keccak Merkle, tree geometry, stimulus rule) ----

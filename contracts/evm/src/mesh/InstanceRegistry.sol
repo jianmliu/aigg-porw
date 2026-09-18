@@ -89,8 +89,17 @@ contract InstanceRegistry is IInstanceRegistry {
 
     function requestExit() external { require(bonded[msg.sender] > 0 && exitAt[msg.sender] == 0, "exit"); exitAt[msg.sender] = uint64(block.number) + EXIT_DELAY; emit ExitRequested(msg.sender, exitAt[msg.sender]); }
 
+    /// @notice how many open execution disputes name this instance as a party. While it is non-zero the bond cannot leave:
+    ///         a dispute takes a dozen rounds, and without this an instance that asked to exit when it settled a lie could
+    ///         finalize before the verdict and leave nothing to slash. Every dispute ends (each round has a timeout), and
+    ///         ends by releasing its hold, so the hold cannot be used to trap a bond.
+    mapping(address => uint256) public disputeHolds;
+    function hold(address inst) external { require(slasher[msg.sender], "slasher"); disputeHolds[inst]++; }
+    function release(address inst) external { require(slasher[msg.sender], "slasher"); if (disputeHolds[inst] > 0) disputeHolds[inst]--; }
+
     function finalizeExit() external {
         require(exitAt[msg.sender] != 0 && block.number >= exitAt[msg.sender], "delay");
+        require(disputeHolds[msg.sender] == 0, "in dispute");
         uint256 amt = bonded[msg.sender]; bonded[msg.sender] = 0; exitAt[msg.sender] = 0;
         (bool ok,) = msg.sender.call{value: amt}(""); require(ok, "pay");
     }
