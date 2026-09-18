@@ -45,9 +45,9 @@ console.log(`audit over the relay: claim ok=${res.claimOk}, ${res.verdicts.lengt
 // a task from a client process -> the tab executes and returns a signed result
 const C = keypair("0x" + "55".repeat(32)); const cC = new RelayClient([R2.url], C); await cC.connect();
 const taskId = new Uint8Array(32).fill(0x31); t0 = performance.now();
-const resp = await cC.request(tabAddr, "task-announce", mepHex, { taskId: V.hex(taskId), stimulusSeed: 4 }, { timeoutMs: 60000, responseType: "result" }); const taskMs = performance.now() - t0;
+const resp = await cC.request(tabAddr, "task-announce", mepHex, { taskId: V.hex(taskId), stimulusSeed: 4, steps, commitStride: 1 }, { timeoutMs: 60000, responseType: "result" }); const taskMs = performance.now() - t0;
 const rp = resp.payload; const sigOk = V.hex(recoverAddress(resultHash(taskId, V.unhex(rp.execDigest), V.unhex(rp.execRoot)), V.unhex(rp.signature))) === tabAddr;
-const re = Vf.reexecute(await loadKernelFromBytes(fs.readFileSync(path.join(here, "sketch.wasm"))), payload, { stimulusSeed: 4, execDigest: V.unhex(rp.execDigest) }, mep);
+const re = Vf.reexecute(await loadKernelFromBytes(fs.readFileSync(path.join(here, "sketch.wasm"))), payload, { stimulusSeed: 4, steps, execDigest: V.unhex(rp.execDigest) });
 console.log(`task over the relay: result signed by the tab=${sigOk}, client re-execution matches=${re.matches}, ${taskMs.toFixed(0)} ms round trip`);
 const ok = info.mepId === mepHex && res.ok && sigOk && re.matches;
 await browser.close(); server.close(); cU.close(); cC.close(); await Promise.all([R1.close(), R2.close()]);
