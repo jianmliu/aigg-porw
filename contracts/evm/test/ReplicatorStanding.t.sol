@@ -40,6 +40,7 @@ contract ReplicatorStandingTest is Test {
 
     uint256 constant PK1 = uint256(0xE1); uint256 constant PK2 = uint256(0xE2);
     address E1; address E2;
+    address constant SINK = address(0x51AC); // where half of a lost challenge's deposit goes
     address constant CHAL = address(0xC0FFEE); // the replicator: no bond, no session key, never sortitioned
 
     receive() external payable {}
@@ -53,7 +54,7 @@ contract ReplicatorStandingTest is Test {
         market = new TaskMarket(meps, inst, cm, uint64(50));
         disp = new ExecutionDisputes(meps, inst, market, ROUND, SLASH);
         inst.setClaimManager(address(cm)); inst.setSlasher(address(disp), true); market.setDisputes(address(disp));
-        market.setChallengeParams(CHAL_DEPOSIT, CHAL_WINDOW);
+        market.setChallengeParams(CHAL_DEPOSIT, CHAL_WINDOW, SINK);
 
         mepId = meps.registerMEP(IMEPRegistry.MEP({
             modelId: FX.MODEL_ID, schemeDigest: FX.SCHEME_DIGEST, execKind: FX.EXEC_KIND,
@@ -174,8 +175,14 @@ contract ReplicatorStandingTest is Test {
         vm.roll(block.number + ROUND + 1);
         uint256 b0 = inst.bonded(ex[0]); uint256 b1 = inst.bonded(ex[1]); uint256 bal = CHAL.balance;
         disp.timeout(taskId);
-        assertEq(inst.bonded(ex[0]), b0 - SLASH, "the party that went silent");
-        assertEq(inst.bonded(ex[1]), b1 - SLASH, "and the one that asserted the identical digest");
+        address beaten = market.repudiatedExecutor(taskId); address other = beaten == ex[0] ? ex[1] : ex[0];
+        assertEq(beaten, market.settledRef(taskId), "the executor the task settled on is the one that was disputed");
+        assertEq(inst.bonded(beaten), (beaten == ex[0] ? b0 : b1) - SLASH, "the party that went silent");
+        vm.expectRevert(bytes("not an agreeing executor")); disp.slashAgreeing(taskId, beaten);   // it has paid already
+        vm.expectRevert(bytes("not an agreeing executor")); disp.slashAgreeing(taskId, address(0xD00D)); // never submitted anything
+        disp.slashAgreeing(taskId, other); // anyone may name an executor whose recorded result is the repudiated one
+        assertEq(inst.bonded(other), (other == ex[0] ? b0 : b1) - SLASH, "and the one that asserted the identical digest");
+        vm.expectRevert(bytes("slashed")); disp.slashAgreeing(taskId, other);
         assertEq(CHAL.balance, bal + 2 * SLASH + CHAL_DEPOSIT, "both slashes pay the replicator");
     }
 
@@ -187,36 +194,60 @@ contract ReplicatorStandingTest is Test {
         vm.roll(block.number + ROUND + 1);
         uint256 bal = ref.balance; uint256 bonded = inst.bonded(ref);
         disp.timeout(taskId);
-        assertEq(ref.balance, bal + CHAL_DEPOSIT, "the deposit pays for the defence");
+        assertEq(ref.balance, bal + CHAL_DEPOSIT / 2, "half the deposit pays for the defence"); assertEq(SINK.balance, CHAL_DEPOSIT - CHAL_DEPOSIT / 2, "the other half leaves both parties for good");
         assertEq(inst.bonded(ref), bonded, "nothing is slashed: a challenger has no bond to take");
         (,,,,,,,, bool repudiated) = market.tasks(taskId);
         assertFalse(repudiated, "a failed challenge leaves the result standing");
     }
 
-    // ---- REVIEW: two ways a wrong settled result escapes, pinned as the code behaves today ----
+    // ---- the two escapes the review found, closed ----
 
-    /// A liar's accomplice challenges first (or front-runs the honest replicator's transaction) and then goes quiet. The
-    /// deposit it forfeits goes to the executor -- its own partner, so the pair loses nothing but gas -- and because a task
-    /// takes ONE challenge ever, the wrong digest can never be challenged again. It stays un-repudiated with the window open.
-    function test_REVIEW_a_thrown_challenge_shields_a_wrong_result_for_good() public {
-        (bytes32 taskId, address[] memory ex) = postSettled(1, "shield"); address liar = ex[0]; address accomplice = address(0xACC0);
-        (ITaskMarket.Result memory ra,,) = FX.resultA0(); vm.deal(accomplice, 1 ether); uint256 pairBefore = liar.balance + accomplice.balance;
-        vm.prank(accomplice); market.challengeResult{value: CHAL_DEPOSIT}(taskId, ra);
-        vm.prank(liar); disp.revealRoots(taskId, FX.actRootsB()); vm.roll(block.number + ROUND + 1); disp.timeout(taskId); // the accomplice never plays
-        assertEq(liar.balance + accomplice.balance, pairBefore, "the deposit moved from one pocket of the pair to the other");
-        assertTrue(block.number <= FX.TASK_EPOCH * FX.EPOCH_BLOCKS + CHAL_WINDOW, "the challenge window is still open");
-        vm.deal(CHAL, 1 ether); vm.prank(CHAL); vm.expectRevert(bytes("task")); market.challengeResult{value: CHAL_DEPOSIT}(taskId, ra); // the honest replicator, with the right answer
-        (,,,,,,,, bool repudiated) = market.tasks(taskId); assertFalse(repudiated, "the wrong digest stands, permanently");
+    /// play a challenge of `taskId` by `who` to its verdict: the executor's row is the lied one, the challenger's is right
+    function winChallenge(bytes32 taskId, address ref, address who) internal {
+        vm.prank(ref); disp.revealRoots(taskId, FX.actRootsB()); vm.prank(who); disp.revealRoots(taskId, FX.actRootsA());
+        bytes32[] memory pa = FX.pairsAFlat(); bytes32[] memory pb = FX.pairsBFlat();
+        for (uint256 i = 0; i < FX.ROUNDS; i++) { vm.prank(ref); disp.postChildren(taskId, pb[2 * i], pb[2 * i + 1]); vm.prank(who); disp.postChildren(taskId, pa[2 * i], pa[2 * i + 1]); }
+        vm.prank(ref); disp.postRow(taskId, FX.ACT_B, FX.sumsBLied()); vm.prank(who); disp.postRow(taskId, FX.ACT_A, FX.sumsA());
+        disp.proveSynapseTerm(taskId, FX.K_STAR, FX.CSR_ROOT, FX.ROW_ROOT, bounds(), chunk(), FX.ACT_PRE, FX.actPreProof());
     }
 
-    /// `challengeResult` finds the executor to dispute through the LIVE roster. `requestExit` takes an instance off that
-    /// roster at once, while its bond stays in the registry for EXIT_DELAY. So liars that settle and immediately ask to exit
-    /// cannot be challenged at all, although everything a slash would take is still there.
-    function test_REVIEW_liars_that_request_exit_cannot_be_challenged() public {
-        (bytes32 taskId, address[] memory ex) = postSettled(2, "exit"); (ITaskMarket.Result memory ra,,) = FX.resultA0();
+    /// A liar's accomplice challenges first (or front-runs the honest replicator) and throws the game. That used to close
+    /// the task for good. Now it costs the pair half a deposit, hands the elapsed time back, and the next challenge -- for
+    /// twice the deposit, refunded on a win -- goes through and repudiates the digest.
+    function test_a_thrown_challenge_no_longer_shields_a_wrong_result() public {
+        (bytes32 taskId, address[] memory ex) = postSettled(1, "shield"); address liar = ex[0]; address accomplice = address(0xACC0);
+        (ITaskMarket.Result memory ra,,) = FX.resultA0(); vm.deal(accomplice, 1 ether); uint256 pairBefore = liar.balance + accomplice.balance;
+        (,,,, uint64 settledAt0,,,,) = market.tasks(taskId);
+        vm.prank(accomplice); market.challengeResult{value: CHAL_DEPOSIT}(taskId, ra);
+        vm.deal(CHAL, 1 ether); vm.prank(CHAL); vm.expectRevert(bytes("task")); market.challengeResult{value: CHAL_DEPOSIT}(taskId, ra); // one challenge at a time
+        vm.prank(liar); disp.revealRoots(taskId, FX.actRootsB()); vm.roll(block.number + ROUND + 1); disp.timeout(taskId); // the accomplice never plays
+        assertEq(liar.balance + accomplice.balance, pairBefore - (CHAL_DEPOSIT - CHAL_DEPOSIT / 2), "throwing a challenge costs the pair half the deposit");
+        (,,,, uint64 settledAt1,,, bool disputed,) = market.tasks(taskId);
+        assertFalse(disputed, "the task is challengeable again"); assertEq(settledAt1, settledAt0 + ROUND + 1, "and the time the thrown challenge took is handed back");
+        assertEq(market.requiredChallengeDeposit(taskId), 2 * CHAL_DEPOSIT, "the next challenge costs twice as much");
+        vm.prank(CHAL); vm.expectRevert(bytes("deposit")); market.challengeResult{value: CHAL_DEPOSIT}(taskId, ra);
+        uint256 bal = CHAL.balance; uint256 bonded = inst.bonded(liar);
+        vm.prank(CHAL); market.challengeResult{value: 2 * CHAL_DEPOSIT}(taskId, ra); // the honest replicator, after the shield
+        winChallenge(taskId, liar, CHAL);
+        (,,,,,,,, bool repudiated) = market.tasks(taskId); assertTrue(repudiated, "the wrong digest is repudiated after all");
+        assertEq(inst.bonded(liar), bonded - SLASH); assertEq(CHAL.balance, bal + SLASH, "its larger deposit came back, plus the slash");
+    }
+
+    /// Liars that settle and immediately ask to exit used to vanish from the roster `challengeResult` looked them up in.
+    /// The executor to dispute is now the one recorded at settle, and an open dispute holds both parties' exits.
+    function test_liars_that_request_exit_are_still_challenged_and_slashed() public {
+        (bytes32 taskId, address[] memory ex) = postSettled(2, "exit"); address ref = market.settledRef(taskId); address other = ref == ex[0] ? ex[1] : ex[0];
         for (uint256 i = 0; i < ex.length; i++) { vm.prank(ex[i]); inst.requestExit(); }
-        assertEq(inst.bonded(ex[0]), 2 ether, "the bond is still in the registry"); assertEq(inst.bonded(ex[1]), 2 ether);
-        vm.deal(CHAL, 1 ether); vm.prank(CHAL); vm.expectRevert(bytes("no eligible instances")); market.challengeResult{value: CHAL_DEPOSIT}(taskId, ra);
+        vm.expectRevert(bytes("no eligible instances")); market.executors(taskId); // the live roster is empty ...
+        (ITaskMarket.Result memory ra,,) = FX.resultA0(); vm.deal(CHAL, 1 ether); vm.prank(CHAL); market.challengeResult{value: CHAL_DEPOSIT}(taskId, ra); // ... and it no longer matters
+        vm.prank(CHAL); disp.revealRoots(taskId, FX.actRootsA()); // the replicator plays; the liar, on its way out, does not
+        vm.roll(block.number + 21); // past EXIT_DELAY: without the hold the disputed liar would walk out now, bond and all
+        vm.prank(ref); vm.expectRevert(bytes("in dispute")); inst.finalizeExit();
+        uint256 bRef = inst.bonded(ref); uint256 bOther = inst.bonded(other);
+        disp.timeout(taskId); // the liar did not defend: it is the silent party
+        assertEq(inst.bonded(ref), bRef - SLASH, "slashed although it had asked to exit"); assertEq(inst.disputeHolds(ref), 0, "the verdict releases the hold");
+        disp.slashAgreeing(taskId, other); assertEq(inst.bonded(other), bOther - SLASH, "so is the one that asserted the same digest, off the roster or not");
+        vm.prank(ref); inst.finalizeExit(); // what is left may leave
     }
 
     // ---- guards ----

@@ -139,6 +139,8 @@ interface ITaskMarket {
     event ResultChallenged(bytes32 indexed taskId, address indexed challenger, bytes32 execDigest);
     /// @notice a challenge won: the settled digest is void. The fee it already paid is not clawed back
     event ResultRepudiated(bytes32 indexed taskId, address indexed executor, bytes32 correctDigest);
+    /// @notice a challenge lost; the task can be challenged again (for twice the deposit)
+    event ChallengeFailed(bytes32 indexed taskId, address indexed challenger, address indexed defender);
     function postTask(Task calldata task, bytes32 nonce) external payable returns (bytes32 taskId);
     /// @notice executors = sortition over IInstanceRegistry.eligibleVotes(mepId, epoch); anyone can compute
     function executors(bytes32 taskId) external view returns (address[] memory);

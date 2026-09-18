@@ -399,3 +399,26 @@ execution digests do not.
 - **`Task.initStateRoot`** (was `inputCommit`). It is the state root agreed before step 1 and nothing else; the old name
   invited reading it as a commitment to an input. `TaskMarket.taskInitStateRoot` follows. `abi.encode(task, nonce)` does
   not depend on field names, so task ids are unchanged.
+
+## Standing for a replicator (challenging a settled result)
+
+`TaskMarket.challengeResult` lets somebody who was never sortitioned put up a deposit and a disagreeing result against
+a SETTLED task, which opens the same bisection two disagreeing executors would have run; `onDisputeResolved` is one
+function that branches on `challenger[taskId]`. Four rules keep "one honest replicator is enough" true:
+
+- **The disputed executor is fixed at settle** (`settledRef`), not looked up in `executors()`. That roster is a live view
+  and `requestExit` removes an instance from it at once, while the bond stays slashable for `EXIT_DELAY`.
+- **An open dispute holds both parties' exits** (`InstanceRegistry.disputeHolds`, set by `openDispute`, released by the
+  verdict). A dispute takes a dozen rounds; without the hold a liar that asked to exit when it settled could finalize before
+  the verdict. `setChallengeParams` also requires `window <= EXIT_DELAY`, so a challenge always lands before the exit could.
+- **A lost challenge does not close the task.** Otherwise an accomplice challenges first (or front-runs the honest
+  replicator), throws the game, and the wrong digest is unchallengeable for the price of gas. After a lost challenge the
+  dispute state is forgotten and the task is challengeable again; the clock does not run while a challenge is open; half
+  of a forfeited deposit goes to a sink rather than to the defender (who may be the accomplice's partner); and each further
+  challenge of the same task must deposit twice the last, so keeping a task "in dispute" forever gets exponentially dear
+  while an honest challenger gets its larger deposit back.
+- **The fan-out slash is per executor and permissionless** (`ExecutionDisputes.slashAgreeing`): anyone names an executor
+  whose recorded result equals the repudiated one. It does not iterate a roster inside the resolution.
+
+Still true and deliberate: the fee is not clawed back; a task that settled THROUGH a pre-settlement dispute is not
+challengeable (that bisection showed the winner right only at the first step where the two diverged).
