@@ -82,7 +82,7 @@ contract ReplicatorStandingTest is Test {
     function claimFor(uint256 pk) internal {
         IPoRWClaimManager.Claim memory c = IPoRWClaimManager.Claim({
             mepId: mepId, partialsRoot: keccak256(abi.encode("partials", pk)), coverageBytes: 4096,
-            challenge: cm.epochChallenge(cm.currentEpoch(), mepId), deviceId: bytes32(uint256(uint160(vm.addr(pk))))
+            challenge: cm.epochChallenge(cm.currentEpoch(), mepId)
         });
         cm.submitClaim(c, signed(pk, cm.claimDigest(c)));
     }
@@ -91,7 +91,7 @@ contract ReplicatorStandingTest is Test {
     function postSettled(uint8 redundancy, bytes32 salt) internal returns (bytes32 taskId, address[] memory ex) {
         ITaskMarket.Task memory t = ITaskMarket.Task({
             mepId: mepId, stimulusSeed: FX.STIMULUS_SEED, steps: FX.STEPS, commitStride: FX.STRIDE,
-            inputCommit: FX.TASK_INPUT_COMMIT, fee: FX.TASK_FEE, deadline: FX.TASK_DEADLINE, redundancy: redundancy
+            initStateRoot: FX.TASK_INPUT_COMMIT, fee: FX.TASK_FEE, deadline: FX.TASK_DEADLINE, redundancy: redundancy
         });
         taskId = market.postTask{value: t.fee}(t, salt);
         ex = market.executors(taskId);
@@ -193,6 +193,32 @@ contract ReplicatorStandingTest is Test {
         assertFalse(repudiated, "a failed challenge leaves the result standing");
     }
 
+    // ---- REVIEW: two ways a wrong settled result escapes, pinned as the code behaves today ----
+
+    /// A liar's accomplice challenges first (or front-runs the honest replicator's transaction) and then goes quiet. The
+    /// deposit it forfeits goes to the executor -- its own partner, so the pair loses nothing but gas -- and because a task
+    /// takes ONE challenge ever, the wrong digest can never be challenged again. It stays un-repudiated with the window open.
+    function test_REVIEW_a_thrown_challenge_shields_a_wrong_result_for_good() public {
+        (bytes32 taskId, address[] memory ex) = postSettled(1, "shield"); address liar = ex[0]; address accomplice = address(0xACC0);
+        (ITaskMarket.Result memory ra,,) = FX.resultA0(); vm.deal(accomplice, 1 ether); uint256 pairBefore = liar.balance + accomplice.balance;
+        vm.prank(accomplice); market.challengeResult{value: CHAL_DEPOSIT}(taskId, ra);
+        vm.prank(liar); disp.revealRoots(taskId, FX.actRootsB()); vm.roll(block.number + ROUND + 1); disp.timeout(taskId); // the accomplice never plays
+        assertEq(liar.balance + accomplice.balance, pairBefore, "the deposit moved from one pocket of the pair to the other");
+        assertTrue(block.number <= FX.TASK_EPOCH * FX.EPOCH_BLOCKS + CHAL_WINDOW, "the challenge window is still open");
+        vm.deal(CHAL, 1 ether); vm.prank(CHAL); vm.expectRevert(bytes("task")); market.challengeResult{value: CHAL_DEPOSIT}(taskId, ra); // the honest replicator, with the right answer
+        (,,,,,,,, bool repudiated) = market.tasks(taskId); assertFalse(repudiated, "the wrong digest stands, permanently");
+    }
+
+    /// `challengeResult` finds the executor to dispute through the LIVE roster. `requestExit` takes an instance off that
+    /// roster at once, while its bond stays in the registry for EXIT_DELAY. So liars that settle and immediately ask to exit
+    /// cannot be challenged at all, although everything a slash would take is still there.
+    function test_REVIEW_liars_that_request_exit_cannot_be_challenged() public {
+        (bytes32 taskId, address[] memory ex) = postSettled(2, "exit"); (ITaskMarket.Result memory ra,,) = FX.resultA0();
+        for (uint256 i = 0; i < ex.length; i++) { vm.prank(ex[i]); inst.requestExit(); }
+        assertEq(inst.bonded(ex[0]), 2 ether, "the bond is still in the registry"); assertEq(inst.bonded(ex[1]), 2 ether);
+        vm.deal(CHAL, 1 ether); vm.prank(CHAL); vm.expectRevert(bytes("no eligible instances")); market.challengeResult{value: CHAL_DEPOSIT}(taskId, ra);
+    }
+
     // ---- guards ----
 
     function test_an_executor_cannot_challenge_its_own_task() public {
@@ -235,7 +261,7 @@ contract ReplicatorStandingTest is Test {
     function test_an_unsettled_task_is_settle_s_business_not_a_challenger_s() public {
         ITaskMarket.Task memory t = ITaskMarket.Task({
             mepId: mepId, stimulusSeed: FX.STIMULUS_SEED, steps: FX.STEPS, commitStride: FX.STRIDE,
-            inputCommit: FX.TASK_INPUT_COMMIT, fee: FX.TASK_FEE, deadline: FX.TASK_DEADLINE, redundancy: 1
+            initStateRoot: FX.TASK_INPUT_COMMIT, fee: FX.TASK_FEE, deadline: FX.TASK_DEADLINE, redundancy: 1
         });
         bytes32 taskId = market.postTask{value: t.fee}(t, "g6");
         (ITaskMarket.Result memory ra,,) = FX.resultA0();
