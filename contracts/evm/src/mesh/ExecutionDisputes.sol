@@ -7,7 +7,12 @@ import "./InstanceRegistry.sol";
 import "./TaskMarket.sol";
 import "./LifRowCheck.sol";
 
-/// @notice Interactive execution fraud proof between two executors of the same task:
+/// @notice Interactive execution fraud proof between two parties holding different results for the same task.
+///         Usually both are sortitioned executors that disagreed at `settle`; the second may instead be a
+///         non-executor that bought standing with `TaskMarket.challengeResult` after the task settled. The game
+///         below is identical either way -- it only ever compares two committed execRoots -- and the difference
+///         shows up once, in `_resolve`: a challenger has no bond to slash, so it stakes a deposit instead.
+///         The phases:
 ///   Step   : both reveal actRoots (bound to their execRoot); first differing step s*.
 ///   Neuron : descend both parties' activation trees for s*: each round every party posts the two
 ///            children of its current node (bound by keccak(l||r) == node); the contract follows the
@@ -73,8 +78,14 @@ contract ExecutionDisputes is IExecutionDisputes {
     function open(bytes32, address, address) external payable { revert("use market"); }
     function bisect(bytes32, uint256, bytes32) external pure { revert("use postChildren"); }
 
-    /// @dev a party may act through its delegated session key (the tab's key); state is keyed by the instance
-    function _who(bytes32 taskId) internal view returns (address w) { w = instances.resolve(msg.sender); require(w != address(0) && (w == partyA[taskId] || w == partyB[taskId]), "party"); }
+    /// @dev a party may act through its delegated session key (the tab's key); state is keyed by the instance.
+    ///      The direct branch changes nothing for an instance -- `resolve` already returns a bonded signer
+    ///      unchanged -- and it is what lets a CHALLENGER play: it is not an instance, has no bond and no
+    ///      session key, so `resolve` would give address(0) and it could not post a single round.
+    function _who(bytes32 taskId) internal view returns (address w) {
+        if (msg.sender == partyA[taskId] || msg.sender == partyB[taskId]) return msg.sender;
+        w = instances.resolve(msg.sender); require(w != address(0) && (w == partyA[taskId] || w == partyB[taskId]), "party");
+    }
     function _party(bytes32 taskId) internal view returns (Party storage) { return parties[taskId][_who(taskId)]; }
     function _other(bytes32 taskId, address who) internal view returns (address) { return who == partyA[taskId] ? partyB[taskId] : partyA[taskId]; }
 
@@ -251,9 +262,32 @@ contract ExecutionDisputes is IExecutionDisputes {
         Dispute storage d = disputes[taskId];
         address winner = _other(taskId, loser);
         d.phase = Phase.Resolved; d.loser = loser;
-        instances.slash(loser, SLASH_AMOUNT, winner, "porw:exec-fraud");
+        // A challenger has no bond, so `slash` would be a no-op against it (the registry caps at bonded[inst]).
+        // Its punishment is the deposit, settled by the market.
+        address c = market.challenger(taskId);
+        if (loser != c) {
+            instances.slash(loser, SLASH_AMOUNT, winner, "porw:exec-fraud");
+            if (c != address(0)) _slashAgreeing(taskId, loser, winner); // challenge path only -- see below
+        }
         market.onDisputeResolved(taskId, loser, winner);
         emit DisputeResolved(taskId, loser, winner);
+    }
+
+    /// @dev An executor beaten by a CHALLENGER was not alone: at redundancy > 1 the others settled on the same
+    ///      digest, and a digest proven wrong is wrong for everyone who asserted it. Only reached on the
+    ///      challenge path: where two executors disagreed at `settle`, the market already withholds payment
+    ///      from the losing side, and widening that path's punishment is a separate decision.
+    ///      `executors()` reverts once an epoch's eligible set empties (instances exit), so a stale roster must
+    ///      not be able to brick a resolution -- hence the try/catch. The loser's own slash already happened.
+    function _slashAgreeing(bytes32 taskId, address loser, address winner) internal {
+        (bytes32 dig, bytes32 root) = market.resultOf(taskId, loser);
+        try market.executors(taskId) returns (address[] memory ex) {
+            for (uint256 i = 0; i < ex.length; i++) {
+                if (ex[i] == loser) continue;
+                (bytes32 d2, bytes32 r2) = market.resultOf(taskId, ex[i]);
+                if (d2 == dig && r2 == root) instances.slash(ex[i], SLASH_AMOUNT, winner, "porw:exec-fraud");
+            }
+        } catch {}
     }
 
     // ---- helpers (LE32 leaves, counted keccak Merkle, tree geometry, stimulus rule) ----

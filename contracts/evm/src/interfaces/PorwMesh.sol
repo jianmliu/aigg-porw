@@ -123,11 +123,20 @@ interface ITaskMarket {
     event ResultSubmitted(bytes32 indexed taskId, address indexed executor, bytes32 execDigest);
     event TaskSettled(bytes32 indexed taskId, bytes32 execDigest, address[] executors);
     event DisputeOpened(bytes32 indexed taskId, address a, address b);
+    /// @notice a non-executor put up a deposit and a disagreeing result against a settled task
+    event ResultChallenged(bytes32 indexed taskId, address indexed challenger, bytes32 execDigest);
+    /// @notice a challenge won: the settled digest is void. The fee it already paid is not clawed back
+    event ResultRepudiated(bytes32 indexed taskId, address indexed executor, bytes32 correctDigest);
     function postTask(Task calldata task, bytes32 nonce) external payable returns (bytes32 taskId);
     /// @notice executors = sortition over IInstanceRegistry.eligibleVotes(mepId, epoch); anyone can compute
     function executors(bytes32 taskId) external view returns (address[] memory);
     function submitResult(bytes32 taskId, Result calldata result, bytes calldata signature) external;
     function settle(bytes32 taskId) external;
+    /// @notice anyone who is not an executor may buy standing to dispute a settled result (see the notes on
+    ///         `TaskMarket.challengeResult`); returns nothing, the dispute is opened synchronously
+    function challengeResult(bytes32 taskId, Result calldata result) external payable;
+    /// @notice the challenger of a settled task, or address(0). Also the discriminator resolution branches on
+    function challenger(bytes32 taskId) external view returns (address);
 }
 
 interface IExecutionDisputes {
