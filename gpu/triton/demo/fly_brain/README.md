@@ -137,3 +137,20 @@ TRITON_INTERPRET=1 .venv/bin/python -m demo.fly_brain.run_demo \
 
 Run from `gpu/triton/` (so the `demo` and `porw_sketch` packages resolve), or
 add that directory to `PYTHONPATH`. Exit code is non-zero if any check fails.
+
+## Delta payloads: `flywire_delta.py`
+
+`FLYDELTAv1` (format in `web/porw-browser/delta.js`): an edit list over a released `FLYBRAINv2` payload, bound to the
+base's `model_id`. `diff --base a.bin --target b.bin --out b.delta` builds the delta between two exports, `make --ops
+ops.json` builds one from `[[pre, post, w], ...]` (w = 0 deletes), `apply` rebuilds the target payload byte for byte
+and writes a manifest with the base and result model ids, `info` decodes a delta. `w != 0` sets a record, `w == 0`
+deletes it; neurons are unchanged.
+
+`make2 --base base.bin --seed N --name NAME --out x.delta [--min-syn 5] [--mean-ratio 1.0] [--r-table r.json] [--ops ops.json]`
+writes a **FLYDELTAv2** procedural delta (a synthetic individual: every count resampled with a deterministic integer
+negative-binomial sampler, bit-identical to `web/porw-browser/sample.js`); `apply` works for both versions. Sample from
+a `--min-syn 1` export so individuals can gain connections, and let `min_syn 5` in the delta produce the published graph.
+
+`make3 --base base.bin --parent-a a.delta --parent-b b.delta|base --seed N --name NAME --out c.delta [--granularity
+record|pre|post] [--mut-rate 0.125]` writes a **FLYDELTAv3** same-base cross (the child of two procedural individuals);
+`apply --parents a.delta b.delta [...]` supplies the ancestors by file (matched by keccak id).
