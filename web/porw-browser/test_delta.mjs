@@ -6,7 +6,8 @@ import fs from "node:fs";
 import { synthesizePayloadV2 } from "./synth.js";
 import { decodeHeader } from "./model.js";
 import * as V from "./verify.js";
-import { applyDelta, diffPayloads, decodeDelta, encodeDelta, records, encodePayload, modelIdOf, deltaId } from "./delta.js";
+import { applyDelta, diffPayloads, decodeDelta, encodeDelta, records, encodePayload, modelIdOf, deltaId, encodeDelta2, decodeDelta2, applyDelta2, sampleCounts } from "./delta.js";
+import { nbTable, hash64, lnQ60, expQ256, DEFAULT_R_TABLE } from "./sample.js";
 import { loadKernelFromBytes } from "./porw.js";
 import { PorwNode } from "./node.js";
 let fails = 0; const check = (n, ok) => { console.log((ok ? "  ok   " : "  FAIL ") + n); if (!ok) fails++; };
@@ -44,8 +45,36 @@ const stA = await A.loadModel("synthetic-target", target, { steps: 20, exec: "li
 check("node.loadDelta(base, delta): same model_id, mepId and synapseRoot as loading the target payload", V.eq(stA.modelId, stB.modelId) && V.eq(stA.mep.mepId, stB.mep.mepId) && V.eq(stA.csr.synapseRoot, stB.csr.synapseRoot) && stB.delta && V.eq(stB.delta.baseModelId, mid));
 const rA = await A.challenge(stA.mep.mepId, new Uint8Array(32), { stimulusSeed: 3 }), rB = await B.challenge(stB.mep.mepId, new Uint8Array(32), { stimulusSeed: 3 });
 check("and the same execution digest", V.eq(rA.result.execDigest, rB.result.execDigest));
+
+// ---- FLYDELTAv2: procedural individuals ----
+{
+  const Q60 = 1n << 60n; const near = (a, b, tol) => Math.abs(Number(a) / Number(b) - 1) < tol;
+  check("fixed-point ln(1/2) and exp(ln(1/2)) round trip", near(lnQ60(1n, 2n), -799144290325165978n, 1e-12) && near(expQ256(lnQ60(1n, 2n)), (1n << 256n) / 2n, 1e-9));
+  const t = nbTable(5, 236, 65536); const p0 = Number(t[0]) / 2 ** 64; // NB(mean 5, r 0.92): P(0) = (r/(r+m))^r
+  check(`NB(5, r=236/256) table: P(0) ${p0.toFixed(4)} == (r/(r+m))^r, monotone, ends at 1`, near(p0, Math.pow(0.921875 / 5.921875, 0.921875), 1e-6) && t.every((v, i) => !i || v >= t[i - 1]) && t[t.length - 1] === 2n ** 64n - 1n);
+  const d2 = encodeDelta2({ baseModelId: mid, neurons: n, seed: 7n, name: "synthetic-ind7", baseDA: "gnfd://x/y" }); const D2 = decodeDelta2(d2);
+  check(`v2 delta is ${d2.length} bytes (seed, min_syn 5, ${D2.rTable.length}-row r table, no ops)`, d2.length < 200 && D2.seed === 7n && D2.minSyn === 5 && D2.rTable.length === DEFAULT_R_TABLE.length);
+  const i7 = applyDelta(base, d2), i7b = applyDelta2(base, d2), i8 = applyDelta(base, encodeDelta2({ baseModelId: mid, neurons: n, seed: 8n, name: "synthetic-ind8" }));
+  check("apply is deterministic (same seed twice) and seed-dependent", V.eq(i7, i7b) && !V.eq(i7, i8) && decodeHeader(i7).name === "synthetic-ind7");
+  const rb = records(base), r7 = records(i7); const key = (r) => r.post * n + r.pre; const bm = new Map(rb.map((r) => [key(r), r.w]));
+  check(`individual keeps signs and drops records below min_syn: ${r7.length} of ${rb.length} records kept, all >= 5, signs as base`, r7.every((r) => Math.abs(r.w) >= 5 && Math.sign(r.w) === Math.sign(bm.get(key(r)))) && r7.length < rb.length);
+  const c = sampleCounts(rb, 7n, 65536, DEFAULT_R_TABLE); let sum = 0, sumB = 0; for (let i = 0; i < rb.length; i++) { sum += c[i]; sumB += Math.abs(rb[i].w); }
+  check(`resampled total count within 10% of the base total (${sum} vs ${sumB}): mean ratio 1`, Math.abs(sum / sumB - 1) < 0.1);
+  const one = encodeDelta2({ baseModelId: mid, neurons: n, seed: 7n, name: "m1", minSyn: 1 }); check("min_syn 1 keeps every record with c' >= 1 (more than min_syn 5)", records(applyDelta(base, one)).length > r7.length);
+  const del = r7[0]; const ops2 = encodeDelta2({ baseModelId: mid, neurons: n, seed: 7n, name: "ops", ops: [{ pre: del.pre, post: del.post, w: 0 }, { pre: (del.pre + 1) % n, post: del.post, w: 99 }] }); const ro = records(applyDelta(base, ops2));
+  check("explicit ops apply after sampling: delete + insert honoured, sorted output", !ro.some((r) => r.pre === del.pre && r.post === del.post) && ro.some((r) => r.pre === (del.pre + 1) % n && r.post === del.post && r.w === 99) && ro.every((r, i) => !i || (r.post - ro[i - 1].post) || (r.pre - ro[i - 1].pre) > 0));
+  let absent = { pre: 0, post: 1 }; while (bm.has(key(absent))) absent.pre++; check("a v2 delete of a record the individual lacks is a no-op (lenient)", !throws(() => applyDelta(base, encodeDelta2({ baseModelId: mid, neurons: n, seed: 7n, name: "len", ops: [{ ...absent, w: 0 }] }))));
+  check("v2 rejects a foreign base and a bad r table", throws(() => applyDelta(other, d2), /base model id mismatch/) && throws(() => encodeDelta2({ baseModelId: mid, neurons: n, seed: 1n, name: "x", rTable: [[2, 100]] }), /start at c=1/));
+  const C = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "33".repeat(32) }); const stC = await C.loadDelta(base, d2, { steps: 20, exec: "lif", commitStride: 10 }); const stD = await A.loadModel("synthetic-ind7", i7, { steps: 20, exec: "lif", commitStride: 10 });
+  check("node.loadDelta(base, v2 delta): model_id / mepId of the sampled individual, delta version recorded", V.eq(stC.modelId, stD.modelId) && V.eq(stC.mep.mepId, stD.mep.mepId) && stC.delta.version === 2 && stC.delta.seed === 7n);
+}
+// the real brain, if given: apply(base, python-made v2 delta) must reproduce the python-applied payload byte for byte
+const [basePath2, deltaPath, appliedPath] = process.argv.slice(2);
+if (basePath2 && deltaPath && appliedPath && fs.existsSync(deltaPath) && fs.existsSync(appliedPath)) {
+  const rb = new Uint8Array(fs.readFileSync(basePath2)), rd = new Uint8Array(fs.readFileSync(deltaPath)), ra = new Uint8Array(fs.readFileSync(appliedPath)); const t0 = performance.now(); const out = applyDelta(rb, rd); check(`real brain: v2 delta (${rd.length} B, seed ${decodeDelta2(rd).seed}) reproduces the Python-applied individual byte for byte (${records(out).length} records, ${Math.round(performance.now() - t0)} ms)`, V.eq(out, ra));
+}
 // the real brain, if given
-const [basePath, targetPath] = process.argv.slice(2);
+const [basePath, targetPath] = process.argv.slice(2).length === 2 ? process.argv.slice(2) : [];
 if (basePath && targetPath && fs.existsSync(basePath) && fs.existsSync(targetPath)) {
   const rb = new Uint8Array(fs.readFileSync(basePath)), rt = new Uint8Array(fs.readFileSync(targetPath)); const t0 = performance.now(); const rd = diffPayloads(rb, rt); const t1 = performance.now(); const ra = applyDelta(rb, rd); const t2 = performance.now();
   check(`real brain: ${decodeDelta(rd).ops.length}-op delta (${rd.length} B) reproduces ${targetPath.split("/").pop()} byte for byte (diff ${Math.round(t1 - t0)} ms, apply ${Math.round(t2 - t1)} ms)`, V.eq(ra, rt));
