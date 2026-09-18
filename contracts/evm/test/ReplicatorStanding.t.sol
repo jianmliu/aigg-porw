@@ -102,7 +102,7 @@ contract ReplicatorStandingTest is Test {
             market.submitResult(taskId, rb, signed(pk, market.resultDigest(taskId, rb.execDigest, rb.execRoot)));
         }
         market.settle(taskId);
-        (,,,,, bool settled, bool disputed,) = market.tasks(taskId);
+        (,,,,,, bool settled, bool disputed,) = market.tasks(taskId);
         assertTrue(settled && !disputed, "unanimous: settled without a dispute");
     }
 
@@ -149,7 +149,7 @@ contract ReplicatorStandingTest is Test {
         disp.proveSynapseTerm(taskId, FX.K_STAR, FX.CSR_ROOT, FX.ROW_ROOT, bounds(), chunk(), FX.ACT_PRE, FX.actPreProof());
         assertEq(inst.bonded(ref), bonded - SLASH, "the executor that asserted it is slashed");
         assertEq(CHAL.balance, bal + SLASH + CHAL_DEPOSIT, "the slash and the deposit go to the replicator");
-        (,,,,,,, bool repudiated) = market.tasks(taskId);
+        (,,,,,,,, bool repudiated) = market.tasks(taskId);
         assertTrue(repudiated, "the settled digest stops being citable");
     }
 
@@ -189,7 +189,7 @@ contract ReplicatorStandingTest is Test {
         disp.timeout(taskId);
         assertEq(ref.balance, bal + CHAL_DEPOSIT, "the deposit pays for the defence");
         assertEq(inst.bonded(ref), bonded, "nothing is slashed: a challenger has no bond to take");
-        (,,,,,,, bool repudiated) = market.tasks(taskId);
+        (,,,,,,,, bool repudiated) = market.tasks(taskId);
         assertFalse(repudiated, "a failed challenge leaves the result standing");
     }
 
