@@ -68,7 +68,7 @@ export function wrap(e, memory = e.memory) {
     },
     keccak256: (bytes) => { const length = bytes.length, m = k.mark(); const p = k.put(bytes); const o = k.alloc(32);
       e.porw_keccak256(p, length, o); const r = new Uint8Array(k.u8(o, 32)); k.release(m); return r; },
-    slotSeed: (challenge32, device32) => { const m = k.mark(); const c = k.put(challenge32), d = k.put(device32);
+    slotSeed: (challenge32, instanceWord32) => { const m = k.mark(); const c = k.put(challenge32), d = k.put(instanceWord32); // the kernel hashes two 32-byte words: pass V.instanceWord(address)
       const s = e.porw_slot_seed(c, d) >>> 0; k.release(m); return s; },
     // leaves over a resident buffer (bufPtr) — returns a copy (n*32 bytes)
     weightsLeaves: (bufPtr, nTiles, firstTile) => { const m = k.mark(); const o = k.alloc(nTiles * 32);

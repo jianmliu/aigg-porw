@@ -20,13 +20,13 @@ contract BrowserClaimTest is Test {
         // the contract recomputes the claim hash from the fields — the encoding is pinned here
         bytes32 h = keccak256(abi.encodePacked(
             BrowserClaimFixture.SCHEME_DIGEST, mep, BrowserClaimFixture.MODEL_ID, BrowserClaimFixture.PARTIALS_ROOT, BrowserClaimFixture.COVERAGE_BYTES,
-            BrowserClaimFixture.CHALLENGE, BrowserClaimFixture.DEVICE_ID
+            BrowserClaimFixture.CHALLENGE
         ));
         assertEq(h, BrowserClaimFixture.CLAIM_HASH, "claim hash encoding");
         // EIP-712: domain (chain id, claim manager address) + Claim struct — what the wallet / session key signs
         vm.chainId(BrowserClaimFixture.CHAIN_ID);
         bytes32 ds = PorwEIP712.domainSeparator(BrowserClaimFixture.CLAIM_MANAGER);
-        bytes32 d = PorwEIP712.digest(ds, PorwEIP712.claimStructHash(BrowserClaimFixture.SCHEME_DIGEST, mep, BrowserClaimFixture.MODEL_ID, BrowserClaimFixture.PARTIALS_ROOT, BrowserClaimFixture.COVERAGE_BYTES, BrowserClaimFixture.CHALLENGE, BrowserClaimFixture.DEVICE_ID));
+        bytes32 d = PorwEIP712.digest(ds, PorwEIP712.claimStructHash(BrowserClaimFixture.SCHEME_DIGEST, mep, BrowserClaimFixture.MODEL_ID, BrowserClaimFixture.PARTIALS_ROOT, BrowserClaimFixture.COVERAGE_BYTES, BrowserClaimFixture.CHALLENGE));
         assertEq(d, BrowserClaimFixture.CLAIM_DIGEST, "EIP-712 digest == the node's (hand-coded) == the wallet's (generic typed data)");
         bytes memory sig = BrowserClaimFixture.signature();
         assertEq(sig.length, 65, "sig len");

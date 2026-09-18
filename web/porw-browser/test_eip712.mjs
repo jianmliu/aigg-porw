@@ -12,7 +12,7 @@ import { resultSigningHash } from "./node_service.js";
 let fails = 0; const check = (n, ok) => { console.log((ok ? "  ok   " : "  FAIL ") + n); if (!ok) fails++; };
 const CM = "0x000000000000000000000000000000000000c1a1", MK = "0x000000000000000000000000000000000000b0b0", REG = "0x0000000000000000000000000000000000005e61";
 const domains = { claimManager: E.domain(31337, CM), market: E.domain(31337, MK), registry: E.domain(31337, REG) };
-check("type strings match the Solidity library", E.encodeType("Claim") === "Claim(bytes32 schemeDigest,bytes32 mepId,bytes32 modelId,bytes32 partialsRoot,uint64 coverageBytes,bytes32 challenge,bytes32 deviceId)" && E.encodeType("Delegation") === "Delegation(address instance,address session,uint64 expiry)");
+check("type strings match the Solidity library", E.encodeType("Claim") === "Claim(bytes32 schemeDigest,bytes32 mepId,bytes32 modelId,bytes32 partialsRoot,uint64 coverageBytes,bytes32 challenge)" && E.encodeType("Delegation") === "Delegation(address instance,address session,uint64 expiry)");
 // wallet W (bonded) delegates session key S (the tab's key)
 const W = E.localWallet("0x" + "aa".repeat(32)); const S = keypair("0x" + "11".repeat(32));
 const del = await E.makeDelegation(W, domains.registry, V.hex(S.address), 10000);

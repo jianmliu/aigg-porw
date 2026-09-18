@@ -15,10 +15,10 @@ import { claimFromJson } from "./node_service.js";
 const abiWord = (b) => { const o = new Uint8Array(32); o.set(b, 32 - b.length); return o; };
 const be = (n) => { const o = new Uint8Array(32); let x = BigInt(n); for (let i = 31; i >= 0; i--) { o[i] = Number(x & 255n); x >>= 8n; } return o; };
 const cat = (...p) => { const o = new Uint8Array(p.reduce((s, x) => s + x.length, 0)); let i = 0; for (const x of p) { o.set(x, i); i += x.length; } return o; };
-/** ClaimLeaf hash = keccak(abi.encode(mepId, instance, partialsRoot, coverageBytes, deviceId, keccak(signature))) */
-export const claimLeafHash = (leaf) => keccak_256(cat(leaf.mepId, abiWord(unhex(leaf.instance)), leaf.partialsRoot, be(leaf.coverageBytes), leaf.deviceId, keccak_256(leaf.signature)));
-export const leafOf = (R, instanceHex) => ({ mepId: R.claim.mepId, instance: instanceHex, partialsRoot: R.claim.partialsRoot, coverageBytes: R.claim.coverageBytes, deviceId: R.claim.deviceId, signature: R.signature });
-const leafJson = (l) => ({ mepId: hex(l.mepId), instance: l.instance, partialsRoot: hex(l.partialsRoot), coverageBytes: l.coverageBytes, deviceId: hex(l.deviceId), signature: hex(l.signature) });
+/** ClaimLeaf hash = keccak(abi.encode(mepId, instance, partialsRoot, coverageBytes, keccak(signature))) */
+export const claimLeafHash = (leaf) => keccak_256(cat(leaf.mepId, abiWord(unhex(leaf.instance)), leaf.partialsRoot, be(leaf.coverageBytes), keccak_256(leaf.signature)));
+export const leafOf = (R, instanceHex) => ({ mepId: R.claim.mepId, instance: instanceHex, partialsRoot: R.claim.partialsRoot, coverageBytes: R.claim.coverageBytes, signature: R.signature });
+const leafJson = (l) => ({ mepId: hex(l.mepId), instance: l.instance, partialsRoot: hex(l.partialsRoot), coverageBytes: l.coverageBytes, signature: hex(l.signature) });
 
 /** One tree per epoch over the claims collected by several per-MEP aggregators. Leaves sorted by (mepId, instance). */
 export class EpochTree {
@@ -67,6 +67,6 @@ export class Aggregator {
 /** instance side: verify a received proof against the posted root before spending gas on materializeClaim */
 export function verifyClaimProof(p, expectedRootHex) {
   if (expectedRootHex && p.root.toLowerCase() !== expectedRootHex.toLowerCase()) return false;
-  const leaf = claimLeafHash({ ...p.leaf, mepId: unhex(p.leaf.mepId), partialsRoot: unhex(p.leaf.partialsRoot), deviceId: unhex(p.leaf.deviceId), signature: unhex(p.leaf.signature) });
+  const leaf = claimLeafHash({ ...p.leaf, mepId: unhex(p.leaf.mepId), partialsRoot: unhex(p.leaf.partialsRoot), signature: unhex(p.leaf.signature) });
   return V.merkleVerifyCounted(unhex(p.root), leaf, p.index, p.count, p.proof.map(unhex));
 }

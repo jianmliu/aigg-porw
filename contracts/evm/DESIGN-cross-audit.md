@@ -33,7 +33,7 @@ MEP, stake-gated (opening a thousand tabs is free; a bond is not).
 |---|---|---|
 | `model_id` | weights Merkle root (keccak leaves `LE64 tile ‖ tile`) | `commit_wasm.c`, fixture-locked |
 | `mep_id` | `(bytes32 schemeDigest, bytes32 modelId, bytes32 execKind, uint32 neurons, uint32 synapses, bytes32 synapseRoot)` — every field a function of the model bytes, so anyone derives the same id and registration is not a race; **no run parameters**, so one brain is one residency set | `mep.js`; `BrowserClaim.t.sol` |
-| residency claim | `(schemeDigest, mepId, modelId, partialsRoot, uint64 coverageBytes, challenge, deviceId)` — residency only; the raw keccak is the off-chain identifier, the on-chain signature is the **EIP-712** `Claim` digest (§3a), `ecrecover` | `claim.js`; `BrowserClaim.t.sol` |
+| residency claim | `(schemeDigest, mepId, modelId, partialsRoot, uint64 coverageBytes, challenge)` — residency only; the raw keccak is the off-chain identifier, the on-chain signature is the **EIP-712** `Claim` digest (§3a), `ecrecover` | `claim.js`; `BrowserClaim.t.sol` |
 | tile opening | `(tileIdx, tile[4096], s_tile, partialsIndex, partialsProof[], weightsProof[])` | `node.js` → `verifyTileFraudProofKeccak` |
 | execution result | `execDigest = keccak(act_final as LE u32[])`; `execRoot = merkle([actRoot[1..steps]])` with `actRoot[s]` over leaves `keccak(LE32 i ‖ LE32 act_s[i])` (§5) | `spmv_wasm.c`, `dispute_wasm.c`, `node.js` |
 | CSR commitments (per model) | `csrRoot` over chunk leaves `keccak(LE32 c ‖ 64 post-sorted records)`, `rowRoot` over `keccak(LE32 i ‖ LE32 rowStart[i])` (n+1 leaves), `synapseRoot = keccak(csrRoot ‖ rowRoot)` | `dispute_wasm.c`, `node.js`, `verify.js` |
@@ -71,14 +71,14 @@ deployable, but each owns its state.
   manager / disputes. Eligibility for epoch `e` = bonded ∧ has an unchallenged (or
   successfully defended) residency claim for `e−1` on that MEP.
 - **`IPoRWClaimManager`** — `submitClaim(claim, sig)` per (instance, MEP, epoch):
-  stores `partialsRoot`, `coverageBytes`, `deviceId`; `challengeOpening(claimId,
+  stores a commitment to `partialsRoot`, `coverageBytes`; `challengeOpening(claimId,
   tileIdx)` with a deposit opens a window `OPENING_WINDOW`; the instance answers
   `respondOpening(...)`, verified by `PorwVerifier.verifyTileFraudProofKeccak`
   (Fraud ⇒ slash + pay challenger; NoFraud ⇒ challenger's deposit to instance;
   timeout ⇒ treated as fraud). The honest path is **off-chain**: beacon-selected
   auditors (§4) sample openings directly from the node and only escalate on-chain
   when a check fails, so per-epoch on-chain cost is one claim tx per (instance, MEP).
-- **`ITaskMarket`** — `postTask(mepId, stimulusSeed, steps, commitStride, inputCommit, fee, deadline, redundancy)`, with `1 ≤ commitStride ≤ steps` and every dispute round bounded by `MAX_ROOTS` (int-lif: `ceil(steps/commitStride)` and `commitStride`; int-spmv-q16: `steps`), so the honest party can always post;
+- **`ITaskMarket`** — `postTask(mepId, stimulusSeed, steps, commitStride, initStateRoot, fee, deadline, redundancy)`, with `1 ≤ commitStride ≤ steps` and every dispute round bounded by `MAX_ROOTS` (int-lif: `ceil(steps/commitStride)` and `commitStride`; int-spmv-q16: `steps`), so the honest party can always post;
   executors are the sortition set (§4); each submits `submitResult(taskId,
   execDigest, execRoot, sig)`. `settle(taskId)`: all `r` agree ⇒ pay from `fee` and
   the epoch budget, record the fact (`TaskSettled`); any disagreement ⇒
@@ -89,7 +89,7 @@ deployable, but each owns its state.
   chains where one claim tx per instance per epoch is too expensive (BSC), an
   **untrusted aggregator** (`web/porw-browser/aggregator.js`) collects the epoch's
   signed claims over the relay, verifies each, builds one Merkle tree (leaves
-  `keccak(abi.encode(instance, partialsRoot, coverageBytes, deviceId, keccak(sig)))`,
+  `keccak(abi.encode(mepId, instance, partialsRoot, coverageBytes, keccak(sig)))`,
   sorted by instance) and posts one root per (MEP, epoch).
   An instance fetches its inclusion proof over the relay (`claim-proof-request`) and
   `materializeClaim`s only when it needs on-chain eligibility (it wants tasks that epoch)
@@ -107,7 +107,7 @@ Claims and results are typed data (`PorwEIP712.sol`, `web/porw-browser/eip712.js
 `{name "PoRW Mesh", version "1", chainId, verifyingContract}` (the claim manager for
 `Claim`, the task market for `Result`, the instance registry for `Delegation`), structs
 `Claim(bytes32 schemeDigest,bytes32 mepId,bytes32 modelId,bytes32 partialsRoot,uint64
-coverageBytes,bytes32 challenge,bytes32 deviceId)`,
+coverageBytes,bytes32 challenge)`,
 `Result(bytes32 taskId,bytes32 execDigest,bytes32 execRoot)`,
 `Delegation(address instance,address session,uint64 expiry)`. Signatures are low-s only.
 
@@ -269,7 +269,7 @@ the real connectome, so a second execution kind is implemented end to end
   instead of a clamp.
 - **Task input**: a stimulus set (sorted neuron ids) ⇒ `state_0` (flags only) ⇒
   `initStateRoot`, which anyone derives from the ids and the task carries as
-  `inputCommit`. Residency claims use the canonical set (`fmix32(i·G + seed) % 1000 == 0`).
+  `initStateRoot`. Residency claims use the canonical set (`fmix32(i·G + seed) % 1000 == 0`).
 - **Commitments**: state roots every `stride` steps and at the last step (segment
   roots); `execRoot = merkle(segmentRoots)`; `execDigest = keccak(LE32 n ‖ spike counts)`.
   Per-step trees are *not* committed: on dispute the parties reveal the per-step roots
@@ -286,7 +286,7 @@ the real connectome, so a second execution kind is implemented end to end
 - **On-chain dispatch (implemented, `test/MeshLif.t.sol` on fixtures from real node runs
   via `export_lif_fixtures.mjs`)**: `ExecutionDisputes.openDispute` reads `MEP.execKind`;
   for the LIF kind it takes `stride = MEP.clampQ16`, `segments = ⌈steps/stride⌉` and
-  `initStateRoot = Task.inputCommit`. Phases: `Step` (segment roots bound to `execRoot`)
+  `initStateRoot = Task.initStateRoot`. Phases: `Step` (segment roots bound to `execRoot`)
   → **`Refine`** (`postStepRoots`: the per-step roots of the first differing segment;
   the chain must end at the party's committed segment root, the previous segment root
   or `initStateRoot` is agreed; a chain of the wrong length or end is rejected as
@@ -349,15 +349,15 @@ Eligibility in epoch `e` needs an on-chain claim for `e-1`, per instance, per ME
 standing cost is `instances x brains x epochs`. Two changes take most of it away without touching the claim, its
 signature or the verdicts:
 
-- **A claim on-chain is one word.** `claimRecord[claimId] = keccak(partialsRoot, coverageBytes, deviceId)` with the
+- **A claim on-chain is one word.** `claimRecord[claimId] = keccak(partialsRoot, coverageBytes)` with the
   validity flag in bit 0; eligibility reads that word. The contents are emitted (`ClaimData`) instead of stored. A
-  challenger passes them back to `challengeOpening(instance, mepId, epoch, partialsRoot, coverageBytes, deviceId,
+  challenger passes them back to `challengeOpening(instance, mepId, epoch, partialsRoot, coverageBytes,
   tile)`, which checks them against the commitment and only then writes them down for `respondOpening` — so the
   storage a verdict needs is paid once, by the challenger, on the rare path, not by every claim. Data availability of
   the contents is the event log, not the aggregator. `MEPRegistry.claimBinding` returns the two fields a claim is
   signed over instead of copying the whole profile (with its dynamic `weightsDA`) out of storage.
 - **One root per epoch, not per MEP.** The leaf is `keccak(abi.encode(mepId, instance, partialsRoot, coverageBytes,
-  deviceId, keccak(signature)))` and `postEpochRoot(epoch, root, count)` is keyed by `(epoch, aggregator)`. The root is
+  keccak(signature)))` and `postEpochRoot(epoch, root, count)` is keyed by `(epoch, aggregator)`. The root is
   as untrusted as before: a leaf for an unknown MEP, an unbonded instance or a bad signature cannot be materialized, and
   a leaf presented under another MEP does not hash to the tree. JS: `aggregator.js` `EpochTree`.
 
@@ -376,3 +376,21 @@ longer window gives up is how often residency is proven, not what is paid for: e
 and disputes, so an instance that dropped the model inside its window times out on its task rather than getting a wrong
 result paid. Two semantics changed with it and are deliberate: a claim for the current epoch counts (it is fresher than
 one for the previous epoch), and a fraud verdict ends the instance's standing for the whole window, not for one epoch.
+
+## Shape fixes before anything is deployed (2026-09)
+
+- **No `deviceId`.** It was self-declared, its only live function was to vary the sketch seed, and it proved nothing a
+  claim does not already fix: there is one claim per `(instance, MEP, epoch)`. The seed is now
+  `deriveSlotSeed(challenge, instance)` = the first four bytes (LE) of `keccak256(abi.encode(challenge, instance))`, where
+  `instance` is the bonded wallet the claim *resolves* to (the signer, or the wallet that delegated the session key). The
+  field is gone from `Claim`, the EIP-712 type, the aggregated leaf, the stored commitment, `ClaimData`,
+  `challengeOpening` and the tile fraud proof's arguments. A field whose only lawful value follows from another field is
+  dead weight, and keeping it behind a `require` would have preserved the wrong shape. N identities cost N scans.
+  (The wasm kernel is unchanged: it hashes two 32-byte words, and the second is now the address left-padded.)
+- **`InstanceRegistry.bondFor(instance, mepIds)`**, which `bond()` now calls. A payer can only increase someone's bond;
+  exit and withdrawal stay the instance's own calls. It is what lets a mint fund its minter's stake in one transaction and a
+  breeder endow a child's owner. Enrolling *another* instance into a MEP takes at least one `UNIT`, because enrolment
+  grows the list every sortition walks and that should cost a real bond (which the enrolled instance keeps).
+- **`Task.initStateRoot`** (was `inputCommit`). It is the state root agreed before step 1 and nothing else; the old name
+  invited reading it as a commitment to an input. `TaskMarket.taskInitStateRoot` follows. `abi.encode(task, nonce)` does
+  not depend on field names, so task ids are unchanged.

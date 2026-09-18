@@ -23,7 +23,7 @@ import "./LifRowCheck.sol";
 ///   int-lif      : segment state roots every `stride` = Task.commitStride steps -> Refine phase (per-step roots of
 ///                  the first differing segment, bound to the committed segment root) -> state-tree bisection ->
 ///                  row = LifRowCheck.transition(state_{s-1}[i], last signed sum) -> term = w(int16) * spiked(pre).
-///                  The agreed root before step 1 is the task's inputCommit (initStateRoot).
+///                  The agreed root before step 1 is the task's initStateRoot.
 contract ExecutionDisputes is IExecutionDisputes {
     uint64 public immutable ROUND_BLOCKS;
     uint256 public immutable SLASH_AMOUNT;
@@ -63,7 +63,7 @@ contract ExecutionDisputes is IExecutionDisputes {
         d.phase = Phase.Step; d.exists = true; d.deadline = uint64(block.number) + ROUND_BLOCKS;
         if (m.execKind == LifRowCheck.execKind()) {
             LifDispute storage ld = lifs[taskId];
-            ld.lif = true; ld.stride = stride; ld.segments = (steps + stride - 1) / stride; ld.initStateRoot = market.taskInput(taskId);
+            ld.lif = true; ld.stride = stride; ld.segments = (steps + stride - 1) / stride; ld.initStateRoot = market.taskInitStateRoot(taskId);
         }
         partyA[taskId] = a; partyB[taskId] = b;
         (, parties[taskId][a].execRoot) = market.resultOf(taskId, a);

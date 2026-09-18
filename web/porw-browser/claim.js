@@ -7,7 +7,7 @@
 //
 // claimHash = keccak256(abi.encodePacked(
 //   bytes32 schemeDigest, bytes32 mepId, bytes32 modelId, bytes32 partialsRoot, uint64 coverageBytes,
-//   bytes32 challenge, bytes32 deviceId))
+//   bytes32 challenge))
 // Signed raw (no EIP-191) in this PoC; a wallet deployment signs the same struct via EIP-712.
 import * as secp from "@noble/secp256k1";
 import { keccak_256 } from "@noble/hashes/sha3.js";
@@ -20,7 +20,7 @@ const be64 = (n) => { const b = new Uint8Array(8); new DataView(b.buffer).setBig
 const cat = (...p) => { const o = new Uint8Array(p.reduce((s, x) => s + x.length, 0)); let i = 0; for (const x of p) { o.set(x, i); i += x.length; } return o; };
 
 export function encodeClaim(c) {
-  return cat(c.schemeDigest, c.mepId, c.modelId, c.partialsRoot, be64(c.coverageBytes), c.challenge, c.deviceId);
+  return cat(c.schemeDigest, c.mepId, c.modelId, c.partialsRoot, be64(c.coverageBytes), c.challenge);
 }
 export const claimHash = (c) => keccak_256(encodeClaim(c));
 

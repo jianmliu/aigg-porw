@@ -68,14 +68,23 @@ contract InstanceRegistry is IInstanceRegistry {
     function setClaimManager(address cm, uint64 validityEpochs) public { require(msg.sender == owner && claimManager == address(0), "set"); require(validityEpochs >= 1 && validityEpochs <= 64, "validity"); claimManager = cm; slasher[cm] = true; claimValidityEpochs = validityEpochs; }
     function setSlasher(address s, bool ok) external { require(msg.sender == owner, "owner"); slasher[s] = ok; }
 
-    function bond(bytes32[] calldata mepIds) external payable {
-        require(msg.value > 0, "bond");
-        require(exitAt[msg.sender] == 0, "exiting");
-        bonded[msg.sender] += msg.value;
+    function bond(bytes32[] calldata mepIds) external payable { bondFor(msg.sender, mepIds); }
+
+    /// @notice add `msg.value` to `instance`'s bond and enrol it for `mepIds`. Anyone may pay: a payer can only INCREASE a
+    ///         bond -- requestExit / finalizeExit are the instance's own calls, and the money is the instance's from here on.
+    ///         That is what lets a mint fund its minter's stake in one transaction, and a breeder endow a child's owner.
+    ///         Enrolling someone else costs at least one UNIT: enrolment appends to the per-MEP list every sortition walks,
+    ///         and the price of growing it on another's behalf should be a real bond (which the enrolled instance keeps).
+    function bondFor(address instance, bytes32[] calldata mepIds) public payable {
+        require(msg.value > 0 && instance != address(0), "bond");
+        require(exitAt[instance] == 0, "exiting");
+        require(instance == msg.sender || mepIds.length == 0 || msg.value >= UNIT, "enrolling another instance takes a UNIT");
+        bonded[instance] += msg.value;
         for (uint256 i = 0; i < mepIds.length; i++) {
-            if (!inMep[mepIds[i]][msg.sender]) { inMep[mepIds[i]][msg.sender] = true; instancesOf[mepIds[i]].push(msg.sender); }
-            emit Bonded(msg.sender, mepIds[i], msg.value);
+            if (!inMep[mepIds[i]][instance]) { inMep[mepIds[i]][instance] = true; instancesOf[mepIds[i]].push(instance); }
+            emit Bonded(instance, mepIds[i], msg.value);
         }
+        if (mepIds.length == 0) emit Bonded(instance, bytes32(0), msg.value);
     }
 
     function requestExit() external { require(bonded[msg.sender] > 0 && exitAt[msg.sender] == 0, "exit"); exitAt[msg.sender] = uint64(block.number) + EXIT_DELAY; emit ExitRequested(msg.sender, exitAt[msg.sender]); }
