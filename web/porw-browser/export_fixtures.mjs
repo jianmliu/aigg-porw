@@ -12,7 +12,7 @@ import * as D from "./dispute.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import * as E from "./eip712.js";
 import { claimLeafHash, leafOf } from "./aggregator.js";
-import { taskId as swarmTaskId } from "./swarm.js";
+import { taskId as swarmTaskId, assignSortition } from "./swarm.js";
 import { domains, walletAndSession, CHAIN_ID, CM_ADDR, MK_ADDR, REG_ADDR, DELEGATION_EXPIRY } from "./export_fixtures_common.js";
 
 const [out, epochBlocksArg, epochArg, prevrandaoArg] = process.argv.slice(2);
@@ -50,17 +50,18 @@ const opening = (nd, r, t) => { const o = nd.open(mepId, t); return { tileIdx: o
 const claimJson = (r) => { const c = r.claim; return { mepId: H(c.mepId), partialsRoot: H(c.partialsRoot), coverageBytes: c.coverageBytes, challenge: H(c.challenge), signature: H(r.signature), signer: H(r.address), digest: H(r.digest), instance: r.delegation.instance }; };
 
 // --- task results signed by A and B: resultHash = keccak("porw-result" || taskId || execDigest || execRoot) ---
-// The sortition key is the task id, and the id now covers the whole task -- so the nonces that used to put A
-// and B on every task no longer do. Pick nonces that do, using the contract's own rule over the test's vote
-// list (A, B, L each bonded 2 UNIT -> weight 2), so the fixture's A/B result signatures stay usable.
+// The sortition key is the task id, and the id covers the whole task -- so nonces have to be FOUND that put A and B
+// on the task, using the contract's own rule (TaskMarket._draw / InstanceRegistry.sortitionPick): draw j hashes to h;
+// the low 128 bits pick an ENROLLED instance (the test bonds A, B, L in that order, 2 UNIT each), the high 128 bits
+// accept it with probability weight / weightCap (2 / 2 here: always), and it must be eligible (all three are).
 // tasks are posted in the NEXT epoch (eligibility reads the previous epoch's claims), so the sortition
 // beacon is that epoch's, not the claim epoch's -- these two pin what the Solidity test rolls to.
 const TASK_EPOCH = EPOCH + 1, TASK_PREVRANDAO = 7n;
 const taskBeacon = keccak_256(cat(be256(TASK_PREVRANDAO), be256(TASK_EPOCH * EPOCH_BLOCKS)));
-const VOTES = [A.ws.wallet.address, A.ws.wallet.address, B.ws.wallet.address, B.ws.wallet.address, L0.ws.wallet.address, L0.ws.wallet.address].map((a) => a.toLowerCase());
-const executorsOf = (tid) => { const out = []; for (let j = 0; out.length < TASK.redundancy && j < 64 * TASK.redundancy; j++) {
-  const h = keccak_256(cat(taskBeacon, mepId, tid, be32(j))); let x = 0n; for (const b of h) x = (x << 8n) | BigInt(b);
-  const c = VOTES[Number(x % BigInt(VOTES.length))]; if (!out.includes(c)) out.push(c); } return out; };
+const ENROLLED = [A, B, L0].map((P) => ({ address: P.ws.wallet.address.toLowerCase(), weight: 2, eligible: true }));
+// swarm.js's assignSortition IS the mirror of the contract's rule; using it here means the Solidity test, which posts
+// these nonces and asserts that the chain drew A and B, is a test of that mirror against the chain.
+const executorsOf = (tid) => assignSortition(taskBeacon, mepId, tid, ENROLLED, TASK.redundancy, { cap: 2 }).executors.map((i) => i.address);
 const wantAB = (tid) => { const e = executorsOf(tid); return e.length === 2 && e.includes(A.ws.wallet.address.toLowerCase()) && e.includes(B.ws.wallet.address.toLowerCase()); };
 const nonces = []; for (let v = 0; v < 256 && nonces.length < 3; v++) { const nc = new Uint8Array(32).fill(v); if (wantAB(swarmTaskId({ ...TASK, mepId }, nc))) nonces.push(nc); }
 if (nonces.length < 3) throw new Error("no nonce puts A and B on the task");

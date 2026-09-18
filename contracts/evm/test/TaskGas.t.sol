@@ -74,11 +74,12 @@ contract TaskGas is Test {
         assertGt(r2, r1); assertGt(r3, r2); assertGt(t2, r2 - 5000, "terms cost at most a few thousand gas");
     }
 
-    /// The same task with more instances enrolled for the brain. `executors()` rebuilds the stake-weighted vote list from
-    /// every enrolled instance, and both `submitResult` and `settle` call it, so the cost of a task is linear in how many
-    /// nodes host the brain -- the opposite of what a network wants. Measured here so the slope is a number.
-    function test_gas_of_one_task_grows_with_the_instances_enrolled() public {
+    /// The same task with ten times the instances enrolled for the brain. It used to cost 2,358,050 against 864,187:
+    /// `executors()` rebuilt the vote list from every enrolled instance and the market called it three times per task,
+    /// about 55,000 gas per enrolled instance per task. A draw is constant time now and the roster is stored at post, so
+    /// the two totals must be close -- what is left is cold storage for instances the draws happen to land on.
+    function test_gas_of_one_task_does_not_grow_with_the_instances_enrolled() public {
         enrol(30); uint256 t30 = one(plainId, 2, "redundancy 2, 30 instances enrolled");
-        assertGt(t30, 1000000, "with --isolate: 2.36M against 0.86M with 3 enrolled, about 55,000 gas per enrolled instance per task"); // (without --isolate storage is warm and both are lower)
+        assertLt(t30, 1000000, "a task's cost no longer scales with how many nodes host the brain");
     }
 }

@@ -8,7 +8,7 @@ browser fly-brain instances. Interfaces in `../interfaces/PorwMesh.sol`.
 | `MEPRegistry` | append-only Model Execution Profiles (`mep_id` computed on-chain; immutable) |
 | `InstanceRegistry` | bonds (native asset), exit delay, slashing (settlement contracts only), stake-weighted eligible votes |
 | `PoRWClaimManager` | epoch beacon, `ecrecover`'d residency claims, opening challenges adjudicated by `PorwVerifierKeccak`, deposits, timeouts |
-| `TaskMarket` | tasks, index sortition of executors, signed results, unanimous settlement or dispute, payout |
+| `TaskMarket` | tasks (single and batched), executors drawn in constant time when the task is posted and fixed from then on, signed results, settlement on the execution root or a dispute, payout |
 | `ExecutionDisputes` | interactive execution fraud proof: roots → children rounds → row → single synapse term; timeouts |
 
 Wiring (see `test/Mesh.t.sol` `setUp`): deploy `PorwVerifierKeccak`, `MEPRegistry`,
@@ -24,6 +24,5 @@ the JSON for humans and the **typed Solidity libraries** the tests use
 `fs_permissions` is needed and the release-pinned `foundry.toml` stays untouched.
 
 Pilot simplifications, stated: the beacon is `keccak(prevrandao, blockNumber)` recorded
-once per epoch (production: PoT randomness / VRF); `eligibleVotes` and `executors`
-iterate the instance list (bounded pilot populations); rows up to `MAX_IN_DEGREE`
+once per epoch (production: PoT randomness / VRF); rows up to `MAX_IN_DEGREE`
 are posted whole (larger rows would need sum bisection); full-coverage claims only.

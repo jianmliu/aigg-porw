@@ -79,9 +79,10 @@ contract InstanceRegistry is IInstanceRegistry {
         require(msg.value > 0 && instance != address(0), "bond");
         require(exitAt[instance] == 0, "exiting");
         require(instance == msg.sender || mepIds.length == 0 || msg.value >= UNIT, "enrolling another instance takes a UNIT");
-        bonded[instance] += msg.value;
+        bonded[instance] += msg.value; uint256 w = weightOf(instance);
         for (uint256 i = 0; i < mepIds.length; i++) {
             if (!inMep[mepIds[i]][instance]) { inMep[mepIds[i]][instance] = true; instancesOf[mepIds[i]].push(instance); }
+            if (w > weightCap[mepIds[i]]) weightCap[mepIds[i]] = w; // see sortitionPick
             emit Bonded(instance, mepIds[i], msg.value);
         }
         if (mepIds.length == 0) emit Bonded(instance, bytes32(0), msg.value);
@@ -117,7 +118,28 @@ contract InstanceRegistry is IInstanceRegistry {
         return last != 0 && last - 1 + claimValidityEpochs >= epoch;
     }
 
-    /// @notice stake-weighted vote list for sortition (each eligible instance repeated weight times)
+    /// @notice the largest weight anybody has had when bonding for this MEP. It only grows, and it is the denominator of
+    ///         the acceptance test below: with every instance at one UNIT it is 1 and every draw is accepted.
+    mapping(bytes32 => uint256) public weightCap;
+    function enrolled(bytes32 mepId) external view returns (uint256) { return instancesOf[mepId].length; }
+
+    /// @notice One draw of the stake-weighted sortition, in constant time. `h` is the sortition hash: its low half picks
+    ///         an ENROLLED instance uniformly (index below `len`, the enrolment count the task fixed when it was posted
+    ///         -- the list is append-only, so later enrolments cannot move anybody), its high half accepts it with
+    ///         probability weight / weightCap, and it must be eligible for `epoch`. Returns address(0) for a miss. Over
+    ///         repeated draws an instance is chosen in proportion to its weight among the eligible ones, which is what
+    ///         walking `eligibleVotes` gave -- but that walk read every enrolled instance, on every call, and the market
+    ///         made it three times per task: about 55,000 gas per enrolled instance per task (test/TaskGas.t.sol).
+    ///         An instance that tops up WITHOUT naming the MEP does not raise the cap, so it is drawn at the cap's
+    ///         weight rather than its own: never more than its stake, and naming the MEP once corrects it.
+    function sortitionPick(bytes32 mepId, uint64 epoch, uint256 len, uint256 h) external view returns (address cand) {
+        cand = instancesOf[mepId][uint128(h) % len];
+        uint256 cap = weightCap[mepId];
+        if (cap == 0 || (h >> 128) % cap >= weightOf(cand) || !isEligible(cand, mepId, epoch)) return address(0);
+    }
+
+    /// @notice stake-weighted vote list (each eligible instance repeated weight times). A view for clients and tests: it
+    ///         reads every enrolled instance, which is why the market no longer draws from it.
     function eligibleVotes(bytes32 mepId, uint64 epoch) external view returns (address[] memory votes) {
         address[] storage all = instancesOf[mepId];
         uint256 total = 0;

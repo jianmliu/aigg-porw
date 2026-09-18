@@ -238,8 +238,8 @@ contract ReplicatorStandingTest is Test {
     function test_liars_that_request_exit_are_still_challenged_and_slashed() public {
         (bytes32 taskId, address[] memory ex) = postSettled(2, "exit"); address ref = market.settledRef(taskId); address other = ref == ex[0] ? ex[1] : ex[0];
         for (uint256 i = 0; i < ex.length; i++) { vm.prank(ex[i]); inst.requestExit(); }
-        vm.expectRevert(bytes("no eligible instances")); market.executors(taskId); // the live roster is empty ...
-        (ITaskMarket.Result memory ra,,) = FX.resultA0(); vm.deal(CHAL, 1 ether); vm.prank(CHAL); market.challengeResult{value: CHAL_DEPOSIT}(taskId, ra); // ... and it no longer matters
+        assertEq(market.executors(taskId).length, 2, "the roster was drawn when the task was posted: asking to exit does not take anybody off it");
+        (ITaskMarket.Result memory ra,,) = FX.resultA0(); vm.deal(CHAL, 1 ether); vm.prank(CHAL); market.challengeResult{value: CHAL_DEPOSIT}(taskId, ra);
         vm.prank(CHAL); disp.revealRoots(taskId, FX.actRootsA()); // the replicator plays; the liar, on its way out, does not
         vm.roll(block.number + 21); // past EXIT_DELAY: without the hold the disputed liar would walk out now, bond and all
         vm.prank(ref); vm.expectRevert(bytes("in dispute")); inst.finalizeExit();

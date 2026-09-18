@@ -35,21 +35,25 @@ export function assign(beacon, mepId, taskId, instances, r) {
 }
 
 /**
- * On-chain-friendly rule (the one the settlement contract implements, O(r) reads):
- *   executor_j = eligibleVotes[ keccak(beacon ‖ mepId ‖ taskId ‖ j) mod |eligibleVotes| ]
- * where eligibleVotes lists each eligible instance `weight` times (stake-weighted sortition),
- * skipping already-chosen instances. The mesh and the contract MUST use the same rule; this
- * is the default. `assign` (rendezvous hashing) is kept as the off-chain-only alternative.
+ * The rule the settlement contract implements (TaskMarket._draw / InstanceRegistry.sortitionPick), in constant time per
+ * draw: for j = 0, 1, ... let h = keccak(beacon ‖ mepId ‖ taskId ‖ be32(j)) as a 256-bit integer. Its LOW 128 bits pick
+ * an ENROLLED instance uniformly -- `instances` is the MEP's enrolment list, in enrolment order, eligible or not -- and
+ * its HIGH 128 bits accept it with probability weight / cap; it must be eligible, and not chosen already. At most
+ * 64·r draws. `cap` is the chain's `weightCap(mepId)`: the largest weight anybody bonded with while naming the MEP
+ * (default: the largest weight in `instances`). Over repeated draws an instance is chosen in proportion to its weight
+ * among the eligible ones, which is what walking a vote list gave; the walk read every enrolled instance.
+ * The mesh and the contract MUST use the same rule; `assign` (rendezvous hashing) is the off-chain-only alternative.
  */
-export function assignSortition(beacon, mepId, taskId, instances, r) {
-  const votes = []; for (const i of instances) if (i.eligible && i.weight > 0) for (let v = 0; v < i.weight; v++) votes.push(i);
-  const chosen = [], seen = new Set();
-  for (let j = 0; chosen.length < Math.min(r, new Set(votes).size); j++) {
-    const h = keccak_256(cat(beacon, mepId, taskId, be32(j)));
-    const i = votes[Number(u64(h) % BigInt(votes.length))]; const key = Array.from(i.address).join(",");
-    if (!seen.has(key)) { seen.add(key); chosen.push(i); }
+export function assignSortition(beacon, mepId, taskId, instances, r, { cap } = {}) {
+  const len = BigInt(instances.length); const c = BigInt(cap ?? instances.reduce((m, i) => Math.max(m, i.weight), 0));
+  const chosen = [], seen = new Set(); const LOW = (1n << 128n) - 1n;
+  for (let j = 0; len > 0n && c > 0n && chosen.length < r && j < 64 * r; j++) {
+    const hb = keccak_256(cat(beacon, mepId, taskId, be32(j))); let h = 0n; for (const x of hb) h = (h << 8n) | BigInt(x);
+    const i = instances[Number((h & LOW) % len)];
+    if ((h >> 128n) % c >= BigInt(i.weight) || !i.eligible) continue;
+    const key = Array.from(i.address).join(","); if (!seen.has(key)) { seen.add(key); chosen.push(i); }
   }
-  const backups = [...new Set(votes)].filter((i) => !seen.has(Array.from(i.address).join(",")));
+  const backups = instances.filter((i) => i.eligible && i.weight > 0 && !seen.has(Array.from(i.address).join(",")));
   return { executors: chosen, backups };
 }
 
