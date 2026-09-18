@@ -321,8 +321,8 @@ contract ExecutionDisputes is IExecutionDisputes {
         address beaten = market.repudiatedExecutor(taskId); require(beaten != address(0), "not repudiated");
         require(executor != beaten && market.submitted(taskId, executor), "not an agreeing executor"); // the beaten one paid already
         require(!agreeingSlashed[taskId][executor], "slashed");
-        (bytes32 dig, bytes32 root) = market.resultOf(taskId, beaten); (bytes32 d2, bytes32 r2) = market.resultOf(taskId, executor);
-        require(d2 == dig && r2 == root, "another result");
+        (, bytes32 root) = market.resultOf(taskId, beaten); (, bytes32 r2) = market.resultOf(taskId, executor);
+        require(r2 == root, "another result"); // the root that was proven wrong; a different digest beside it is no way out
         agreeingSlashed[taskId][executor] = true;
         instances.slash(executor, SLASH_AMOUNT, market.challenger(taskId), "porw:exec-fraud");
     }

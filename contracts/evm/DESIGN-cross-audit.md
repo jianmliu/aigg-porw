@@ -518,3 +518,50 @@ Two decisions in it that are not obvious:
 
 Not done here: the browser node does not yet execute a batch (K runs, the two trees, the run openings), and the
 relayer does not announce one. The contracts and the rule are first because everything else is written against them.
+
+## The two defects the measurement found, fixed (2026-09)
+
+**The sortition no longer scans.** `executors()` rebuilt the stake-weighted vote list from every instance enrolled for
+the MEP, and the market called it from `submitResult` (once per executor) and from `settle`. Now:
+
+- A draw is constant time (`InstanceRegistry.sortitionPick`). The sortition hash's low 128 bits pick an *enrolled*
+  instance uniformly, below the enrolment count the task fixed when it was posted (the list is append-only, so later
+  enrolments move nobody); its high 128 bits accept the instance with probability `weight / weightCap(mepId)`; and it
+  must be eligible for the task's epoch. Over repeated draws that is proportional to weight among the eligible, which
+  is what walking the vote list gave (`SortitionAndDigest.t.sol` draws 800 tasks over weights 1, 1, 2, 4 and an
+  ineligible 4). `weightCap` is the largest weight anybody bonded with while naming the MEP; it only grows. With every
+  instance at one UNIT it is 1 and every draw is accepted; a whale at `MAX_WEIGHT` makes others' draws up to sixteen
+  times more numerous, which is bounded and costs the whale a real bond. An instance that tops up without naming the
+  MEP is drawn at the cap's weight: never more than its stake, and naming the MEP once corrects it.
+- The roster is drawn **once, at `postTask`, and stored**. `executors()` reads it. This also closes the older problem
+  that the roster was a live view: an instance that asked to exit, or a claim that landed later, changed who the
+  executors of an open task were. And a task nobody can execute is now refused at post ("no eligible instances")
+  instead of being accepted and stranded. The cost moves to the client's `postTask` (the draws, and one stored address
+  per executor), and leaves everything after it.
+
+| redundancy 2 | before | after |
+|---|---|---|
+| 3 instances enrolled | 864,187 | 782,170 |
+| 30 instances enrolled | 2,358,050 | **782,170** |
+| a batch of 1,000 runs | 860,709 | 831,777 (831 per run) |
+
+Eligibility is still read at post time from live state, and a brain with many enrolled instances that are no longer
+eligible makes draws miss: at most `64 × redundancy` of them, after which the task runs with fewer executors, as before.
+The JS mirror is `swarm.js: assignSortition`; the fixture exporter uses it to find the nonces `Mesh.t.sol` posts, so
+that test, which asserts the chain drew A and B, is a test of the mirror against the chain.
+
+**Agreement is on the root.** Two results used to agree only if digest *and* root agreed, but nothing on chain binds
+the digest (int-lif: keccak over every neuron's spike count) to the root. A party could submit the honest root beside
+another digest and open a dispute with no step to bisect to: the second `revealRoots` reverted `"no divergence"`, went
+unrecorded, and whoever revealed **first** won by timeout. It worked for an executor against its honest peer, and for a
+challenger against an honest settled executor, at the price of a deposit it got back. Now:
+
+- `settle` opens a dispute only when roots differ; `challengeResult` requires a different root ("agrees" otherwise);
+  `_pay` pays everyone on the settled root; `slashAgreeing` slashes for the root that was proven wrong, so a different
+  digest beside it is no way out (it used to read as "another result").
+- What a task endorses as its digest is `settledDigest[taskId]`: the digest a strict majority of the paid executors
+  gave, or `bytes32(0)` when they split. `TaskSettled` carries the same value.
+- What is left: an executor can contest a digest for free (the task then endorses none, and the client takes the digest
+  from a re-execution). It gains nothing by it. Making the digest adjudicable needs either a digest that is a function
+  of the root (as a batch's is) or a bisection of the digest's own computation; neither is done here.
+

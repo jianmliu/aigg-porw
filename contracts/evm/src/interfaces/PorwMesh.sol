@@ -111,6 +111,10 @@ interface IInstanceRegistry {
     function isEligible(address instance, bytes32 mepId, uint64 epoch) external view returns (bool);
     /// @notice stake-weighted vote list used by sortition (each instance repeated `weight` times)
     function eligibleVotes(bytes32 mepId, uint64 epoch) external view returns (address[] memory);
+    /// @notice how many instances have ever enrolled for the MEP (the list is append-only)
+    function enrolled(bytes32 mepId) external view returns (uint256);
+    /// @notice one constant-time draw of the stake-weighted sortition; address(0) for a miss (see InstanceRegistry)
+    function sortitionPick(bytes32 mepId, uint64 epoch, uint256 len, uint256 h) external view returns (address);
     function slash(address instance, uint256 amount, address beneficiary, bytes32 reason) external;
 }
 
@@ -173,7 +177,7 @@ interface ITaskMarket {
     function postTask(Task calldata task, bytes32 nonce) external payable returns (bytes32 taskId);
     /// @notice one task, `runs` runs of the same brain: see PorwMeshHash.batchId. int-lif only
     function postBatch(Task calldata task, uint32 runs, bytes32 nonce) external payable returns (bytes32 taskId);
-    /// @notice executors = sortition over IInstanceRegistry.eligibleVotes(mepId, epoch); anyone can compute
+    /// @notice the executors drawn when the task was posted (IInstanceRegistry.sortitionPick), fixed from then on
     function executors(bytes32 taskId) external view returns (address[] memory);
     function submitResult(bytes32 taskId, Result calldata result, bytes calldata signature) external;
     function settle(bytes32 taskId) external;

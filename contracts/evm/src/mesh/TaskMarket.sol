@@ -69,6 +69,10 @@ contract TaskMarket is ITaskMarket {
     mapping(address => uint256) public withdrawable;
     /// @notice fees set aside under a MEP's terms and not yet collected, by mepId (`withdrawRoyalty`)
     mapping(bytes32 => uint256) public royalties;
+    /// @notice the digest a settled task endorses: the one a strict majority of its paid executors gave. bytes32(0) when
+    ///         they split (or the task was refunded, or is not settled): the root is agreed, the digest is contested, and
+    ///         a client takes it from a re-execution instead of from the chain.
+    mapping(bytes32 => bytes32) public settledDigest;
     /// @notice how many executors `_pay` paid for this task, recorded at settle (0: refunded, or not settled). Something
     ///         outside this contract that pays per executed task -- a hosting endowment -- needs the head count, and must
     ///         not take it from `executors()`, which is a live roster.
@@ -121,26 +125,28 @@ contract TaskMarket is ITaskMarket {
         require(claimManager.beacon(e) != bytes32(0), "no beacon");
         require(!tasks[taskId].exists, "posted");
         tasks[taskId] = StoredTask(t, msg.sender, e, uint64(block.number), 0, true, false, false, false);
+        _draw(taskId, t.mepId, e, t.redundancy);
         emit TaskPosted(taskId, t.mepId, t.redundancy);
     }
 
-    /// @notice stake-weighted index sortition over the eligible votes of the task's epoch
-    function executors(bytes32 taskId) public view returns (address[] memory out) {
-        StoredTask storage st = tasks[taskId];
-        require(st.exists, "task");
-        address[] memory votes = instances.eligibleVotes(st.t.mepId, st.epoch);
-        require(votes.length > 0, "no eligible instances");
-        bytes32 b = claimManager.beacon(st.epoch);
-        address[] memory chosen = new address[](st.t.redundancy);
-        uint256 n = 0;
-        for (uint32 j = 0; n < st.t.redundancy && j < 64 * uint32(st.t.redundancy); j++) {
-            address cand = votes[PorwMeshHash.sortition(b, st.t.mepId, taskId, j) % votes.length];
-            bool dup = false;
-            for (uint256 k = 0; k < n; k++) if (chosen[k] == cand) { dup = true; break; }
-            if (!dup) chosen[n++] = cand;
+    /// @notice The task's executors, drawn ONCE, when it is posted, and stored. They used to be recomputed on every call
+    ///         from the vote list of every enrolled instance (`submitResult`, again per executor, and `settle`), which
+    ///         cost about 55,000 gas per enrolled instance per task and made the roster a live view: an instance that
+    ///         asked to exit, or a claim that landed later, changed who the executors of an open task were. Now a draw is
+    ///         constant time (InstanceRegistry.sortitionPick) and the roster is a fact about the task.
+    mapping(bytes32 => address[]) internal chosen;
+    function executors(bytes32 taskId) public view returns (address[] memory) { require(tasks[taskId].exists, "task"); return chosen[taskId]; }
+
+    function _draw(bytes32 taskId, bytes32 mepId, uint64 epoch, uint8 redundancy) internal {
+        uint256 len = instances.enrolled(mepId); require(len > 0, "no eligible instances");
+        bytes32 b = claimManager.beacon(epoch); address[] storage out = chosen[taskId];
+        for (uint32 j = 0; out.length < redundancy && j < 64 * uint32(redundancy); j++) {
+            address cand = instances.sortitionPick(mepId, epoch, len, PorwMeshHash.sortition(b, mepId, taskId, j));
+            if (cand == address(0)) continue;
+            bool dup = false; for (uint256 k = 0; k < out.length; k++) if (out[k] == cand) { dup = true; break; }
+            if (!dup) out.push(cand);
         }
-        out = new address[](n);
-        for (uint256 k = 0; k < n; k++) out[k] = chosen[k];
+        require(out.length > 0, "no eligible instances"); // a task nobody can execute is refused, not stranded
     }
 
     /// @notice the EIP-712 digest an executor signs for a result
@@ -172,7 +178,7 @@ contract TaskMarket is ITaskMarket {
             if (!submitted[taskId][ex[i]]) continue;
             for (uint256 j = i + 1; j < ex.length; j++) {
                 if (!submitted[taskId][ex[j]]) continue;
-                if (results[taskId][ex[i]].execDigest != results[taskId][ex[j]].execDigest || results[taskId][ex[i]].execRoot != results[taskId][ex[j]].execRoot) {
+                if (results[taskId][ex[i]].execRoot != results[taskId][ex[j]].execRoot) { // the ROOT: see _same
                     st.disputed = true; emit DisputeOpened(taskId, ex[i], ex[j]);
                     IDisputeOpener(disputes).openDispute(taskId, ex[i], ex[j]);
                     return;
@@ -204,7 +210,7 @@ contract TaskMarket is ITaskMarket {
         require(msg.value >= requiredChallengeDeposit(taskId), "deposit");
         require(!submitted[taskId][msg.sender], "executor");
         address ref = settledRef[taskId]; require(ref != address(0), "none"); // nothing was ever submitted: no result to dispute
-        require(results[taskId][ref].execDigest != r.execDigest || results[taskId][ref].execRoot != r.execRoot, "agrees");
+        require(results[taskId][ref].execRoot != r.execRoot, "agrees"); // a digest beside the same root is not a disagreement anybody can win: see _same
         _shape(taskId, r);
         results[taskId][msg.sender] = r;
         challenger[taskId] = msg.sender; challengeDeposit[taskId] = msg.value; challengedAt[taskId] = uint64(block.number);
@@ -263,7 +269,16 @@ contract TaskMarket is ITaskMarket {
         paidExecutors[taskId] = uint8(agree); // redundancy is a uint8, so this fits
         uint256 share = (st.t.fee - cut) / agree; address[] memory paid = new address[](agree); uint256 p = 0;
         for (uint256 i = 0; i < ex.length; i++) if (submitted[taskId][ex[i]] && _same(taskId, ex[i], ref)) { paid[p++] = ex[i]; (bool ok,) = ex[i].call{value: share}(""); require(ok, "pay"); }
-        emit TaskSettled(taskId, results[taskId][ref].execDigest, paid);
+        // the digest the task settles on: the one a strict majority of the paid executors gave, else none. A digest
+        // nobody can check is endorsed only when most of those who are on the hook for the root say the same thing.
+        bytes32 dig = bytes32(0);
+        for (uint256 i = 0; i < agree && dig == bytes32(0); i++) {
+            uint256 votes = 0; bytes32 di = results[taskId][paid[i]].execDigest;
+            for (uint256 j = 0; j < agree; j++) if (results[taskId][paid[j]].execDigest == di) votes++;
+            if (2 * votes > agree) dig = di;
+        }
+        settledDigest[taskId] = dig;
+        emit TaskSettled(taskId, dig, paid);
     }
 
     /// @notice the beneficiary of a MEP collects what its tasks have set aside. Only the beneficiary, and the amount is
@@ -281,7 +296,14 @@ contract TaskMarket is ITaskMarket {
 
     function _send(address to, uint256 amt) internal { if (amt == 0) return; (bool ok,) = to.call{value: amt}(""); if (!ok) withdrawable[to] += amt; }
     function withdraw() external { uint256 a = withdrawable[msg.sender]; require(a > 0, "nothing"); withdrawable[msg.sender] = 0; (bool ok,) = msg.sender.call{value: a}(""); require(ok, "withdraw"); }
-    function _same(bytes32 taskId, address a, address b) internal view returns (bool) { return results[taskId][a].execDigest == results[taskId][b].execDigest && results[taskId][a].execRoot == results[taskId][b].execRoot; }
+    /// @dev Two results agree when their execRoots do. The root is the only thing a dispute can adjudicate; the digest
+    ///      (int-lif: keccak over every neuron's spike count) is not bound to it by anything the chain can check. When
+    ///      agreement also required the digest, a party could submit the honest root with another digest and open a
+    ///      dispute with no step to bisect to: the second reveal reverted "no divergence", went unrecorded, and whoever
+    ///      revealed FIRST won by timeout -- an executor against its honest peer, or a challenger against an honest
+    ///      settled executor, for the price of a deposit it got back. So a digest-only difference is no dispute. What the
+    ///      task then settles on is the digest a strict majority of the paid executors gave, or none (`settledDigest`).
+    function _same(bytes32 taskId, address a, address b) internal view returns (bool) { return results[taskId][a].execRoot == results[taskId][b].execRoot; }
     function _firstSubmitted(bytes32 taskId, address[] memory ex) internal view returns (uint256) { for (uint256 i = 0; i < ex.length; i++) if (submitted[taskId][ex[i]]) return i; revert("none"); }
     function _isExecutor(bytes32 taskId, address who) internal view returns (bool) { address[] memory ex = executors(taskId); for (uint256 i = 0; i < ex.length; i++) if (ex[i] == who) return true; return false; }
 }
