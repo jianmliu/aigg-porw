@@ -34,6 +34,7 @@ aigg-spec conformance vectors, and the claim is verified on-chain.
 | `index.html` + `worker.js` | audit-throughput PoC (per-worker slices, no shared memory) |
 | `node_page.html` + `run_node_browser.mjs` | the full node loop in headless Chromium (optionally with the pool) and this process as the verifier |
 | `synth.js` | JS payload synthesizers (v1 as the Python demo; v2 with signed counts for the LIF tests) |
+| `delta.js` / `sample.js` / `test_delta.mjs` | **delta payloads**: v1 = explicit edit list, v2 = procedural (seed + noise model → a synthetic individual, deterministic integer sampler bit-identical in JS and Python), v3 = same-base cross (two parent deltas + seed → a child with real inheritance); all: a fine-tune, ablation or synthetic individual of a released brain as a sorted edit list (set / insert / delete records) bound to the base's `model_id`; `applyDelta` rebuilds the target payload byte for byte, so its `model_id` / MEP are those of a directly published payload; `PorwNode.loadDelta(base, delta)`; Python twin `demo/fly_brain/flywire_delta.py` |
 | `bench_lif_node.mjs` / `model_id.mjs` | full-brain LIF measurement (single thread, pool, research mode); model / MEP ids of a payload file |
 | `export_fixtures.mjs` / `export_lif_fixtures.mjs` | typed Solidity fixtures for the on-chain tests from real node runs (SpMV mesh; LIF mesh with a state liar and an input-sum liar) |
 | `test_*.mjs`, `crosscheck.py`, `int_spmv.py` | tests and Python cross-checks |
@@ -58,6 +59,75 @@ PW_CHROMIUM=/path/to/chrome node run_browser.mjs --mib 521 --workers 4
 # full node loop at FlyWire scale; --workers N uses the shared-memory pool (server sends COOP/COEP)
 PW_CHROMIUM=/path/to/chrome node run_node_browser.mjs --payload flywire-female-sorted.bin --steps 2 --samples 16 --rounds 3 --workers 4
 ```
+
+## Delta payloads (FLYDELTAv1)
+
+A brain that differs from a released one in a few records — an ablation, a fine-tune, a sampled individual —
+is published as a delta instead of a second 28 MB payload:
+
+```
+MAGIC "FLYDELTAv1\0\0" | base model_id (32 B) | u64 neurons | u32 ops | u16 name_len | name
+| u16 base_da_len | base_da (the base's pointer, may be empty) | ops: u32 pre | u32 post | i16 w   (sorted by (post, pre), unique)
+```
+
+`w != 0` sets the record (insert or replace), `w == 0` deletes it (the base must have it); neurons and root ids are
+unchanged. `applyDelta(base, delta)` writes exactly what `flywire_export.py` writes (header with the delta's name,
+records sorted by `(post, pre)`, 4 KiB padding), so the applied bytes' `model_id` is the ordinary weights Merkle root
+and the MEP is registered on it as usual; the delta's own identity is `keccak(delta bytes)`. A node holding the base
+loads a delta model with `loadDelta` (base id checked against the header). Measured on the real brain: a 467-record
+edit is a 4.7 KB delta, diff 0.6 s, apply 0.5 s. What the format does **not** do: it is not a second commitment
+scheme (the mesh still verifies the applied payload's `model_id`), and v1 cannot add or remove neurons.
+
+### FLYDELTAv2: procedural individuals
+
+Resampling every record of a brain according to an inter-individual noise model changes almost every record, so an
+explicit delta would be as large as the payload. v2 carries the recipe instead:
+
+```
+MAGIC "FLYDELTAv2\0\0" | base model_id (32 B) | u64 neurons | u64 seed | u16 min_syn | u32 mean_ratio_q16 | u16 r_rows
+| rows: u32 c_from | u16 r_q8 | u32 ops | u16 name_len | name | u16 base_da_len | base_da | ops (10 B each, v1 semantics; deletes lenient)
+```
+
+For every base record with count `c = |w|`: `U = hash64(seed, pre, post)` (two fmix32 chains, so a record's draw does
+not depend on record order), mean `m = c · mean_ratio / 65536`, shape `r = r_q8(c) / 256` (the last row with
+`c_from ≤ c`), and `c'` = the smallest `k` with `CDF_NB(k; m, r) > U / 2^64`. The CDF is tabulated once per distinct `c`
+in Q256 fixed point (`ln` / `exp` by fixed-length series in Q60, the pmf recurrence in exact integer ratios, entries
+floored to Q64), so the sampler is a definition, not an approximation: JS (`sample.js`, BigInt) and Python
+(`flywire_delta.py`) produce byte-identical payloads. Records with `c' < min_syn` are dropped, the sign is kept
+(Dale), the explicit ops run after sampling, and the result is written as for v1 — so the individual's `model_id` is
+an ordinary payload commitment. The default `r` table is fitted to FlyWire's left/right mirror connections
+(two sampled individuals differ like the two hemispheres do: SD ln ratio 1.0 at 5–9 synapses, 0.65 at 20–49, 0.37 at
+100+; a 5–9-synapse connection is missing from the other individual's ≥5 graph 82% of the time). Measured on the real
+brain: a 2.7 M-record individual applies in 0.9 s (JS) / 1.5 s (Python) from a 140-byte delta; sampling from the
+≥1-synapse export (15.1 M records) lets an individual also gain connections the published fly lacks.
+
+### FLYDELTAv3: same-base cross
+
+The child of two individuals of the **same base** (a hybrid of two different connectomes is not expressible: a delta
+indexes one base's neuron table). Parents are procedural deltas named by `keccak(delta bytes)`; 32 zero bytes name the
+published base itself.
+
+```
+MAGIC "FLYDELTAv3\0\0" | base model_id | u64 neurons | parent A id (32 B) | parent B id (32 B) | u64 seed | u8 granularity | u8 0
+| u16 min_syn | u32 mut_rate_q32 | u32 mean_ratio_q16 | u16 r_rows | rows | u32 ops | u16 name_len | name | u16 da_len | da | ops
+```
+
+Inheritance acts on **genotypes** — the count of every base record *before* the `min_syn` threshold — and the payload
+is the phenotype. Per inheritance unit (`0` record, `1` pre neuron: all outputs of a neuron together, `2` post neuron:
+all inputs together) one hash bit picks parent A or B; then each record mutates with probability `mut_rate` into a
+fresh v2 draw around the **base** count. Because founders, picks and mutations all have the founder distribution, the
+population is stationary: a descendant of any depth is marginally distributed like a founder (record counts and
+unrelated distances do not drift), and relatedness shows up only as shared picks. Measured on the real brain
+(≥1-synapse base, mutation 1/8, distance = mean |ln((x+1)/(y+1))| over the published records): parent–child 0.36,
+siblings 0.40, grandparent–grandchild 0.52, unrelated 0.64 = founder–founder 0.64. Parents must carry no explicit ops
+(their genotype would not be base-indexed); ancestors are supplied by id (`applyDelta(base, delta, { resolve })`,
+`flywire_delta.py apply --parents ...`) and memoised, so applying costs one pass per distinct ancestor. A 231-byte
+grandchild with three ancestors applies in 1.9 s (JS); JS and Python agree byte for byte. The seed-domain constants
+(pick / mutate / draw) are XORed into both words of the seed.
+
+`hash64` was tightened with this version: both seed words now reach the high word of the uniform (previously seeds
+differing only in the high 32 bits produced almost the same individual) and the low word hashes the swapped key. v2
+payloads made with the earlier hash are not reproducible; none had been registered.
 
 ## What is verified
 
