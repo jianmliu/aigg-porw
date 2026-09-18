@@ -18,7 +18,7 @@ const node = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "11
 const F = await node.loadModel("flywire-female", female, { maxSteps: 3 }), M = await node.loadModel("male-cns", male, { maxSteps: 2 });
 console.log(`female: ${F.nTiles} tiles mep ${V.hex(F.mep.mepId).slice(0, 14)}… | male: ${M.nTiles} tiles mep ${V.hex(M.mep.mepId).slice(0, 14)}…`);
 // the verifier derives both MEPs independently from the public model bytes alone: under
-// sketch-tile-keccak:v2 every field of mep_id is a function of those bytes and the exec kind
+// sketch-tile-keccak (since v2) every field of mep_id is a function of those bytes and the exec kind
 const mepF = makeMep({ name: "flywire-female", ...indepProfile(female) });
 const mepM = makeMep({ name: "male-cns", ...indepProfile(male) });
 check("female MEP id (node) == verifier's independent MEP id", V.eq(F.mep.mepId, mepF.mepId));
@@ -58,13 +58,18 @@ check("liar's claim is well-formed and signed (fraud not visible from the claim 
 const lo = Vf.verifyOpening(liar.open(LF.mep.mepId, 7), lr.claim, lv.slotSeed, LF.nTiles);
 check(`opening of lied tile -> '${lo.verdict}'`, lo.verdict === "fraud" && lo.weightsOk && lo.partialsOk);
 check("liar's honest tile -> no_fraud", Vf.verifyOpening(liar.open(LF.mep.mepId, 3), lr.claim, lv.slotSeed, LF.nTiles).verdict === "no_fraud");
+// --- the sketch seed is the claiming instance's: nothing in a claim can choose it, and one scan serves one identity ---
+{ check("two instances holding the same brain commit to different sketches under the same challenge", !V.eq(rf.claim.partialsRoot, lr.claim.partialsRoot) && lv.slotSeed !== Vf.verifyClaim(rf, mepF, ch).slotSeed);
+  check("a claim has no device field: the seed is derived from (challenge, resolved instance)", !("deviceId" in rf.claim) && lv.slotSeed === V.slotSeed(ch, lv.instance));
+  const honest = Vf.verifyClaim(rf, mepF, ch); const borrowed = Vf.verifyOpening(node.open(mepF.mepId, 3), rf.claim, lv.slotSeed, LF.nTiles);
+  check("sketches scanned for one identity do not open under another's seed", Vf.verifyOpening(node.open(mepF.mepId, 3), rf.claim, honest.slotSeed, LF.nTiles).verdict === "no_fraud" && borrowed.verdict === "fraud"); }
 const o = node.open(mepF.mepId, 5); o.tile = Uint8Array.from(o.tile); o.tile[0] ^= 0xff;
 check("forged tile bytes -> 'invalid'", Vf.verifyOpening(o, rf.claim, vf.slotSeed, F.nTiles).verdict === "invalid");
 
 // --- artifact for the on-chain (forge) test ---
 const c = rf.claim;
 if (outJson) fs.writeFileSync(outJson, JSON.stringify({ schemeDigest: V.hex(c.schemeDigest), mepId: V.hex(c.mepId), modelId: V.hex(c.modelId), partialsRoot: V.hex(c.partialsRoot),
-  coverageBytes: c.coverageBytes, challenge: V.hex(c.challenge), deviceId: V.hex(c.deviceId),
+  coverageBytes: c.coverageBytes, challenge: V.hex(c.challenge),
   mep: { name: mepF.name, execKind: V.hex(mepF.execKind), neurons: mepF.neurons, synapses: mepF.synapses, synapseRoot: V.hex(mepF.synapseRoot) },
   claimHash: V.hex(rf.claimHash), signature: V.hex(rf.signature), signer: V.hex(rf.address) }, null, 2));
 console.log(fails ? `${fails} FAILURES` : "ALL PASS"); process.exit(fails ? 1 : 0);

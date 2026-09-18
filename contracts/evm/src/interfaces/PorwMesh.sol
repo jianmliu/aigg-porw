@@ -8,13 +8,16 @@ pragma solidity ^0.8.20;
 
 /// @dev CSR chunk size for synapse-record leaves (dispute openings)
 uint32 constant CSR_CHUNK = 64;
-/// @dev keccak256("aigg:porw:sketch-tile-keccak:v2")
+/// @dev keccak256("aigg:porw:sketch-tile-keccak:v3")
+/// @dev v3 vs v2: the Claim has no `deviceId`. It was self-declared and only varied the sketch seed; the seed is now
+///      `deriveSlotSeed(challenge, instance)`, a function of the instance the claim resolves to. That changes the Claim's
+///      EIP-712 type, the aggregated leaf and the seed of every sketch, so a v2 claim does not verify under v3 and vice versa.
 /// @dev v2 vs v1: a residency claim attests residency only. `execDigest` and `stimulusSeed` are gone from
 ///      the Claim (nothing ever adjudicated them -- the only verdict that can invalidate a claim is the tile
 ///      fraud proof, which reads partialsRoot and the model root), and `steps` / the commit stride moved off
 ///      the MEP onto the Task, where the dispute machinery is the only thing that reads them. The sketch and
 ///      tile math is unchanged: this is a change of what the mesh signs, not of how bytes are committed.
-bytes32 constant SCHEME_SKETCH_TILE_KECCAK_V2 = 0x743502825425e31852a0adb96c797d7ac839afdef315e8c24b68db6e58d4be2e;
+bytes32 constant SCHEME_SKETCH_TILE_KECCAK_V3 = 0x48bbcf993c40ccbab6c43697518f5ebe860e8ef282390f3519bfd5c212111726;
 
 library PorwMeshHash {
     /// @dev mep_id = keccak256(abi.encodePacked(schemeDigest, modelId, execKind, neurons, synapses, synapseRoot))
@@ -30,9 +33,9 @@ library PorwMeshHash {
     ///      over the EIP-712 Claim digest (PorwEIP712), signed by the wallet or a delegated session key
     function claimHash(
         bytes32 schemeDigest, bytes32 mepId_, bytes32 modelId, bytes32 partialsRoot, uint64 coverageBytes,
-        bytes32 challenge, bytes32 deviceId
+        bytes32 challenge
     ) internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked(schemeDigest, mepId_, modelId, partialsRoot, coverageBytes, challenge, deviceId));
+        return keccak256(abi.encodePacked(schemeDigest, mepId_, modelId, partialsRoot, coverageBytes, challenge));
     }
 
     /// @dev task id binds EVERY parameter of the task, not just (mep, seed, nonce): steps and the commit
@@ -60,6 +63,9 @@ interface IMEPRegistry {
     event MEPRegistered(bytes32 indexed mepId, bytes32 indexed modelId, bytes32 schemeDigest);
     function registerMEP(MEP calldata mep) external returns (bytes32 mepId);
     function getMEP(bytes32 mepId) external view returns (MEP memory);
+    /// @notice the two fields a residency claim is signed over; reverts for an unknown MEP. A claim path reads this instead
+    ///         of copying the whole profile (with its dynamic `weightsDA`) out of storage.
+    function claimBinding(bytes32 mepId) external view returns (bytes32 schemeDigest, bytes32 modelId);
 }
 
 interface IInstanceRegistry {
@@ -67,6 +73,9 @@ interface IInstanceRegistry {
     event ExitRequested(address indexed instance, uint64 unlockEpoch);
     event Slashed(address indexed instance, uint256 amount, address beneficiary, bytes32 reason);
     function bond(bytes32[] calldata mepIds) external payable;
+    /// @notice add to SOMEONE ELSE's bond (a mint that funds its minter's stake, a breeder endowing a child's owner). A payer
+    ///         can only increase a bond: exit and withdrawal remain the instance's own calls.
+    function bondFor(address instance, bytes32[] calldata mepIds) external payable;
     function requestExit() external;
     function finalizeExit() external;
     /// @notice bonded AND has an unchallenged / defended residency claim for epoch-1 on this MEP
@@ -85,7 +94,6 @@ interface IPoRWClaimManager {
         bytes32 partialsRoot;
         uint64 coverageBytes;
         bytes32 challenge;   // epoch beacon-derived public challenge
-        bytes32 deviceId;
     }
     /// @dev tile opening as consumed by PorwVerifier.verifyTileFraudProofKeccak
     struct Opening {
@@ -96,19 +104,23 @@ interface IPoRWClaimManager {
         bytes32[] partialsProof;
         bytes32[] weightsProof;
     }
-    /// @dev aggregated path: one Merkle root per (MEP, epoch, aggregator) over claim leaves
-    ///      leaf = keccak256(abi.encode(instance, partialsRoot, coverageBytes, deviceId, keccak256(signature)))
-    struct ClaimLeaf { address instance; bytes32 partialsRoot; uint64 coverageBytes; bytes32 deviceId; bytes signature; }
-    event EpochRootPosted(bytes32 indexed mepId, uint64 indexed epoch, address indexed aggregator, bytes32 root, uint64 count);
+    /// @dev aggregated path: ONE Merkle root per (epoch, aggregator) over the claim leaves of every MEP
+    ///      leaf = keccak256(abi.encode(mepId, instance, partialsRoot, coverageBytes, keccak256(signature)))
+    struct ClaimLeaf { bytes32 mepId; address instance; bytes32 partialsRoot; uint64 coverageBytes; bytes signature; }
+    event EpochRootPosted(uint64 indexed epoch, address indexed aggregator, bytes32 root, uint64 count);
+    /// @dev the claim's contents. The contract keeps only a commitment to them, so this log is where a challenger
+    ///      finds what to pass to `challengeOpening`.
+    event ClaimData(bytes32 indexed claimId, bytes32 partialsRoot, uint64 coverageBytes);
     event ClaimSubmitted(bytes32 indexed claimId, address indexed instance, bytes32 indexed mepId, uint64 epoch);
     event OpeningChallenged(bytes32 indexed claimId, uint64 tileIdx, address challenger);
     event OpeningResolved(bytes32 indexed claimId, uint64 tileIdx, uint8 verdict); // 0 Fraud, 1 NoFraud, 2 Invalid, 3 Timeout
     function submitClaim(Claim calldata claim, bytes calldata signature) external returns (bytes32 claimId);
     /// @notice aggregated path: anyone posts a root over the epoch's signed claims (off-chain collected); untrusted
-    function postEpochRoot(bytes32 mepId, uint64 epoch, bytes32 root, uint64 count) external;
+    function postEpochRoot(uint64 epoch, bytes32 root, uint64 count) external;
     /// @notice materialize one claim from a posted root: inclusion proof + the leaf; the signature is verified here
-    function materializeClaim(bytes32 mepId, uint64 epoch, address aggregator, uint64 index, ClaimLeaf calldata leaf, bytes32[] calldata proof) external returns (bytes32 claimId);
-    function challengeOpening(bytes32 claimId, uint64 tileIdx) external payable;
+    function materializeClaim(uint64 epoch, address aggregator, uint64 index, ClaimLeaf calldata leaf, bytes32[] calldata proof) external returns (bytes32 claimId);
+    /// @notice the challenger supplies the claim's contents (from `ClaimData`); they must match the stored commitment
+    function challengeOpening(address instance, bytes32 mepId, uint64 epoch, bytes32 partialsRoot, uint64 coverageBytes, uint64 tileIdx) external payable returns (bytes32 claimId);
     function respondOpening(bytes32 claimId, Opening calldata opening) external;
     function claimExpiredChallenge(bytes32 claimId, uint64 tileIdx) external;
 }
@@ -117,7 +129,7 @@ interface ITaskMarket {
     /// @dev `steps` and `commitStride` are per-task: the dispute machinery is the only thing that reads them,
     ///      and both executors read the same stored Task. `commitStride` is the segment-root granularity for
     ///      int-lif (it was the MEP's misnamed `clampQ16`); int-spmv-q16 commits every step and ignores it.
-    struct Task { bytes32 mepId; uint32 stimulusSeed; uint32 steps; uint32 commitStride; bytes32 inputCommit; uint256 fee; uint64 deadline; uint8 redundancy; }
+    struct Task { bytes32 mepId; uint32 stimulusSeed; uint32 steps; uint32 commitStride; bytes32 initStateRoot; uint256 fee; uint64 deadline; uint8 redundancy; }
     struct Result { bytes32 execDigest; bytes32 execRoot; } // execRoot = merkle([actRoot[1..steps]])
     event TaskPosted(bytes32 indexed taskId, bytes32 indexed mepId, uint8 redundancy);
     event ResultSubmitted(bytes32 indexed taskId, address indexed executor, bytes32 execDigest);
@@ -127,6 +139,8 @@ interface ITaskMarket {
     event ResultChallenged(bytes32 indexed taskId, address indexed challenger, bytes32 execDigest);
     /// @notice a challenge won: the settled digest is void. The fee it already paid is not clawed back
     event ResultRepudiated(bytes32 indexed taskId, address indexed executor, bytes32 correctDigest);
+    /// @notice a challenge lost; the task can be challenged again (for twice the deposit)
+    event ChallengeFailed(bytes32 indexed taskId, address indexed challenger, address indexed defender);
     function postTask(Task calldata task, bytes32 nonce) external payable returns (bytes32 taskId);
     /// @notice executors = sortition over IInstanceRegistry.eligibleVotes(mepId, epoch); anyone can compute
     function executors(bytes32 taskId) external view returns (address[] memory);

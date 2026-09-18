@@ -13,13 +13,19 @@ contract MEPRegistry is IMEPRegistry {
     mapping(bytes32 => bool) public exists;
 
     function registerMEP(MEP calldata m) external returns (bytes32 id) {
-        require(m.schemeDigest == SCHEME_SKETCH_TILE_KECCAK_V2, "scheme");
+        require(m.schemeDigest == SCHEME_SKETCH_TILE_KECCAK_V3, "scheme");
         require(m.neurons > 0 && m.synapses > 0 && m.synapseRoot != bytes32(0), "profile");
         id = PorwMeshHash.mepId(m.schemeDigest, m.modelId, m.execKind, m.neurons, m.synapses, m.synapseRoot);
         require(!exists[id], "registered");
         meps[id] = m;
         exists[id] = true;
         emit MEPRegistered(id, m.modelId, m.schemeDigest);
+    }
+
+    function claimBinding(bytes32 id) external view returns (bytes32 schemeDigest, bytes32 modelId) {
+        MEP storage m = meps[id]; schemeDigest = m.schemeDigest; // every registered MEP carries the (non-zero) scheme digest
+        require(schemeDigest != bytes32(0), "unknown mep");
+        modelId = m.modelId;
     }
 
     function getMEP(bytes32 id) external view returns (MEP memory) {

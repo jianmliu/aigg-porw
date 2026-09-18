@@ -28,7 +28,7 @@ import "./LifRowCheck.sol";
 ///   int-lif      : segment state roots every `stride` = Task.commitStride steps -> Refine phase (per-step roots of
 ///                  the first differing segment, bound to the committed segment root) -> state-tree bisection ->
 ///                  row = LifRowCheck.transition(state_{s-1}[i], last signed sum) -> term = w(int16) * spiked(pre).
-///                  The agreed root before step 1 is the task's inputCommit (initStateRoot).
+///                  The agreed root before step 1 is the task's initStateRoot.
 contract ExecutionDisputes is IExecutionDisputes {
     uint64 public immutable ROUND_BLOCKS;
     uint256 public immutable SLASH_AMOUNT;
@@ -68,9 +68,10 @@ contract ExecutionDisputes is IExecutionDisputes {
         d.phase = Phase.Step; d.exists = true; d.deadline = uint64(block.number) + ROUND_BLOCKS;
         if (m.execKind == LifRowCheck.execKind()) {
             LifDispute storage ld = lifs[taskId];
-            ld.lif = true; ld.stride = stride; ld.segments = (steps + stride - 1) / stride; ld.initStateRoot = market.taskInput(taskId);
+            ld.lif = true; ld.stride = stride; ld.segments = (steps + stride - 1) / stride; ld.initStateRoot = market.taskInitStateRoot(taskId);
         }
         partyA[taskId] = a; partyB[taskId] = b;
+        instances.hold(a); instances.hold(b); // neither party's bond leaves while this is open (a challenger has none: harmless)
         (, parties[taskId][a].execRoot) = market.resultOf(taskId, a);
         (, parties[taskId][b].execRoot) = market.resultOf(taskId, b);
         emit DisputeRound(taskId, Phase.Step, 0, steps);
@@ -265,29 +266,33 @@ contract ExecutionDisputes is IExecutionDisputes {
         // A challenger has no bond, so `slash` would be a no-op against it (the registry caps at bonded[inst]).
         // Its punishment is the deposit, settled by the market.
         address c = market.challenger(taskId);
-        if (loser != c) {
-            instances.slash(loser, SLASH_AMOUNT, winner, "porw:exec-fraud");
-            if (c != address(0)) _slashAgreeing(taskId, loser, winner); // challenge path only -- see below
-        }
+        if (loser != c) instances.slash(loser, SLASH_AMOUNT, winner, "porw:exec-fraud");
+        instances.release(loser); instances.release(winner);
         market.onDisputeResolved(taskId, loser, winner);
         emit DisputeResolved(taskId, loser, winner);
+        // A challenge that lost leaves the task challengeable again, so this dispute's state must not block the next one.
+        if (c != address(0) && loser == c) _forget(taskId, loser, winner);
+    }
+    function _forget(bytes32 taskId, address a, address b) internal {
+        delete disputes[taskId]; delete lifs[taskId]; delete partyA[taskId]; delete partyB[taskId];
+        delete parties[taskId][a]; delete parties[taskId][b]; delete lifParties[taskId][a]; delete lifParties[taskId][b];
     }
 
-    /// @dev An executor beaten by a CHALLENGER was not alone: at redundancy > 1 the others settled on the same
-    ///      digest, and a digest proven wrong is wrong for everyone who asserted it. Only reached on the
-    ///      challenge path: where two executors disagreed at `settle`, the market already withholds payment
-    ///      from the losing side, and widening that path's punishment is a separate decision.
-    ///      `executors()` reverts once an epoch's eligible set empties (instances exit), so a stale roster must
-    ///      not be able to brick a resolution -- hence the try/catch. The loser's own slash already happened.
-    function _slashAgreeing(bytes32 taskId, address loser, address winner) internal {
-        (bytes32 dig, bytes32 root) = market.resultOf(taskId, loser);
-        try market.executors(taskId) returns (address[] memory ex) {
-            for (uint256 i = 0; i < ex.length; i++) {
-                if (ex[i] == loser) continue;
-                (bytes32 d2, bytes32 r2) = market.resultOf(taskId, ex[i]);
-                if (d2 == dig && r2 == root) instances.slash(ex[i], SLASH_AMOUNT, winner, "porw:exec-fraud");
-            }
-        } catch {}
+    /// @notice An executor beaten by a challenger was not alone: at redundancy > 1 the others settled on the same digest,
+    ///         and a digest proven wrong is wrong for everyone who asserted it. Permissionless and per executor, rather than
+    ///         a loop over `executors()` inside the resolution: that roster is a live view, an instance that asks to exit
+    ///         drops off it at once, and a verdict must not depend on it. Anyone -- in practice the challenger, who is paid
+    ///         the slash -- names an executor whose recorded result equals the repudiated one. Challenge path only: where two
+    ///         executors disagreed at `settle` the market already withholds payment from the losing side.
+    mapping(bytes32 => mapping(address => bool)) public agreeingSlashed;
+    function slashAgreeing(bytes32 taskId, address executor) external {
+        address beaten = market.repudiatedExecutor(taskId); require(beaten != address(0), "not repudiated");
+        require(executor != beaten && market.submitted(taskId, executor), "not an agreeing executor"); // the beaten one paid already
+        require(!agreeingSlashed[taskId][executor], "slashed");
+        (bytes32 dig, bytes32 root) = market.resultOf(taskId, beaten); (bytes32 d2, bytes32 r2) = market.resultOf(taskId, executor);
+        require(d2 == dig && r2 == root, "another result");
+        agreeingSlashed[taskId][executor] = true;
+        instances.slash(executor, SLASH_AMOUNT, market.challenger(taskId), "porw:exec-fraud");
     }
 
     // ---- helpers (LE32 leaves, counted keccak Merkle, tree geometry, stimulus rule) ----

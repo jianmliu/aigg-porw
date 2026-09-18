@@ -12,7 +12,7 @@ for (const n of [0, 1, 135, 136, 137, 4104, 10000]) { const b = new Uint8Array(n
 // what the MESH signs (the residency claim's fields, and where steps/stride live), not how bytes are committed.
 // The scheme digest is a domain separator for the claim, so it moves; the spec repo should publish the same
 // primitive vector set under the v2 id.
-check("scheme id is sketch-tile-keccak:v2", V.SCHEME_ID === "aigg:porw:sketch-tile-keccak:v2" && V.eq(V.schemeDigest(), V.keccak(new TextEncoder().encode(V.SCHEME_ID))));
+check("scheme id is sketch-tile-keccak:v3", V.SCHEME_ID === "aigg:porw:sketch-tile-keccak:v3" && V.eq(V.schemeDigest(), V.keccak(new TextEncoder().encode(V.SCHEME_ID))));
 check("v1 primitive vectors still apply (only the claim encoding changed)", fx.scheme.id === "aigg:porw:sketch-tile-keccak:v1");
 
 // fixture reference buffer: byte i = ((i*2654435761 mod 2^64) >> 7) & 0xff
@@ -20,7 +20,8 @@ const nT = fx.reference_buffer.n_tiles, buf = new Uint8Array(nT * TILE_BYTES);
 for (let i = 0n; i < BigInt(buf.length); i++) buf[Number(i)] = Number((((i * 2654435761n) & 0xffffffffffffffffn) >> 7n) & 0xffn);
 const sd = fx.slot_seed_derivation;
 check("slot_seed (wasm) == fixture", k.slotSeed(V.unhex(sd.global_challenge), V.unhex(sd.device_id)) === sd.slot_seed);
-check("slot_seed (noble) == fixture", V.slotSeed(V.unhex(sd.global_challenge), V.unhex(sd.device_id)) === sd.slot_seed);
+check("slot_seed (noble) == fixture", V.slotSeedWord(V.unhex(sd.global_challenge), V.unhex(sd.device_id)) === sd.slot_seed); // the fixture hashes two raw words; a claim passes the instance address as the second
+check("a claim's seed is the two-word hash of (challenge, instance address word)", V.slotSeed(V.unhex(sd.global_challenge), "0x" + "ab".repeat(20)) === k.slotSeed(V.unhex(sd.global_challenge), V.instanceWord("0x" + "ab".repeat(20))));
 
 // sketches: wasm kernel vs fixture vs noble scalar
 const bp = k.put(buf); const outP = k.alloc(nT * 4);
