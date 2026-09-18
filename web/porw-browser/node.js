@@ -224,14 +224,14 @@ export class PorwNode {
    *  (`batchOpenRun`), which re-executes that run so that the ordinary int-lif dispute helpers answer for it. */
   async _executeBatch(mepId, { steps = 1, commitStride = 1, runs } = {}) {
     const st = this.models.get(hex(mepId)); if (!st) throw new Error("unknown MEP"); if (st.exec !== "lif") throw new Error("batches are int-lif only");
-    const t0 = performance.now(), recs = [];
+    const t0 = performance.now(), recs = []; let last = null;
     for (let k = 0; k < runs.length; k++) {
       const r = runs[k]; this.execLie = this.batchLie && this.batchLie.run === k ? this.batchLie.lie : null; // test hook: a lie in ONE run
       const x = await this._execute(mepId, { steps, commitStride, stimulusSeed: r.stimulusSeed >>> 0, stimulusIds: r.stimulusIds || null, silenceIds: r.silenceIds || null, commit: true });
-      recs.push({ seed: r.stimulusSeed >>> 0, initStateRoot: x.result.initStateRoot, execRoot: x.result.execRoot, countsDigest: x.result.execDigest });
+      recs.push({ seed: r.stimulusSeed >>> 0, initStateRoot: x.result.initStateRoot, execRoot: x.result.execRoot, countsDigest: x.result.execDigest }); last = x.result;
     }
     const lieOf = (k) => (this.batchLie && this.batchLie.run === k ? this.batchLie.lie : null); this.execLie = lieOf(runs.length - 1); // the open run is the last: its replays are its own
-    const T = batchTrees(recs); st.batch = { steps, commitStride, inputs: runs, runs: recs, trees: T, levels: levelsOf(T.resultLeaves), open: runs.length - 1 };
+    const T = batchTrees(recs); st.batch = { steps, commitStride, inputs: runs, runs: recs, trees: T, levels: levelsOf(T.resultLeaves), open: runs.length - 1, openResult: last };
     return { steps, commitStride, timings: { batchMs: performance.now() - t0 }, runs: recs,
       result: { execDigest: T.execDigest, execRoot: T.execRoot, initStateRoot: T.runsRoot, csrRoot: st.csr.csrTree.root, rowRoot: st.csr.rowTree.root, synapseRoot: st.csr.synapseRoot } };
   }
@@ -242,8 +242,9 @@ export class PorwNode {
     const st = this.models.get(hex(mepId)), b = st?.batch; if (!b) throw new Error("no batch"); if (!(k >= 0 && k < b.runs.length)) throw new Error("run out of range");
     if (b.open !== k) { const r = b.inputs[k]; this.execLie = this.batchLie && this.batchLie.run === k ? this.batchLie.lie : null;
       const x = await this._execute(mepId, { steps: b.steps, commitStride: b.commitStride, stimulusSeed: r.stimulusSeed >>> 0, stimulusIds: r.stimulusIds || null, silenceIds: r.silenceIds || null, commit: true }); // execLie stays: the dispute helpers replay THIS run
-      if (hex(x.result.execRoot) !== hex(b.runs[k].execRoot)) throw new Error("run " + k + " did not reproduce its committed execRoot"); b.open = k; }
-    return { run: k, execRoot: b.runs[k].execRoot, seed: b.runs[k].seed, initStateRoot: b.runs[k].initStateRoot, inputProof: merkleProof(b.trees.inputLeaves, k), resultProof: merkleProof(b.trees.resultLeaves, k) };
+      if (hex(x.result.execRoot) !== hex(b.runs[k].execRoot)) throw new Error("run " + k + " did not reproduce its committed execRoot"); b.open = k; b.openResult = x.result; }
+    // `result` is the reopened run's own (its segment roots, its execRoot): what a single task's dispute starts from
+    return { run: k, result: b.openResult, execRoot: b.runs[k].execRoot, seed: b.runs[k].seed, initStateRoot: b.runs[k].initStateRoot, inputProof: merkleProof(b.trees.inputLeaves, k), resultProof: merkleProof(b.trees.resultLeaves, k) };
   }
 
   /** residency + execution in one call, for callers (tests, benches) that want both under one challenge */

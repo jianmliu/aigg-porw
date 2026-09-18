@@ -49,7 +49,8 @@ check("the silence set and the seed each make another run", new Set(rA.runs.map(
   const oA = await A.nd.batchOpenRun(A.mep, STAR), oL = await L.nd.batchOpenRun(L.mep, STAR);
   check("both open the same input against the runs root, and different results", hex(oA.initStateRoot) === hex(oL.initStateRoot) && oA.seed === oL.seed && V.merkleVerifyCounted(rA.result.initStateRoot, B.runLeaf(STAR, oA.seed, oA.initStateRoot), STAR, RUNS.length, oA.inputProof) && hex(oA.execRoot) !== hex(oL.execRoot));
   // from here it is an ordinary int-lif dispute over run STAR: the helpers answer for the reopened run
-  const segA = A.st.actRoots, segL = L.st.actRoots; // the slot holds the reopened run now
+  const segA = oA.result.actRoots, segL = oL.result.actRoots; // the reopened run's own result: what a single task's dispute starts from
+  check("the reopened run's result is the run's, not the batch's", hex(oA.result.execRoot) === hex(oA.execRoot) && hex(oL.result.execRoot) === hex(oL.execRoot));
   const seg = D.firstDifferingStep(segA, segL) - 1; check(`the reopened run's segment roots first differ in segment ${seg}, the one holding step ${sLie}`, seg === Math.floor((sLie - 1) / STRIDE));
   const stA = (await A.nd.lifSegmentRoots(A.mep, seg)).roots, stL = (await L.nd.lifSegmentRoots(L.mep, seg)).roots; let j = 0; while (j < stA.length && hex(stA[j]) === hex(stL[j])) j++;
   check(`and its step roots first differ at step ${seg * STRIDE + j + 1}: the step that was lied about`, seg * STRIDE + j + 1 === sLie);
