@@ -48,8 +48,8 @@ s += `    function sampleVec(uint256 i) internal pure returns (uint32 c, uint256
 s += `    // in-place lineage on synthesizePayloadV2("synthetic-base", ${n}, ${ns}): founders A, B (seeds 1, 2), child (seed 101, record granularity, mutation 1/8)\n`;
 s += `    uint64 constant N_TILES = ${nTiles}; uint64 constant SYN_OFFSET = ${hb.synOffset}; uint64 constant SYNAPSES = ${ns}; uint16 constant NAME_LEN = ${NL}; uint64 constant TILE_T = ${T}; uint64 constant STATIC_TILE = ${staticTile};\n`;
 for (const [k, r] of Object.entries(roots)) s += `    bytes32 constant ROOT_${k.toUpperCase()} = ${H(r)};\n`;
-s += `    bytes32 constant DELTA_ID_A = ${H(deltaId(fA))}; bytes32 constant DELTA_ID_B = ${H(deltaId(fB))};\n`;
-s += `    function deltaFounderA() internal pure returns (bytes memory) { return ${hexBytes(fA)}; }\n    function deltaChild() internal pure returns (bytes memory) { return ${hexBytes(child)}; }\n`;
+s += `    bytes32 constant DELTA_ID_A = ${H(deltaId(fA))}; bytes32 constant DELTA_ID_B = ${H(deltaId(fB))}; bytes32 constant DELTA_ID_CHILD = ${H(deltaId(child))};\n`;
+s += `    function deltaFounderA() internal pure returns (bytes memory) { return ${hexBytes(fA)}; }\n    function deltaFounderB() internal pure returns (bytes memory) { return ${hexBytes(fB)}; }\n    function deltaChild() internal pure returns (bytes memory) { return ${hexBytes(child)}; }\n`;
 s += `    function deltaCompact() internal pure returns (bytes memory) { return ${hexBytes(encodeDelta3({ baseModelId: mid, neurons: n, parentA: zero, parentB: zero, seed: 1n, name: "compact" }))}; }\n`;
 for (const [k, j] of Object.entries(cases)) s += `    uint64 constant J_${k.toUpperCase()} = ${j}; int16 constant W_${k.toUpperCase()} = ${recordAt(PC, j).w};\n`;
 const tiles = [["base", T], ["base", T + 1], ["A", T], ["A", T + 1], ["B", T], ["B", T + 1], ["C", T], ["C", T + 1], ["W", Math.floor((hb.synOffset + cases.fromA * 10) / TILE)], ["base", staticTile], ["C", staticTile], ["S", staticTile]];
