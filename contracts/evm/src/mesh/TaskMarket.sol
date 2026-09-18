@@ -63,6 +63,13 @@ contract TaskMarket is ITaskMarket {
     ///         may not -- a reverting recipient there would leave the dispute permanently unresolvable -- so
     ///         the deposit paths credit instead of reverting.
     mapping(address => uint256) public withdrawable;
+    /// @notice fees set aside under a MEP's terms and not yet collected, by mepId (`withdrawRoyalty`)
+    mapping(bytes32 => uint256) public royalties;
+    /// @notice how many executors `_pay` paid for this task, recorded at settle (0: refunded, or not settled). Something
+    ///         outside this contract that pays per executed task -- a hosting endowment -- needs the head count, and must
+    ///         not take it from `executors()`, which is a live roster.
+    mapping(bytes32 => uint8) public paidExecutors;
+    event RoyaltyAccrued(bytes32 indexed taskId, bytes32 indexed mepId, uint256 amount);
 
     constructor(IMEPRegistry m, InstanceRegistry i, PoRWClaimManager cm, uint64 taskTimeout) { meps = m; instances = i; claimManager = cm; TASK_TIMEOUT = taskTimeout; owner = msg.sender; DOMAIN_SEPARATOR = PorwEIP712.domainSeparator(address(this)); }
     function setDisputes(address d) external { require(msg.sender == owner && disputes == address(0), "set"); disputes = d; }
@@ -224,9 +231,24 @@ contract TaskMarket is ITaskMarket {
         uint256 agree = 0;
         if (ref != address(0)) for (uint256 i = 0; i < ex.length; i++) if (submitted[taskId][ex[i]] && _same(taskId, ex[i], ref)) agree++;
         if (agree == 0) { (bool ok,) = st.client.call{value: st.t.fee}(""); require(ok, "refund"); emit TaskSettled(taskId, bytes32(0), new address[](0)); return; }
-        uint256 share = st.t.fee / agree; address[] memory paid = new address[](agree); uint256 p = 0;
+        // the MEP's terms: a share of the fee is set aside for its beneficiary before the executors split the rest. Set
+        // aside rather than sent, because a beneficiary that refuses ether must not be able to stop a task from settling.
+        (address ben, uint16 bps) = meps.termsOf(st.t.mepId);
+        uint256 cut = ben == address(0) ? 0 : st.t.fee * bps / 10000;
+        if (cut > 0) { royalties[st.t.mepId] += cut; emit RoyaltyAccrued(taskId, st.t.mepId, cut); }
+        paidExecutors[taskId] = uint8(agree); // redundancy is a uint8, so this fits
+        uint256 share = (st.t.fee - cut) / agree; address[] memory paid = new address[](agree); uint256 p = 0;
         for (uint256 i = 0; i < ex.length; i++) if (submitted[taskId][ex[i]] && _same(taskId, ex[i], ref)) { paid[p++] = ex[i]; (bool ok,) = ex[i].call{value: share}(""); require(ok, "pay"); }
         emit TaskSettled(taskId, results[taskId][ref].execDigest, paid);
+    }
+
+    /// @notice the beneficiary of a MEP collects what its tasks have set aside. Only the beneficiary, and the amount is
+    ///         returned: a forwarding contract (one that pays a token's current owner) has to know what arrived and for
+    ///         which MEP, which it could not if anybody were able to push the balance at it.
+    function withdrawRoyalty(bytes32 mepId) external returns (uint256 amt) {
+        (address ben,) = meps.termsOf(mepId); require(msg.sender == ben, "beneficiary");
+        amt = royalties[mepId]; require(amt > 0, "nothing"); royalties[mepId] = 0;
+        (bool ok,) = msg.sender.call{value: amt}(""); require(ok, "withdraw");
     }
 
     function _send(address to, uint256 amt) internal { if (amt == 0) return; (bool ok,) = to.call{value: amt}(""); if (!ok) withdrawable[to] += amt; }

@@ -422,3 +422,34 @@ function that branches on `challenger[taskId]`. Four rules keep "one honest repl
 
 Still true and deliberate: the fee is not clawed back; a task that settled THROUGH a pre-settlement dispute is not
 challengeable (that bisection showed the winner right only at the first step where the two diverged).
+
+## MEP terms: a beneficiary's share of every settled fee (2026-09)
+
+A downstream collection wants the owner of a brain to earn when that brain is used. Done downstream it is a router that
+takes a cut and forwards to `postTask` — and a client that prefers not to pay posts to `TaskMarket` directly. So the
+share is a protocol rule or it is a social one. It is now a protocol rule.
+
+- **Where the terms live.** `MEPRegistry.registerMEPWithTerms(mep, beneficiary, royaltyBps)`; the id is
+  `keccak256(abi.encodePacked(profileId, beneficiary, royaltyBps))`, the profile id being the one `registerMEP` derives.
+  The terms *wrap* the profile id instead of joining its fields, so every royalty-free id is what it was (no scheme
+  bump: a residency claim is signed over `claimBinding` = scheme and model, which the terms do not touch) — and they are
+  *inside* the id for the reason every other field is. The registry's invariant is that registration is not a race.
+  A beneficiary kept beside the id would have made it one: the profile is derivable by anybody who has the bytes, and
+  the first to register it would have owned its income for good.
+- **Where the money moves.** `TaskMarket._pay` sets `fee * bps / 10000` aside in `royalties[mepId]` before the
+  executors split the rest; `withdrawRoyalty(mepId)` pays the beneficiary, and only when the beneficiary asks. Set aside
+  rather than sent, so a beneficiary that refuses ether cannot stop a task from settling; beneficiary-only with the
+  amount returned, so a forwarding contract (one paying a token's *current* owner) knows what arrived and for which MEP.
+  A refund (no agreeing executor) pays no royalty. A successful challenge does not claw one back, as it does not claw
+  back the fee.
+- **What it cannot do.** Make the bytes scarce. The model is public and content-addressed; the same brain under no
+  terms is one `registerMEP` away. Bonds, residency claims and sortition are per MEP, so that twin starts with no
+  executors, and standing them up costs a bond each and a materialized claim per validity window each — while an
+  executor's gain from serving the twin is only the royalty it no longer shares. The rule holds while the royalty is
+  below that, and no longer. It is a price, and should be set like one.
+- `paidExecutors[taskId]` records at settle how many executors were paid. Something outside the market that pays per
+  executed task (a hosting endowment that tops up the fee) needs the head count and must not take it from
+  `executors()`, which is a live roster.
+
+Tests: `test/MepTerms.t.sol` (8), and `web/porw-browser/test_mep_terms.mjs`, which pins the same id literal from the JS
+side (`mep.js: withTerms`).

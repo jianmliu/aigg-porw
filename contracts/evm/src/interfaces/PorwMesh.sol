@@ -29,6 +29,13 @@ library PorwMeshHash {
         internal pure returns (bytes32)
     { return keccak256(abi.encodePacked(schemeDigest, modelId, execKind, neurons, synapses, synapseRoot)); }
 
+    /// @dev a profile WITH terms: who is owed a share of every fee paid for a task against it, and how much. The terms wrap
+    ///      the profile id rather than joining its fields, so a royalty-free profile keeps the id it always had, and the
+    ///      terms are inside the id for the reason every other field is: what a settlement depends on is not left to
+    ///      whoever registers first. The same brain under other terms is another MEP, with its own bonds and claims.
+    function mepIdWithTerms(bytes32 profileId, address beneficiary, uint16 royaltyBps) internal pure returns (bytes32)
+    { return keccak256(abi.encodePacked(profileId, beneficiary, royaltyBps)); }
+
     /// @dev residency claim hash — the raw identifier auditors use off-chain; the on-chain signature is
     ///      over the EIP-712 Claim digest (PorwEIP712), signed by the wallet or a delegated session key
     function claimHash(
@@ -61,7 +68,12 @@ interface IMEPRegistry {
         bytes weightsDA;      // content pointer for the bytes (Greenfield object / DSN piece / CID)
     }
     event MEPRegistered(bytes32 indexed mepId, bytes32 indexed modelId, bytes32 schemeDigest);
+    event MEPTerms(bytes32 indexed mepId, bytes32 indexed profileId, address indexed beneficiary, uint16 royaltyBps);
     function registerMEP(MEP calldata mep) external returns (bytes32 mepId);
+    /// @notice the same profile under terms: `royaltyBps` of every settled fee is owed to `beneficiary` (TaskMarket)
+    function registerMEPWithTerms(MEP calldata mep, address beneficiary, uint16 royaltyBps) external returns (bytes32 mepId);
+    /// @notice (0, 0) for a royalty-free MEP -- and for an unknown one: callers that care have checked existence already
+    function termsOf(bytes32 mepId) external view returns (address beneficiary, uint16 royaltyBps);
     function getMEP(bytes32 mepId) external view returns (MEP memory);
     /// @notice the two fields a residency claim is signed over; reverts for an unknown MEP. A claim path reads this instead
     ///         of copying the whole profile (with its dynamic `weightsDA`) out of storage.

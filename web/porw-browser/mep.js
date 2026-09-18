@@ -11,6 +11,10 @@
 // per-task now (ITaskMarket.Task), because the dispute machinery is the only thing that reads them
 // and folding them in split one brain's residency set -- its bonds, its claims, its sortition pool --
 // across every step count anyone ever wanted to run.
+// A profile may be registered under TERMS -- a beneficiary owed `royaltyBps` of every fee settled for a task against
+// it (MEPRegistry.registerMEPWithTerms; TaskMarket sets the share aside). The terms wrap the profile id:
+//   mep_id = keccak256(abi.encodePacked(bytes32 profileId, address beneficiary, uint16 royaltyBps))
+// so a royalty-free profile keeps the id above, and the same brain under other terms is another MEP.
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { schemeDigest } from "./verify.js";
 
@@ -23,4 +27,13 @@ export function makeMep({ name, modelId, execKind = EXEC_INT_SPMV_Q16, neurons, 
   const m = { name, schemeDigest: schemeDigest(), modelId, execKind, neurons, synapses, synapseRoot };
   m.mepId = keccak_256(cat(m.schemeDigest, m.modelId, m.execKind, be32(neurons), be32(synapses), synapseRoot));
   return m;
+}
+
+const unhex = (h) => { h = h.replace(/^0x/, ""); const o = new Uint8Array(h.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(h.substr(2 * i, 2), 16); return o; };
+/** The same profile under terms. `beneficiary`: 20 bytes or 0x-hex; `royaltyBps`: 1..10000. Returns a new MEP object. */
+export function withTerms(mep, beneficiary, royaltyBps) {
+  const b = typeof beneficiary === "string" ? unhex(beneficiary) : beneficiary;
+  if (b.length !== 20 || b.every((x) => x === 0) || !(Number.isInteger(royaltyBps) && royaltyBps > 0 && royaltyBps <= 10000)) throw new Error("terms need a beneficiary and 1..10000 bps");
+  const profileId = mep.profileId || mep.mepId; // terms do not nest: they always wrap the profile
+  return { ...mep, profileId, beneficiary: b, royaltyBps, mepId: keccak_256(cat(profileId, b, new Uint8Array([royaltyBps >> 8, royaltyBps & 255]))) };
 }
