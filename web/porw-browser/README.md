@@ -20,6 +20,7 @@ aigg-spec conformance vectors, and the claim is verified on-chain.
 | `dispute_wasm.c` | execution-dispute commitments: per-step activation leaves, CSR build (counting sort by post), CSR chunk leaves (64 records/leaf), rowStart leaves, CSR-ordered partial sums; row-parallel inference (`…_csr_range`, and `…_rows_direct` when records are published post-sorted) |
 | `pool.js` / `pool_worker.js` | **shared-memory worker pool**: one resident copy in a shared `WebAssembly.Memory`, N instances of `porw-shared.wasm` (each with its own stack region) computing disjoint ranges in place; browser Workers (needs cross-origin isolation) or Node `worker_threads` |
 | `porw.js` / `model.js` | wasm glue (Node + browser), payload header decode, tree/SpMV wrappers, tree-node access for bisection |
+| `mem.js` | what one hosted brain costs a tab in wasm memory, as a closed form of (tiles, neurons, synapses, maxSteps, exec) — `bench_memory.mjs` measures the real allocator against it |
 | `mep.js` | Model Execution Profiles — one per released brain (female FlyWire, male CNS, …): `mep_id = keccak(scheme ‖ model_id ‖ exec kind ‖ neurons ‖ synapses ‖ synapse_root)`. No run parameters: steps and the commit stride ride on the task |
 | `claim.js` | EVM-packed claim encoding, secp256k1 signing / `ecrecover`-compatible recovery (noble) |
 | `eip712.js` | **EIP-712** typed data (`Claim`, `Result`, `Delegation`): hand-coded digests, `eth_signTypedData_v4` JSON + a generic `hashTypedData` (the wallet's view), local / injected (EIP-1193) wallets, session-key delegation |
