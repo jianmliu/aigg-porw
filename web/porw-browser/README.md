@@ -33,6 +33,7 @@ aigg-spec conformance vectors, and the claim is verified on-chain.
 | `index.html` + `worker.js` | audit-throughput PoC (per-worker slices, no shared memory) |
 | `node_page.html` + `run_node_browser.mjs` | the full node loop in headless Chromium (optionally with the pool) and this process as the verifier |
 | `synth.js` | JS payload synthesizers (v1 as the Python demo; v2 with signed counts for the LIF tests) |
+| `delta.js` / `test_delta.mjs` | **FLYDELTAv1 delta payloads**: a fine-tune, ablation or synthetic individual of a released brain as a sorted edit list (set / insert / delete records) bound to the base's `model_id`; `applyDelta` rebuilds the target payload byte for byte, so its `model_id` / MEP are those of a directly published payload; `PorwNode.loadDelta(base, delta)`; Python twin `demo/fly_brain/flywire_delta.py` |
 | `bench_lif_node.mjs` / `model_id.mjs` | full-brain LIF measurement (single thread, pool, research mode); model / MEP ids of a payload file |
 | `export_fixtures.mjs` / `export_lif_fixtures.mjs` | typed Solidity fixtures for the on-chain tests from real node runs (SpMV mesh; LIF mesh with a state liar and an input-sum liar) |
 | `test_*.mjs`, `crosscheck.py`, `int_spmv.py` | tests and Python cross-checks |
@@ -57,6 +58,24 @@ PW_CHROMIUM=/path/to/chrome node run_browser.mjs --mib 521 --workers 4
 # full node loop at FlyWire scale; --workers N uses the shared-memory pool (server sends COOP/COEP)
 PW_CHROMIUM=/path/to/chrome node run_node_browser.mjs --payload flywire-female-sorted.bin --steps 2 --samples 16 --rounds 3 --workers 4
 ```
+
+## Delta payloads (FLYDELTAv1)
+
+A brain that differs from a released one in a few records — an ablation, a fine-tune, a sampled individual —
+is published as a delta instead of a second 28 MB payload:
+
+```
+MAGIC "FLYDELTAv1\0\0" | base model_id (32 B) | u64 neurons | u32 ops | u16 name_len | name
+| u16 base_da_len | base_da (the base's pointer, may be empty) | ops: u32 pre | u32 post | i16 w   (sorted by (post, pre), unique)
+```
+
+`w != 0` sets the record (insert or replace), `w == 0` deletes it (the base must have it); neurons and root ids are
+unchanged. `applyDelta(base, delta)` writes exactly what `flywire_export.py` writes (header with the delta's name,
+records sorted by `(post, pre)`, 4 KiB padding), so the applied bytes' `model_id` is the ordinary weights Merkle root
+and the MEP is registered on it as usual; the delta's own identity is `keccak(delta bytes)`. A node holding the base
+loads a delta model with `loadDelta` (base id checked against the header). Measured on the real brain: a 467-record
+edit is a 4.7 KB delta, diff 0.6 s, apply 0.5 s. What the format does **not** do: it is not a second commitment
+scheme (the mesh still verifies the applied payload's `model_id`), and v1 cannot add or remove neurons.
 
 ## What is verified
 

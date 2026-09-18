@@ -2,6 +2,7 @@
 // (e.g. the female and male fly brains, each its own MEP), answers challenges per MEP with a
 // signed claim (residency + deterministic execution), and opens tiles.
 import { TILE_BYTES, attachTrees, treeNodeAt, treeBuildParallel } from "./porw.js";
+import { applyDelta, decodeDelta } from "./delta.js";
 import { decodeHeader, attachSpmv } from "./model.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { claimHash, signHash, keypair } from "./claim.js";
@@ -65,6 +66,12 @@ export class PorwNode {
     const st = { mep, exec, bufPtr, nTiles, hdr, weightsTree, modelId, slot, csr, steps, leavesMs: performance.now() - t0 };
     this.models.set(hex(mep.mepId), st);
     return st;
+  }
+  /** Load a FLYDELTAv1 delta on top of its base payload: the applied bytes are the model (same model_id / MEP as
+   *  publishing them directly); `st.delta` records the binding. `baseModelId` skips recomputing the base's id. */
+  async loadDelta(baseBytes, deltaBytes, { baseModelId = null, ...opts } = {}) {
+    const d = decodeDelta(deltaBytes); const applied = applyDelta(baseBytes, deltaBytes, { baseModelId });
+    const st = await this.loadModel(d.name, applied, opts); st.delta = { baseModelId: d.baseModelId, baseDA: d.baseDA, ops: d.ops.length, bytes: deltaBytes.length }; return st;
   }
   async challenge(mepId, challenge32, { stimulusSeed = 1, stimulusIds = null } = {}) {
     const st = this.models.get(hex(mepId)); if (!st) throw new Error("unknown MEP");

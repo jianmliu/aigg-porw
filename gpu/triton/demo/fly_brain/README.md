@@ -137,3 +137,11 @@ TRITON_INTERPRET=1 .venv/bin/python -m demo.fly_brain.run_demo \
 
 Run from `gpu/triton/` (so the `demo` and `porw_sketch` packages resolve), or
 add that directory to `PYTHONPATH`. Exit code is non-zero if any check fails.
+
+## Delta payloads: `flywire_delta.py`
+
+`FLYDELTAv1` (format in `web/porw-browser/delta.js`): an edit list over a released `FLYBRAINv2` payload, bound to the
+base's `model_id`. `diff --base a.bin --target b.bin --out b.delta` builds the delta between two exports, `make --ops
+ops.json` builds one from `[[pre, post, w], ...]` (w = 0 deletes), `apply` rebuilds the target payload byte for byte
+and writes a manifest with the base and result model ids, `info` decodes a delta. `w != 0` sets a record, `w == 0`
+deletes it; neurons are unchanged.
