@@ -150,3 +150,7 @@ deletes it; neurons are unchanged.
 writes a **FLYDELTAv2** procedural delta (a synthetic individual: every count resampled with a deterministic integer
 negative-binomial sampler, bit-identical to `web/porw-browser/sample.js`); `apply` works for both versions. Sample from
 a `--min-syn 1` export so individuals can gain connections, and let `min_syn 5` in the delta produce the published graph.
+
+`make3 --base base.bin --parent-a a.delta --parent-b b.delta|base --seed N --name NAME --out c.delta [--granularity
+record|pre|post] [--mut-rate 0.125]` writes a **FLYDELTAv3** same-base cross (the child of two procedural individuals);
+`apply --parents a.delta b.delta [...]` supplies the ancestors by file (matched by keccak id).

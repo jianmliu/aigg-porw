@@ -6,8 +6,8 @@ import fs from "node:fs";
 import { synthesizePayloadV2 } from "./synth.js";
 import { decodeHeader } from "./model.js";
 import * as V from "./verify.js";
-import { applyDelta, diffPayloads, decodeDelta, encodeDelta, records, encodePayload, modelIdOf, deltaId, encodeDelta2, decodeDelta2, applyDelta2, sampleCounts } from "./delta.js";
-import { nbTable, hash64, lnQ60, expQ256, DEFAULT_R_TABLE } from "./sample.js";
+import { applyDelta, diffPayloads, decodeDelta, encodeDelta, records, encodePayload, modelIdOf, deltaId, encodeDelta2, decodeDelta2, applyDelta2, sampleCounts, encodeDelta3, decodeDelta3, genotype, GRANULARITY } from "./delta.js";
+import { nbTable, hash64, hash64Words, lnQ60, expQ256, DEFAULT_R_TABLE } from "./sample.js";
 import { loadKernelFromBytes } from "./porw.js";
 import { PorwNode } from "./node.js";
 let fails = 0; const check = (n, ok) => { console.log((ok ? "  ok   " : "  FAIL ") + n); if (!ok) fails++; };
@@ -68,10 +68,37 @@ check("and the same execution digest", V.eq(rA.result.execDigest, rB.result.exec
   const C = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "33".repeat(32) }); const stC = await C.loadDelta(base, d2, { steps: 20, exec: "lif", commitStride: 10 }); const stD = await A.loadModel("synthetic-ind7", i7, { steps: 20, exec: "lif", commitStride: 10 });
   check("node.loadDelta(base, v2 delta): model_id / mepId of the sampled individual, delta version recorded", V.eq(stC.modelId, stD.modelId) && V.eq(stC.mep.mepId, stD.mep.mepId) && stC.delta.version === 2 && stC.delta.seed === 7n);
 }
+
+// ---- FLYDELTAv3: same-base cross ----
+{
+  let same = 0; for (let i = 0; i < 4000; i++) if (hash64Words(5, 0, i, (i * 7919) % n)[0] === hash64Words(5, 1, i, (i * 7919) % n)[0]) same++;
+  check("hash64: seeds differing only in the high word give different high words of the uniform", same < 5);
+  const src = records(base); const mk2 = (seed) => encodeDelta2({ baseModelId: mid, neurons: n, seed, name: "F" + seed, minSyn: 1 }); const f1 = mk2(1n), f2 = mk2(2n), f3 = mk2(3n);
+  const byId = new Map([f1, f2, f3].map((b) => [V.hex(deltaId(b)), b])); const resolve = (id) => byId.get(id); const reg = (b) => { byId.set(V.hex(deltaId(b)), b); return b; };
+  const cross = (a, b, seed, o = {}) => reg(encodeDelta3({ baseModelId: mid, neurons: n, parentA: deltaId(a), parentB: deltaId(b), seed, name: "X" + seed, minSyn: 1, ...o }));
+  const c1 = cross(f1, f2, 101n), c2 = cross(f1, f2, 102n); const D3 = decodeDelta3(c1);
+  check(`v3 delta is ${c1.length} bytes: two parent ids, seed, granularity, mutation rate 1/8`, c1.length < 260 && V.eq(D3.parentA, deltaId(f1)) && V.eq(D3.parentB, deltaId(f2)) && D3.granularity === 0 && D3.mutRateQ32 === 2 ** 29);
+  const cache = new Map(); const G = (d) => genotype(src, mid, d, { resolve, cache }); const dist = (x, y) => { let s = 0; for (let i = 0; i < x.length; i++) s += Math.abs(Math.log((x[i] + 1) / (y[i] + 1))); return s / x.length; };
+  const gF1 = G(f1), gF2 = G(f2), gF3 = G(f3), gC1 = G(c1), gC2 = G(c2);
+  const dPC = (dist(gC1, gF1) + dist(gC1, gF2)) / 2, dSib = dist(gC1, gC2), dUn = dist(gC1, gF3), dFF = dist(gF1, gF2);
+  check(`kinship gradient: parent-child ${dPC.toFixed(3)} < siblings ${dSib.toFixed(3)} < unrelated ${dUn.toFixed(3)} ~ founders ${dFF.toFixed(3)}`, dPC < dSib && dSib < dUn && Math.abs(dUn / dFF - 1) < 0.1);
+  check("both parents contribute equally (record granularity)", Math.abs(dist(gC1, gF1) / dist(gC1, gF2) - 1) < 0.1);
+  const pure = G(cross(f1, f2, 103n, { mutRateQ32: 0 })); let fromA = 0, ok = true; for (let i = 0; i < src.length; i++) { if (pure[i] === gF1[i]) fromA++; if (pure[i] !== gF1[i] && pure[i] !== gF2[i]) ok = false; }
+  check(`no mutation: every record carries one parent's count exactly (${(100 * fromA / src.length).toFixed(0)}% match A)`, ok && fromA > 0.45 * src.length);
+  const gp = G(cross(f1, f2, 104n, { mutRateQ32: 0, granularity: GRANULARITY.pre })); const side = new Map(); let linked = true; for (let i = 0; i < src.length; i++) { const a = gp[i] === gF1[i], b = gp[i] === gF2[i]; if (a === b) continue; const k = src[i].pre; if (!side.has(k)) side.set(k, a); else if (side.get(k) !== a) linked = false; }
+  check("granularity pre: all outputs of a neuron come from the same parent", linked && side.size > 100);
+  const self = G(cross(f1, f1, 105n, { mutRateQ32: 0 })); check("a self-cross without mutation is the parent", self.every((v, i) => v === gF1[i]));
+  const zero = new Uint8Array(32); const withBase = G(reg(encodeDelta3({ baseModelId: mid, neurons: n, parentA: deltaId(f1), parentB: zero, seed: 106n, name: "xb", mutRateQ32: 0 }))); check("parent id 0 = the published base", withBase.every((v, i) => v === gF1[i] || v === Math.abs(src[i].w)));
+  const g1 = cross(c1, c2, 201n); const a1 = applyDelta(base, g1, { resolve }), a2 = applyDelta(base, g1, { resolve, cache: new Map() }); check("a grandchild resolves its ancestors recursively and deterministically", V.eq(a1, a2) && decodeHeader(a1).name === "X201");
+  check("rejects a missing ancestor, a parent with explicit ops and a parent of another base", throws(() => applyDelta(base, g1, { resolve: () => null }), /not provided/)
+    && throws(() => { const p = reg(encodeDelta2({ baseModelId: mid, neurons: n, seed: 9n, name: "ops", ops: [{ pre: 0, post: 1, w: 5 }] })); applyDelta(base, cross(p, f1, 107n), { resolve }); }, /no explicit ops/)
+    && throws(() => { const p = reg(encodeDelta2({ baseModelId: modelIdOf(other), neurons: n, seed: 9n, name: "foreign" })); applyDelta(base, cross(p, f1, 108n), { resolve }); }, /base model id mismatch/));
+  const E = new PorwNode(await loadKernelFromBytes(wasm), { privHex: "0x" + "44".repeat(32) }); const stE = await E.loadDelta(base, c1, { resolve, steps: 20, exec: "lif", commitStride: 10 }); check("node.loadDelta(base, v3 delta, { resolve }): the child's model_id, parents recorded", V.eq(stE.modelId, modelIdOf(applyDelta(base, c1, { resolve }))) && stE.delta.version === 3 && V.eq(stE.delta.parents[0], deltaId(f1)));
+}
 // the real brain, if given: apply(base, python-made v2 delta) must reproduce the python-applied payload byte for byte
-const [basePath2, deltaPath, appliedPath] = process.argv.slice(2);
+const [basePath2, deltaPath, appliedPath, ...ancestorPaths] = process.argv.slice(2);
 if (basePath2 && deltaPath && appliedPath && fs.existsSync(deltaPath) && fs.existsSync(appliedPath)) {
-  const rb = new Uint8Array(fs.readFileSync(basePath2)), rd = new Uint8Array(fs.readFileSync(deltaPath)), ra = new Uint8Array(fs.readFileSync(appliedPath)); const t0 = performance.now(); const out = applyDelta(rb, rd); check(`real brain: v2 delta (${rd.length} B, seed ${decodeDelta2(rd).seed}) reproduces the Python-applied individual byte for byte (${records(out).length} records, ${Math.round(performance.now() - t0)} ms)`, V.eq(out, ra));
+  const rb = new Uint8Array(fs.readFileSync(basePath2)), rd = new Uint8Array(fs.readFileSync(deltaPath)), ra = new Uint8Array(fs.readFileSync(appliedPath)); const anc = new Map(ancestorPaths.map((f) => new Uint8Array(fs.readFileSync(f))).map((b) => [V.hex(deltaId(b)), b])); const t0 = performance.now(); const out = applyDelta(rb, rd, { resolve: (id) => anc.get(id) }); check(`real brain: procedural delta (${rd.length} B, ${anc.size} ancestors) reproduces the Python-applied payload byte for byte (${records(out).length} records, ${Math.round(performance.now() - t0)} ms)`, V.eq(out, ra));
 }
 // the real brain, if given
 const [basePath, targetPath] = process.argv.slice(2).length === 2 ? process.argv.slice(2) : [];

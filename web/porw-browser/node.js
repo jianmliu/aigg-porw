@@ -2,7 +2,7 @@
 // (e.g. the female and male fly brains, each its own MEP), answers challenges per MEP with a
 // signed claim (residency + deterministic execution), and opens tiles.
 import { TILE_BYTES, attachTrees, treeNodeAt, treeBuildParallel } from "./porw.js";
-import { applyDelta, decodeDelta, decodeDelta2, isDelta2 } from "./delta.js";
+import { applyDelta, decodeDelta, decodeDelta2, decodeDelta3, isDelta2, isDelta3 } from "./delta.js";
 import { decodeHeader, attachSpmv } from "./model.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { claimHash, signHash, keypair } from "./claim.js";
@@ -69,9 +69,9 @@ export class PorwNode {
   }
   /** Load a FLYDELTAv1 delta on top of its base payload: the applied bytes are the model (same model_id / MEP as
    *  publishing them directly); `st.delta` records the binding. `baseModelId` skips recomputing the base's id. */
-  async loadDelta(baseBytes, deltaBytes, { baseModelId = null, ...opts } = {}) {
-    const d = isDelta2(deltaBytes) ? decodeDelta2(deltaBytes) : decodeDelta(deltaBytes); const applied = applyDelta(baseBytes, deltaBytes, { baseModelId });
-    const st = await this.loadModel(d.name, applied, opts); st.delta = { version: isDelta2(deltaBytes) ? 2 : 1, baseModelId: d.baseModelId, baseDA: d.baseDA, ops: d.ops.length, seed: d.seed ?? null, bytes: deltaBytes.length }; return st;
+  async loadDelta(baseBytes, deltaBytes, { baseModelId = null, resolve = null, ...opts } = {}) {
+    const d = isDelta3(deltaBytes) ? decodeDelta3(deltaBytes) : isDelta2(deltaBytes) ? decodeDelta2(deltaBytes) : decodeDelta(deltaBytes); const applied = applyDelta(baseBytes, deltaBytes, { baseModelId, resolve }); // resolve(idHex): ancestors of a v3 cross
+    const st = await this.loadModel(d.name, applied, opts); st.delta = { version: isDelta3(deltaBytes) ? 3 : isDelta2(deltaBytes) ? 2 : 1, parents: d.parentA ? [d.parentA, d.parentB] : null, baseModelId: d.baseModelId, baseDA: d.baseDA, ops: d.ops.length, seed: d.seed ?? null, bytes: deltaBytes.length }; return st;
   }
   async challenge(mepId, challenge32, { stimulusSeed = 1, stimulusIds = null } = {}) {
     const st = this.models.get(hex(mepId)); if (!st) throw new Error("unknown MEP");
