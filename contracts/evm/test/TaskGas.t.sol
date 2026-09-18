@@ -79,6 +79,6 @@ contract TaskGas is Test {
     /// nodes host the brain -- the opposite of what a network wants. Measured here so the slope is a number.
     function test_gas_of_one_task_grows_with_the_instances_enrolled() public {
         enrol(30); uint256 t30 = one(plainId, 2, "redundancy 2, 30 instances enrolled");
-        console2.log("  per enrolled instance, per task (vs 3 enrolled: 866,810):", (t30 - 866810) / 27);
+        assertGt(t30, 1000000, "with --isolate: 2.36M against 0.86M with 3 enrolled, about 55,000 gas per enrolled instance per task"); // (without --isolate storage is warm and both are lower)
     }
 }

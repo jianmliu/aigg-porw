@@ -27,6 +27,10 @@ contract TaskMarket is ITaskMarket {
     ///         512 roots is ~16 KiB of calldata and ~10M gas to store, well inside a BNB Chain block; it admits
     ///         the production shape (5000 int-lif steps at stride 500 -> 10 segments) with room to spare.
     uint32 public constant MAX_ROOTS = 512;
+    uint32 public constant MAX_RUNS = 1 << 16; // 16 rounds of run bisection at most
+    /// @notice the number of runs of a batch; 0 for a single task
+    mapping(bytes32 => uint32) public batchRuns;
+    event BatchPosted(bytes32 indexed taskId, uint32 runs, bytes32 runsRoot);
     uint64 public immutable TASK_TIMEOUT;
     IMEPRegistry public immutable meps;
     InstanceRegistry public immutable instances;
@@ -84,7 +88,26 @@ contract TaskMarket is ITaskMarket {
     /// @notice what the NEXT challenge of this task must deposit: the base, doubled for every challenge already lost on it
     function requiredChallengeDeposit(bytes32 taskId) public view returns (uint256) { uint8 n = failedChallenges[taskId]; return challengeDepositWei << (n > 16 ? 16 : n); }
 
-    function postTask(Task calldata t, bytes32 nonce) external payable returns (bytes32 taskId) {
+    function postTask(Task calldata t, bytes32 nonce) external payable returns (bytes32 taskId) { taskId = PorwMeshHash.taskId(t, nonce); _post(t, taskId); }
+
+    /// @notice One task, many runs. A dataset of millions of runs cannot pay for a task each (test/TaskGas.t.sol: ~0.86M
+    ///         gas at redundancy 2, before the roster scan), and does not need to: the runs of one brain differ only in
+    ///         their seed and their state_0, which carries the stimulus set and the silence set. So a batch is a Task
+    ///         whose `initStateRoot` is the root over runLeaf(k, seed_k, initStateRoot_k) and whose `stimulusSeed` is 0.
+    ///         Everything that handles a result -- sortition, submitResult, settle, the fee, the royalty, a replicator's
+    ///         challenge -- is untouched, because a batch result is still one (execDigest, execRoot): the root over
+    ///         runResultLeaf(k, execRoot_k), and a digest that is a function of it. A disagreement is bisected to the
+    ///         first run the parties differ on (ExecutionDisputes, Phase.Run) and is that run's dispute from there.
+    ///         The fee is for the whole batch. Nothing here checks that the runs root is well formed: an executor that
+    ///         cannot open its runs refuses the task, as it would one whose state_0 it cannot build.
+    function postBatch(Task calldata t, uint32 runs, bytes32 nonce) external payable returns (bytes32 taskId) {
+        require(runs >= 2 && runs <= MAX_RUNS, "runs"); require(t.stimulusSeed == 0, "a batch's seeds are in its runs");
+        require(meps.getMEP(t.mepId).execKind == LifRowCheck.execKind(), "int-lif only");
+        taskId = PorwMeshHash.batchId(t, runs, nonce); _post(t, taskId); batchRuns[taskId] = runs;
+        emit BatchPosted(taskId, runs, t.initStateRoot);
+    }
+
+    function _post(Task calldata t, bytes32 taskId) internal {
         require(msg.value == t.fee, "fee");
         require(t.redundancy >= 1, "r");
         require(t.steps >= 1 && t.commitStride >= 1 && t.commitStride <= t.steps, "steps");
@@ -96,7 +119,6 @@ contract TaskMarket is ITaskMarket {
         }
         uint64 e = claimManager.currentEpoch();
         require(claimManager.beacon(e) != bytes32(0), "no beacon");
-        taskId = PorwMeshHash.taskId(t, nonce);
         require(!tasks[taskId].exists, "posted");
         tasks[taskId] = StoredTask(t, msg.sender, e, uint64(block.number), 0, true, false, false, false);
         emit TaskPosted(taskId, t.mepId, t.redundancy);
@@ -134,6 +156,7 @@ contract TaskMarket is ITaskMarket {
         address signer = instances.resolve(PorwEIP712.recover(resultDigest(taskId, r.execDigest, r.execRoot), signature));
         require(signer != address(0) && _isExecutor(taskId, signer), "not an executor");
         require(!submitted[taskId][signer], "submitted");
+        _shape(taskId, r);
         results[taskId][signer] = r; submitted[taskId][signer] = true;
         emit ResultSubmitted(taskId, signer, r.execDigest);
     }
@@ -182,6 +205,7 @@ contract TaskMarket is ITaskMarket {
         require(!submitted[taskId][msg.sender], "executor");
         address ref = settledRef[taskId]; require(ref != address(0), "none"); // nothing was ever submitted: no result to dispute
         require(results[taskId][ref].execDigest != r.execDigest || results[taskId][ref].execRoot != r.execRoot, "agrees");
+        _shape(taskId, r);
         results[taskId][msg.sender] = r;
         challenger[taskId] = msg.sender; challengeDeposit[taskId] = msg.value; challengedAt[taskId] = uint64(block.number);
         st.disputed = true;
@@ -250,6 +274,10 @@ contract TaskMarket is ITaskMarket {
         amt = royalties[mepId]; require(amt > 0, "nothing"); royalties[mepId] = 0;
         (bool ok,) = msg.sender.call{value: amt}(""); require(ok, "withdraw");
     }
+
+    /// @dev a batch result has one degree of freedom. If the digest were free, two results could share a root and differ
+    ///      only in a digest nothing can adjudicate; `settle` would open a dispute with no divergence to find.
+    function _shape(bytes32 taskId, Result calldata r) internal view { if (batchRuns[taskId] != 0) require(r.execDigest == PorwMeshHash.batchDigest(r.execRoot), "batch digest"); }
 
     function _send(address to, uint256 amt) internal { if (amt == 0) return; (bool ok,) = to.call{value: amt}(""); if (!ok) withdrawable[to] += amt; }
     function withdraw() external { uint256 a = withdrawable[msg.sender]; require(a > 0, "nothing"); withdrawable[msg.sender] = 0; (bool ok,) = msg.sender.call{value: a}(""); require(ok, "withdraw"); }
