@@ -36,7 +36,7 @@ aigg-spec conformance vectors, and the claim is verified on-chain.
 | `index.html` + `worker.js` | audit-throughput PoC (per-worker slices, no shared memory) |
 | `node_page.html` + `run_node_browser.mjs` | the full node loop in headless Chromium (optionally with the pool) and this process as the verifier |
 | `synth.js` | JS payload synthesizers (v1 as the Python demo; v2 with signed counts for the LIF tests) |
-| `delta.js` / `sample.js` / `test_delta.mjs` | **delta payloads**: v1 = explicit edit list, v2 = procedural (seed + noise model → a synthetic individual, deterministic integer sampler bit-identical in JS and Python), v3 = same-base cross (two parent deltas + seed → a child with real inheritance); all: a fine-tune, ablation or synthetic individual of a released brain as a sorted edit list (set / insert / delete records) bound to the base's `model_id`; `applyDelta` rebuilds the target payload byte for byte, so its `model_id` / MEP are those of a directly published payload; `PorwNode.loadDelta(base, delta)`; Python twin `demo/fly_brain/flywire_delta.py` |
+| `delta.js` / `sample.js` / `test_delta.mjs` | **delta payloads**: v1 = explicit edit list, v2 = procedural (seed + noise model → a synthetic individual, deterministic integer sampler bit-identical in JS and Python), v3 = same-base cross (two parent deltas + seed → a child with real inheritance), in a compact or an **in-place** layout (records keep the base's positions, so one record of a child re-derives from one record of its parents); all: a fine-tune, ablation or synthetic individual of a released brain as a sorted edit list (set / insert / delete records) bound to the base's `model_id`; `applyDelta` rebuilds the target payload byte for byte, so its `model_id` / MEP are those of a directly published payload; `PorwNode.loadDelta(base, delta)`; Python twin `demo/fly_brain/flywire_delta.py` |
 | `bench_lif_node.mjs` / `model_id.mjs` | full-brain LIF measurement (single thread, pool, research mode); model / MEP ids of a payload file |
 | `export_fixtures.mjs` / `export_lif_fixtures.mjs` | typed Solidity fixtures for the on-chain tests from real node runs (SpMV mesh; LIF mesh with a state liar and an input-sum liar) |
 | `test_*.mjs`, `crosscheck.py`, `int_spmv.py` | tests and Python cross-checks |
@@ -130,6 +130,26 @@ grandchild with three ancestors applies in 1.9 s (JS); JS and Python agree byte 
 `hash64` was tightened with this version: both seed words now reach the high word of the uniform (previously seeds
 differing only in the high 32 bits produced almost the same individual) and the low word hashes the swapped key. v2
 payloads made with the earlier hash are not reproducible; none had been registered.
+
+### In-place layout (`FLYDELTAv3`, layout byte = 1)
+
+`proposals/flydelta-inplace` asks that a wrong declared `model_id` be provable, which needs a child's bytes to be a
+local function of its parents' bytes. With layout 1 the payload is the base's bytes with another name (of the base's
+byte length: `fitName`) and other weights: every record stays at the base's offset and a record the individual lacks
+has weight 0. Inheritance then acts on the payload weights themselves — picking commutes with thresholding and a
+mutation is a fresh draw around the base count, so the compact and in-place materializations of one recipe express
+exactly the same connections — and `inheritRecord` / `expectedRecord(delta, base, parentA, parentB, j)` re-derive
+record `j` from record `j` of the base and of the parents' payloads alone. In-place lineages are closed: parents are
+the base (zero id) or in-place crosses with `min_syn` ≤ the child's; nothing carries explicit ops. A founder is a
+base × base cross with `mut_rate_q32 = 0xFFFFFFFF` ("every record mutates"): the `v2` individual's distribution, under
+other draws.
+
+Measured on the real brain, ≥ 2-synapse base (7,595,967 records, 77 MB), `min_syn 5`, `mean_ratio 0.92`: a founder
+expresses 2,689,164 records (the real fly's ≥ 5 graph has 2,700,513), 64.6% of the payload is zeros; founders, a child
+and a grandchild are byte-identical between JS and Python (1–2 s to apply); 200,000 sampled records of each re-derive
+from the Python-made parent payloads with 0 mismatches. Zero weights are inert: an in-place individual and its compact
+twin give the **same `execDigest`**, at 2.3× the execution time (10.1 s vs 4.3 s for 2,000 steps) and 283 vs 208 MB of
+wasm memory. Not implemented yet: the on-chain verifier for the one-record proof, and in-place `v1` edits.
 
 ## What is verified
 

@@ -27,10 +27,17 @@ published base itself). Inheritance acts on genotypes = the count of every base 
   per inheritance unit (record | pre neuron | post neuron) one hash bit picks parent A or B; then each record mutates with
   probability mut_rate (a fresh v2 draw around the BASE count, so the population is stationary); phenotype = counts >= min_syn.
   MAGIC "FLYDELTAv3\0\0" | base model_id | u64 neurons | parent A id (32 B) | parent B id (32 B) | u64 seed | u8 granularity
-  | u8 0 | u16 min_syn | u32 mut_rate_q32 | u32 mean_ratio_q16 | u16 r_rows | rows | u32 ops | u16 name_len | name | u16 da_len | da | ops
+  | u8 layout | u16 min_syn | u32 mut_rate_q32 | u32 mean_ratio_q16 | u16 r_rows | rows | u32 ops | u16 name_len | name | u16 da_len | da | ops
   Parents must carry no explicit ops (their genotype would not be base-indexed). Ancestors are resolved by delta id.
+  layout 0 = compact (records below min_syn dropped, the rest re-packed). layout 1 = IN PLACE: every base record stays at the
+  base's byte offset, a record the individual lacks has weight 0, the name has the base's byte length; so record j of a child
+  is a function of record j of the base and of its parents' payloads (recompute_record) -- the property that lets a wrong
+  declared model_id be shown wrong from one record (proposals/flydelta-inplace). In-place lineages are closed: parents are the
+  base or in-place crosses with min_syn <= the child's; no explicit ops. A founder = base x base with mut_rate 1.0
+  (mut_rate_q32 = 0xFFFFFFFF means "every record mutates"): a fresh draw everywhere.
   python flywire_delta.py make3 --base base.bin --parent-a a.delta --parent-b b.delta|base --seed N --name NAME --out c.delta
-                                [--granularity record|pre|post] [--mut-rate 0.125] [--parents more.delta ...]
+                                [--granularity record|pre|post] [--mut-rate 0.125] [--layout compact|inplace] [--parents more.delta ...]
+  python flywire_delta.py make3 --base base.bin --founder --layout inplace --seed N --name NAME --out f.delta   (the name is fitted to the base's length)
   python flywire_delta.py apply --base base.bin --delta c.delta --out c.bin --parents a.delta b.delta [...ancestors]
 
 apply writes exactly what flywire_export.py would (records sorted by (post, pre), 4 KiB padding), and every command
@@ -178,25 +185,27 @@ def sample_with_u(c, U, mr, rows):
     return np.minimum(out, 32767)
 def sample_counts(pre, post, c, seed, mr, rows): return sample_with_u(c, _hash64_vec(seed, pre, post), mr, rows)
 # ---------------------------------------------------------------- FLYDELTAv3: same-base cross --------------------
-MAGIC_DELTA3 = b"FLYDELTAv3\x00\x00"; ZERO_ID = b"\x00" * 32; GRAN = {"record": 0, "pre": 1, "post": 2}
+MAGIC_DELTA3 = b"FLYDELTAv3\x00\x00"; ZERO_ID = b"\x00" * 32; GRAN = {"record": 0, "pre": 1, "post": 2}; LAYOUT = {"compact": 0, "inplace": 1}; MUT_ALWAYS = 0xFFFFFFFF
 DOM_PICK, DOM_MUT, DOM_DRAW = 0x5049434B, 0x4D555421, 0x44524157   # seed-domain separation: XORed into both words of the seed
 def _dom(seed, d): return seed ^ (d << 32) ^ d
 def delta_id(delta: bytes) -> bytes: return keccak256(delta)
-def encode_delta3(base_model_id, n, name, base_da, parent_a, parent_b, seed, granularity=0, min_syn=5, mut_rate_q32=1 << 29, mean_ratio_q16=65536, r_table=None, ops=None):
+def encode_delta3(base_model_id, n, name, base_da, parent_a, parent_b, seed, granularity=0, min_syn=5, mut_rate_q32=1 << 29, mean_ratio_q16=65536, r_table=None, ops=None, layout=0):
     rows = r_table or DEFAULT_R_TABLE
     if any(rows[i][0] >= rows[i + 1][0] for i in range(len(rows) - 1)) or rows[0][0] != 1: raise ValueError("r table rows must start at c=1 and ascend")
+    if layout not in (0, 1) or (layout == 1 and ops is not None and len(ops[2])): raise ValueError("bad layout, or explicit ops in an in-place delta")
     if len(parent_a) != 32 or len(parent_b) != 32 or granularity not in (0, 1, 2) or not 0 <= mut_rate_q32 < (1 << 32): raise ValueError("bad cross parameters")
     if ops is None: ops = (np.zeros(0, np.int64),) * 3
     pre, post, w = (np.asarray(x, dtype=np.int64) for x in ops); order = np.lexsort((pre, post)); pre, post, w = pre[order], post[order], w[order]
     if len(w) and np.any(np.diff(post * n + pre) <= 0): raise ValueError("duplicate op")
     name_b, da_b = name.encode(), base_da.encode()
-    hdr = MAGIC_DELTA3 + base_model_id + struct.pack("<Q", n) + parent_a + parent_b + struct.pack("<QBBHIIH", seed, granularity, 0, min_syn, mut_rate_q32, mean_ratio_q16, len(rows)) + b"".join(struct.pack("<IH", cf, rq) for cf, rq in rows)
+    hdr = MAGIC_DELTA3 + base_model_id + struct.pack("<Q", n) + parent_a + parent_b + struct.pack("<QBBHIIH", seed, granularity, layout, min_syn, mut_rate_q32, mean_ratio_q16, len(rows)) + b"".join(struct.pack("<IH", cf, rq) for cf, rq in rows)
     return hdr + struct.pack("<I", len(w)) + struct.pack("<H", len(name_b)) + name_b + struct.pack("<H", len(da_b)) + da_b + encode_records(pre, post, w)
 def decode_delta3(buf):
     if buf[:12] != MAGIC_DELTA3: raise ValueError("not FLYDELTAv3")
     base_id = buf[12:44]; n, = struct.unpack_from("<Q", buf, 44); pa, pb = buf[52:84], buf[84:116]
-    seed, gran, _z, min_syn, mut, mr, nrows = struct.unpack_from("<QBBHIIH", buf, 116); off = 116 + 22
+    seed, gran, layout, min_syn, mut, mr, nrows = struct.unpack_from("<QBBHIIH", buf, 116); off = 116 + 22
     if gran not in (0, 1, 2): raise ValueError("bad granularity")
+    if layout not in (0, 1): raise ValueError("bad layout")
     rows = [struct.unpack_from("<IH", buf, off + 6 * i) for i in range(nrows)]; off += 6 * nrows
     ops, = struct.unpack_from("<I", buf, off); off += 4; nl, = struct.unpack_from("<H", buf, off); off += 2; name = buf[off:off + nl].decode(); off += nl
     dl, = struct.unpack_from("<H", buf, off); off += 2; base_da = buf[off:off + dl].decode(); off += dl
@@ -204,31 +213,56 @@ def decode_delta3(buf):
     rec = np.frombuffer(buf, dtype=np.uint8, count=ops * REC, offset=off).reshape(ops, REC)
     pre = rec[:, 0:4].copy().view("<u4").reshape(-1).astype(np.int64); post = rec[:, 4:8].copy().view("<u4").reshape(-1).astype(np.int64); w = rec[:, 8:10].copy().view("<i2").reshape(-1).astype(np.int64)
     if len(w) and np.any(np.diff(post * n + pre) <= 0): raise ValueError("ops must be sorted by (post, pre) and unique")
-    return dict(base_model_id=base_id, n=n, parent_a=pa, parent_b=pb, seed=seed, granularity=gran, min_syn=min_syn, mut_rate_q32=mut, mean_ratio_q16=mr, r_table=rows, name=name, base_da=base_da, pre=pre, post=post, w=w)
-def genotype(B, base_mid, delta, parents=None, cache=None, as_parent=False):
-    """count of every base record (before min_syn) for a procedural delta; parents: {delta id -> delta bytes}"""
+    if layout == 1 and ops: raise ValueError("an in-place delta carries no explicit ops")
+    return dict(base_model_id=base_id, n=n, parent_a=pa, parent_b=pb, seed=seed, granularity=gran, layout=layout, min_syn=min_syn, mut_rate_q32=mut, mean_ratio_q16=mr, r_table=rows, name=name, base_da=base_da, pre=pre, post=post, w=w)
+def genotype(B, base_mid, delta, parents=None, cache=None, as_parent=False, child=None):
+    """count of every base record for a procedural delta (compact: before min_syn; in-place: the payload's own |weights|, already
+    thresholded -- picking commutes with thresholding, so both layouts express the same child). parents: {delta id -> bytes}"""
     parents = parents or {}; cache = {} if cache is None else cache; did = delta_id(delta)
-    if did in cache: return cache[did]
     magic = delta[:12]; D = decode_delta2(delta) if magic == MAGIC_DELTA2 else decode_delta3(delta) if magic == MAGIC_DELTA3 else None
     if D is None: raise ValueError("a genotype needs a procedural delta (v2 or v3)")
     if D["n"] != B["n"]: raise ValueError(f"neuron count mismatch: base {B['n']}, delta {D['n']}")
     if D["base_model_id"] != base_mid: raise ValueError(f"base model id mismatch: base 0x{base_mid.hex()}, delta binds 0x{D['base_model_id'].hex()}")
     if as_parent and len(D["w"]): raise ValueError("a parent must carry no explicit ops")
+    if child is not None:
+        if D.get("layout", 0) != child["layout"]: raise ValueError("a lineage keeps one layout: " + ("an in-place child needs in-place parents" if child["layout"] else "a compact child needs compact parents"))
+        if child["layout"] == 1 and D["min_syn"] > child["min_syn"]: raise ValueError(f"an in-place child's min_syn ({child['min_syn']}) must be >= its parents' ({D['min_syn']})")
+    if did in cache: return cache[did]
     c = np.abs(B["w"])
     if magic == MAGIC_DELTA2: g = sample_counts(B["pre"], B["post"], c, D["seed"], D["mean_ratio_q16"], D["r_table"])
     else:
         def par(pid):
             if pid == ZERO_ID: return c
             if pid not in parents: raise ValueError(f"parent delta 0x{pid.hex()} not provided")
-            return genotype(B, base_mid, parents[pid], parents, cache, as_parent=True)
+            return genotype(B, base_mid, parents[pid], parents, cache, as_parent=True, child=D)
         gA, gB = par(D["parent_a"]), par(D["parent_b"]); seed = D["seed"]; FF = np.full(len(c), M32, dtype=np.int64)
         ka, kb = (B["pre"], B["post"]) if D["granularity"] == 0 else (B["pre"], FF) if D["granularity"] == 1 else (FF, B["post"])
         from_a = (_hash64_vec(_dom(seed, DOM_PICK), ka, kb) >> np.uint64(63)) == 0; g = np.where(from_a, gA, gB)
-        mut = (_hash64_vec(_dom(seed, DOM_MUT), B["pre"], B["post"]) >> np.uint64(32)) < np.uint64(D["mut_rate_q32"])
+        mut = np.ones(len(c), dtype=bool) if D["mut_rate_q32"] == MUT_ALWAYS else (_hash64_vec(_dom(seed, DOM_MUT), B["pre"], B["post"]) >> np.uint64(32)) < np.uint64(D["mut_rate_q32"])
         if mut.any(): g = g.copy(); g[mut] = sample_with_u(c[mut], _hash64_vec(_dom(seed, DOM_DRAW), B["pre"][mut], B["post"][mut]), D["mean_ratio_q16"], D["r_table"])   # a mutation is a fresh draw around the BASE count: the population stays stationary
+        if D["layout"] == 1: g = np.where(g >= D["min_syn"], g, 0)
     cache[did] = g; return g
+def recompute_record(D, pre, post, c, a, b):
+    """record-local rule of a cross (the scalar twin of the vectorised genotype): c = |base weight|, a / b = the parents' values.
+    In-place: a, b are the parents' payload |weights| and the result is thresholded -- committed bytes in, committed bytes out."""
+    seed = D["seed"]; ka, kb = (pre, post) if D["granularity"] == 0 else (pre, M32) if D["granularity"] == 1 else (M32, post)
+    v = a if (hash64(_dom(seed, DOM_PICK), ka, kb) >> 63) == 0 else b
+    if D["mut_rate_q32"] == MUT_ALWAYS or (hash64(_dom(seed, DOM_MUT), pre, post) >> 32) < D["mut_rate_q32"]:
+        tab = nb_table(int(c), r_of(int(c), D["r_table"]), D["mean_ratio_q16"]); v = min(32767, min(int(np.searchsorted(tab, np.uint64(hash64(_dom(seed, DOM_DRAW), pre, post)), side="right")), len(tab) - 1))
+    return 0 if D.get("layout", 0) == 1 and v < D["min_syn"] else int(v)
+def base_name_length(base: bytes) -> int: return struct.unpack_from("<H", base, 28)[0]
+def fit_name(name: str, length: int) -> str:
+    b = name.encode()[:length]
+    while b and (b[-1] & 0xC0) == 0x80: b = b[:-1]
+    return b.decode(errors="ignore") + "_" * (length - len(b))
 def apply_procedural(base, delta, parents=None):
     B = decode_payload(base); mid = model_id(base); g = genotype(B, mid, delta, parents); D = decode_delta2(delta) if delta[:12] == MAGIC_DELTA2 else decode_delta3(delta)
+    if D.get("layout", 0) == 1:   # in place: the base's bytes with this name and these weights; nothing moves
+        nl = base_name_length(base); name_b = D["name"].encode()
+        if len(name_b) != nl: raise ValueError(f"an in-place name must have the base name's byte length ({nl}), got {len(name_b)}: use fit_name")
+        out = bytearray(base); out[30:30 + nl] = name_b; off = 30 + nl + B["n"] * 8
+        rec = np.frombuffer(out, dtype=np.uint8, count=len(g) * REC, offset=off).reshape(-1, REC); rec[:, 8:10] = (np.sign(B["w"]) * g).astype("<i2").view(np.uint8).reshape(-1, 2)   # g is already thresholded
+        return bytes(out)
     n = B["n"]; keep = g >= D["min_syn"]; pre, post, w = B["pre"][keep], B["post"][keep], np.sign(B["w"])[keep] * g[keep]
     if len(D["w"]):   # explicit ops after sampling: set / insert / lenient delete
         bkey = post * n + pre; dkey = D["post"] * n + D["pre"]; keepb = ~np.isin(bkey, dkey); ins = D["w"] != 0
@@ -239,7 +273,7 @@ def apply_any(base, delta, parents=None): return apply_procedural(base, delta, p
 
 def manifest(delta: bytes, base: bytes, applied: bytes | None = None) -> dict:
     if delta[:12] == MAGIC_DELTA3:
-        D = decode_delta3(delta); m = dict(format="FLYDELTAv3", name=D["name"], bytes=len(delta), parent_a="0x" + D["parent_a"].hex(), parent_b="0x" + D["parent_b"].hex(), seed=D["seed"], granularity=[k for k, v in GRAN.items() if v == D["granularity"]][0], mut_rate=D["mut_rate_q32"] / 2 ** 32, min_syn=D["min_syn"], mean_ratio_q16=D["mean_ratio_q16"], r_table=[list(r) for r in D["r_table"]], ops=int(len(D["w"])), neurons=D["n"], base_model_id="0x" + D["base_model_id"].hex(), base_da=D["base_da"], delta_id="0x" + keccak256(delta).hex(), sha256=hashlib.sha256(delta).hexdigest())
+        D = decode_delta3(delta); m = dict(format="FLYDELTAv3", name=D["name"], bytes=len(delta), parent_a="0x" + D["parent_a"].hex(), parent_b="0x" + D["parent_b"].hex(), seed=D["seed"], granularity=[k for k, v in GRAN.items() if v == D["granularity"]][0], layout=[k for k, v in LAYOUT.items() if v == D["layout"]][0], mut_rate=("always" if D["mut_rate_q32"] == MUT_ALWAYS else D["mut_rate_q32"] / 2 ** 32), min_syn=D["min_syn"], mean_ratio_q16=D["mean_ratio_q16"], r_table=[list(r) for r in D["r_table"]], ops=int(len(D["w"])), neurons=D["n"], base_model_id="0x" + D["base_model_id"].hex(), base_da=D["base_da"], delta_id="0x" + keccak256(delta).hex(), sha256=hashlib.sha256(delta).hexdigest())
     elif delta[:12] == MAGIC_DELTA2:
         D = decode_delta2(delta); m = dict(format="FLYDELTAv2", name=D["name"], bytes=len(delta), seed=D["seed"], min_syn=D["min_syn"], mean_ratio_q16=D["mean_ratio_q16"], r_table=[list(r) for r in D["r_table"]], ops=int(len(D["w"])), neurons=D["n"], base_model_id="0x" + D["base_model_id"].hex(), base_da=D["base_da"], delta_id="0x" + keccak256(delta).hex(), sha256=hashlib.sha256(delta).hexdigest())
     else:
@@ -251,7 +285,7 @@ def main():
     d = sub.add_parser("diff"); d.add_argument("--base", type=Path, required=True); d.add_argument("--target", type=Path, required=True); d.add_argument("--out", type=Path, required=True); d.add_argument("--name"); d.add_argument("--base-da", default="")
     m = sub.add_parser("make"); m.add_argument("--base", type=Path, required=True); m.add_argument("--ops", type=Path, required=True); m.add_argument("--name", required=True); m.add_argument("--out", type=Path, required=True); m.add_argument("--base-da", default="")
     a = sub.add_parser("apply"); a.add_argument("--base", type=Path, required=True); a.add_argument("--delta", type=Path, required=True); a.add_argument("--out", type=Path, required=True); a.add_argument("--parents", type=Path, nargs="*", default=[], help="ancestor deltas of a v3 cross")
-    m3 = sub.add_parser("make3"); m3.add_argument("--base", type=Path, required=True); m3.add_argument("--parent-a", required=True, help="delta file, or 'base'"); m3.add_argument("--parent-b", required=True); m3.add_argument("--seed", type=int, required=True); m3.add_argument("--name", required=True); m3.add_argument("--out", type=Path, required=True)
+    m3 = sub.add_parser("make3"); m3.add_argument("--base", type=Path, required=True); m3.add_argument("--parent-a", default=None, help="delta file, or 'base'"); m3.add_argument("--parent-b", default=None); m3.add_argument("--founder", action="store_true", help="base x base with every record mutating: a fresh individual"); m3.add_argument("--layout", choices=list(LAYOUT), default="compact"); m3.add_argument("--seed", type=int, required=True); m3.add_argument("--name", required=True); m3.add_argument("--out", type=Path, required=True)
     m3.add_argument("--granularity", choices=list(GRAN), default="record"); m3.add_argument("--mut-rate", type=float, default=0.125); m3.add_argument("--min-syn", type=int, default=5); m3.add_argument("--mean-ratio", type=float, default=1.0); m3.add_argument("--r-table", type=Path); m3.add_argument("--base-da", default=""); m3.add_argument("--parents", type=Path, nargs="*", default=[], help="further ancestors needed to apply"); m3.add_argument("--no-apply", action="store_true")
     i = sub.add_parser("info"); i.add_argument("--delta", type=Path, required=True)
     m2 = sub.add_parser("make2"); m2.add_argument("--base", type=Path, required=True); m2.add_argument("--seed", type=int, required=True); m2.add_argument("--name", required=True); m2.add_argument("--out", type=Path, required=True); m2.add_argument("--min-syn", type=int, default=5); m2.add_argument("--mean-ratio", type=float, default=1.0); m2.add_argument("--r-table", type=Path); m2.add_argument("--ops", type=Path); m2.add_argument("--base-da", default=""); m2.add_argument("--no-apply", action="store_true", help="write the delta and its manifest without applying (no result ids)")
@@ -265,8 +299,11 @@ def main():
         delta = encode_delta2(model_id(base), decode_payload(base)["n"], x.name, x.base_da, x.seed, x.min_syn, int(round(x.mean_ratio * 65536)), rows, (ops[:, 0], ops[:, 1], ops[:, 2]) if ops is not None else None)
         if x.no_apply: x.out.write_bytes(delta); man = manifest(delta, base); Path(str(x.out) + ".manifest.json").write_text(json.dumps(man, indent=1)); print(json.dumps(man, indent=1)); return
     elif x.cmd == "make3":
+        if x.founder: x.parent_a = x.parent_b = "base"; x.mut_rate = 1.0
+        if not x.parent_a or not x.parent_b: raise SystemExit("make3 needs --parent-a and --parent-b, or --founder")
+        if x.layout == "inplace": x.name = fit_name(x.name, base_name_length(base))
         pid = lambda v: (ZERO_ID, None) if v == "base" else (lambda b: (delta_id(b), b))(Path(v).read_bytes()); (ia, ba), (ib, bb) = pid(x.parent_a), pid(x.parent_b); rows = [tuple(r) for r in json.loads(x.r_table.read_text())] if x.r_table else None
-        delta = encode_delta3(model_id(base), decode_payload(base)["n"], x.name, x.base_da, ia, ib, x.seed, GRAN[x.granularity], x.min_syn, min(int(round(x.mut_rate * 2 ** 32)), 2 ** 32 - 1), int(round(x.mean_ratio * 65536)), rows)
+        delta = encode_delta3(model_id(base), decode_payload(base)["n"], x.name, x.base_da, ia, ib, x.seed, GRAN[x.granularity], x.min_syn, min(int(round(x.mut_rate * 2 ** 32)), 2 ** 32 - 1), int(round(x.mean_ratio * 65536)), rows, None, LAYOUT[x.layout])
         x.parents = list(x.parents) + [Path(v) for v in (x.parent_a, x.parent_b) if v != "base"]
         if x.no_apply: x.out.write_bytes(delta); man = manifest(delta, base); Path(str(x.out) + ".manifest.json").write_text(json.dumps(man, indent=1)); print(json.dumps(man, indent=1)); return
     else: delta = x.delta.read_bytes()
