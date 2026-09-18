@@ -6,7 +6,7 @@
 // sketches the resident tiles and signs the claim (no inference -- nothing ever adjudicated it), and
 // `execute()` runs the model for a task with the step count and commit stride the task specifies.
 import { TILE_BYTES, attachTrees, treeNodeAt, treeBuildParallel } from "./porw.js";
-import { isDelta2, isDelta3 } from "./delta.js";
+import { isDelta2, isDelta3, decodeDelta3, applyDelta } from "./delta.js";
 import { uploadDeltaBase, applyDeltaWasm } from "./delta_wasm.js";
 import { decodeHeader, attachSpmv } from "./model.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
@@ -132,6 +132,14 @@ export class PorwNode {
     return handle;
   }
   async loadDelta(baseBytes, deltaBytes, { baseModelId = null, resolve = null, ...opts } = {}) {
+    if (isDelta3(deltaBytes) && decodeDelta3(deltaBytes).layout === 1) {
+      // in-place layout: the reference implementation writes it (delta.js); the resident WASM path only knows the compact one
+      const bytes = baseBytes instanceof Uint8Array ? baseBytes : new Uint8Array(this.k.u8(baseBytes.ptr, baseBytes.byteLength));
+      const d3 = decodeDelta3(deltaBytes); const payload = applyDelta(bytes, deltaBytes, { baseModelId: baseBytes instanceof Uint8Array ? baseModelId : baseBytes.modelId, resolve });
+      const st3 = await this.loadModel(d3.name, payload, opts);
+      st3.delta = { version: 3, layout: 1, parents: [d3.parentA, d3.parentB], baseModelId: d3.baseModelId, baseDA: d3.baseDA, ops: 0, seed: d3.seed, bytes: deltaBytes.length };
+      return st3;
+    }
     return this.withModelLoad(async () => {
       const base = baseBytes instanceof Uint8Array ? this._registerDeltaBase(baseBytes, { baseModelId }) : baseBytes;
       const applied = applyDeltaWasm(this.k, base, deltaBytes, { resolve }), d = applied.delta;
