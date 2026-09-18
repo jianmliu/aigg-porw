@@ -88,6 +88,10 @@ export function applyDeltaWasm(k, base, deltaBytes, { resolve = null } = {}) {
         throw new Error("base model id mismatch");
     };
     check(d);
+    // The resident path writes the COMPACT materialization. An in-place cross (layout 1) keeps every base record at its
+    // offset and has another model_id; producing the compact payload for it would silently load the wrong brain.
+    if (version === 3 && d.layout === 1)
+      throw new Error("in-place layout is not implemented in the WASM path: use applyDelta (delta.js)");
     const sample = (d, seed) => {
       const out = k.alloc(n * 4),
         scratch = k.mark(),
