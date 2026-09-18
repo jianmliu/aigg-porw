@@ -66,7 +66,12 @@ export class PorwNode {
     this.models.set(hex(mep.mepId), st);
     return st;
   }
-  async challenge(mepId, challenge32, { stimulusSeed = 1, stimulusIds = null } = {}) {
+  /** `commit`: build the per-step state commitments an execution DISPUTE needs. A residency claim does not: the
+   *  Claim struct carries partialsRoot and execDigest and no execRoot, and respondOpening adjudicates a tile
+   *  against partialsRoot alone. Those commitments are a Merkle tree over every neuron's state at each stride
+   *  boundary -- on the real brain, 72% of a claim -- and they are only ever read when two task results disagree.
+   *  So task execution asks for them and announce() does not. */
+  async challenge(mepId, challenge32, { stimulusSeed = 1, stimulusIds = null, commit = true } = {}) {
     const st = this.models.get(hex(mepId)); if (!st) throw new Error("unknown MEP");
     const k = this.k, n = st.nTiles, t = {};
     let t0 = performance.now();
@@ -84,7 +89,7 @@ export class PorwNode {
     t.commitMs = performance.now() - t0; t0 = performance.now();
     if (st.exec === "lif") {
       // canonical stimulus set from the seed (or an explicit task set); commitments are folded into the run
-      const r = await this.runLif(st, stimulusSeed, stimulusIds);
+      const r = await this.runLif(st, stimulusSeed, stimulusIds, commit);
       st.execDigest = r.execDigest; st.actRoots = r.stateRoots; st.execRoot = r.execRoot; st.initStateRoot = r.initStateRoot; st.stimulated = r.stimulated;
       t.inferMs = r.inferMs; t.disputeCommitMs = r.commitMs;
     } else {
@@ -175,22 +180,23 @@ export class PorwNode {
     return this.buildTree(L.leavesPtr, n, L.treePtr);
   }
   /** full run with per-step state commitments; keeps roots + checkpoints, returns the result artifacts */
-  async runLif(st, seed, ids = null) {
+  async runLif(st, seed, ids = null, commit = true) {
     const k = this.k, e = k.exports, n = st.hdr.neurons, L = st.slot.lif; let t0 = performance.now(), inferMs = 0, commitMs = 0;
     L.seed = seed; L.ids = ids; L.cache.clear();
     const stimulated = this.lifState0(st, L.ping, seed, ids);
     k.u8(L.checkpoints.get(0), n * LIF_STATE).set(k.u8(L.ping, n * LIF_STATE));
-    const initStateRoot = (await this.lifCommit(st, L.ping)).root; commitMs += performance.now() - t0;
+    const initStateRoot = commit ? (await this.lifCommit(st, L.ping)).root : null; commitMs += performance.now() - t0;
     const roots = [], stride = st.mep.commitStride; let cur = L.ping, nxt = L.pong;
     for (let s = 1; s <= st.steps; s++) {
       t0 = performance.now(); await this.lifStep(st, cur, nxt, s, seed); inferMs += performance.now() - t0;
-      if (s % stride === 0 || s === st.steps) { t0 = performance.now(); roots.push((await this.lifCommit(st, nxt)).root); commitMs += performance.now() - t0; } // segment root
+      if (commit && (s % stride === 0 || s === st.steps)) { t0 = performance.now(); roots.push((await this.lifCommit(st, nxt)).root); commitMs += performance.now() - t0; } // segment root
       if (L.checkpoints.has(s)) k.u8(L.checkpoints.get(s), n * LIF_STATE).set(k.u8(nxt, n * LIF_STATE));
       [cur, nxt] = [nxt, cur];
     }
     e.porw_lif_counts(cur, n >>> 0, L.counts);
     const counts = new Uint32Array(k.u32(L.counts, n));
-    return { initStateRoot, stateRoots: roots, segments: roots.length, execRoot: k.merkleRoot(new Uint8Array(roots.flatMap((r) => [...r]))), execDigest: countsDigest(counts), counts, stimulated, inferMs, commitMs };
+    // execDigest is a digest of the spike counts -- independent of the commitments, which is why a claim can skip them
+    return { initStateRoot, stateRoots: roots, segments: roots.length, execRoot: commit ? k.merkleRoot(new Uint8Array(roots.flatMap((r) => [...r]))) : null, execDigest: countsDigest(counts), counts, stimulated, inferMs, commitMs };
   }
   /** materialize state_s (replay from the nearest checkpoint) and its tree; cached (small LRU) */
   async lifStateAt(st, s) {

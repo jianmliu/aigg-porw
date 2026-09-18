@@ -9,7 +9,10 @@ import { resultDigest } from "./eip712.js";
 
 const cat = (...p) => { const o = new Uint8Array(p.reduce((s, x) => s + x.length, 0)); let i = 0; for (const x of p) { o.set(x, i); i += x.length; } return o; };
 export const claimToJson = (r) => { const c = r.claim; return { claim: { schemeDigest: hex(c.schemeDigest), mepId: hex(c.mepId), modelId: hex(c.modelId), partialsRoot: hex(c.partialsRoot), coverageBytes: c.coverageBytes, challenge: hex(c.challenge), deviceId: hex(c.deviceId), execDigest: hex(c.execDigest), stimulusSeed: c.stimulusSeed },
-  claimHash: hex(r.claimHash), signature: hex(r.signature), address: hex(r.address), execRoot: hex(r.result.execRoot), delegation: r.delegation || null }; };
+  claimHash: hex(r.claimHash), signature: hex(r.signature), address: hex(r.address),
+  // carried for convenience only: claimFromJson drops it, the aggregator's leaf hash omits it, and the on-chain
+  // ClaimLeaf has no such field. Null when the run skipped the dispute commitments a claim does not need.
+  execRoot: r.result.execRoot ? hex(r.result.execRoot) : null, delegation: r.delegation || null }; };
 export const claimFromJson = (j) => ({ claim: Object.fromEntries(Object.entries(j.claim).map(([k, v]) => [k, typeof v === "string" ? unhex(v) : v])), claimHash: unhex(j.claimHash), signature: unhex(j.signature), address: unhex(j.address), delegation: j.delegation || null });
 export const openingToJson = (o) => ({ tileIdx: o.tileIdx, position: o.position, tile: hex(o.tile), sketch: o.sketch, partialsProof: o.partialsProof.map(hex), weightsProof: o.weightsProof.map(hex) });
 export const openingFromJson = (o) => ({ ...o, tile: unhex(o.tile), partialsProof: o.partialsProof.map(unhex), weightsProof: o.weightsProof.map(unhex) });
@@ -22,7 +25,7 @@ export class NodeService {
   constructor(node, client, { maxTilesPerRequest = 64, onResult = null } = {}) { this.node = node; this.client = client; this.maxTiles = maxTilesPerRequest; this.served = { openings: 0, tasks: 0 }; this.unsubs = []; this.onResult = onResult; }
   /** run the epoch challenge for a MEP and announce the signed claim (auditors pick it up on the MEP topic) */
   async announce(mepId, challenge32, { stimulusSeed = 1 } = {}) {
-    const r = await this.node.challenge(mepId, challenge32, { stimulusSeed });
+    const r = await this.node.challenge(mepId, challenge32, { stimulusSeed, commit: false }); // a claim needs no dispute commitments
     const env = this.client.publish(topicMep(hex(mepId)), "claim", hex(mepId), claimToJson(r));
     return { r, env };
   }
