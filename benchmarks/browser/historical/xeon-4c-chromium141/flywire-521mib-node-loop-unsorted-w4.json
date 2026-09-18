@@ -1,0 +1,84 @@
+{
+  "info": {
+    "nTiles": 133329,
+    "neurons": 139255,
+    "synapses": 54500000,
+    "modelId": "0x456391d0b259710233eb5c070514d9072b49ab0ccbd0f738017b887f4b466f6e",
+    "mepId": "0x2125a6a60d689b0ac24388cac9857d48ad5329cc7ba8d718e50dfd568e7bb0db",
+    "steps": 2,
+    "fetchMs": 909.5049999998882,
+    "leavesMs": 8260.700000000186,
+    "backend": "simd128",
+    "hc": 4,
+    "workers": 4,
+    "iso": true
+  },
+  "verifierModelMs": 23559.753103,
+  "mepMatches": true,
+  "rounds": [
+    {
+      "claimOk": true,
+      "signer": "0x5cbdd86a2fa8dc4bddd8a8f69dba48572eec07fb",
+      "verdicts": [
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud"
+      ],
+      "reexecMatches": true,
+      "timings": {
+        "sketchMs": 250.71500000031665,
+        "commitMs": 224.47500000009313,
+        "inferMs": 952.035000000149,
+        "disputeCommitMs": 481.66500000003725
+      },
+      "slotMs": 1908.890000000596,
+      "openMs": 18.917976000004273,
+      "reMs": 977.3658670000004
+    },
+    {
+      "claimOk": true,
+      "signer": "0x5cbdd86a2fa8dc4bddd8a8f69dba48572eec07fb",
+      "verdicts": [
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud"
+      ],
+      "reexecMatches": true,
+      "timings": {
+        "sketchMs": 37.864999999757856,
+        "commitMs": 218.75,
+        "inferMs": 672.4749999996275,
+        "disputeCommitMs": 472.40000000037253
+      },
+      "slotMs": 1401.4899999997579,
+      "openMs": 16.446481999999378,
+      "reMs": 844.8200899999938
+    }
+  ]
+}

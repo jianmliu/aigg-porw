@@ -126,3 +126,10 @@ custody, slashing, and eligibility effects are disabled.
 Imported source history, attribution, and existing license files are preserved.
 Each imported component and vendored dependency remains under its existing terms;
 this repository-level documentation does not relicense imported material.
+
+## Ecosystem deployments
+
+- `proposals/aigg-bnb/` — the BNB Chain deployment (BNB bond, opBNB/BSC settlement, Greenfield
+  model store, commit-reveal beacon), staged here and split into its own repository with
+  `proposals/aigg-bnb/split.sh`. The contracts and the browser node in this repository stay
+  chain-neutral; the BNB repo consumes them as a pinned submodule.

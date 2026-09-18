@@ -1,0 +1,52 @@
+{
+  "info": {
+    "nTiles": 133329,
+    "neurons": 139255,
+    "synapses": 54500000,
+    "modelId": "0x456391d0b259710233eb5c070514d9072b49ab0ccbd0f738017b887f4b466f6e",
+    "mepId": "0x2125a6a60d689b0ac24388cac9857d48ad5329cc7ba8d718e50dfd568e7bb0db",
+    "steps": 2,
+    "fetchMs": 926.8250000001863,
+    "leavesMs": 18635.19000000041,
+    "backend": "simd128",
+    "hc": 4,
+    "workers": 0,
+    "iso": true
+  },
+  "verifierModelMs": 23596.343163999998,
+  "mepMatches": true,
+  "rounds": [
+    {
+      "claimOk": true,
+      "signer": "0x5cbdd86a2fa8dc4bddd8a8f69dba48572eec07fb",
+      "verdicts": [
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud"
+      ],
+      "reexecMatches": true,
+      "timings": {
+        "sketchMs": 164.13500000024214,
+        "commitMs": 345.16500000003725,
+        "inferMs": 584.839999999851,
+        "disputeCommitMs": 716.3950000000186
+      },
+      "slotMs": 1810.535000000149,
+      "openMs": 19.6341190000021,
+      "reMs": 907.1205610000034
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "mib": 521,
+  "nTiles": 133376,
+  "bytes": 546308096,
+  "repeats": 3,
+  "seed": 7,
+  "slotSeed": 2876441635,
+  "ua": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/141.0.0.0 Safari/537.36",
+  "hardwareConcurrency": 4,
+  "deviceMemoryGiB": 8,
+  "backend": "simd128",
+  "single": {
+    "fillMs": 326.0999999999767,
+    "medianMs": 134,
+    "bestMs": 132.79999999993015,
+    "gibPerS": 3.7969333022388057
+  },
+  "multi": {
+    "workers": 2,
+    "medianMs": 75.20000000006985,
+    "gibPerS": 6.765812001323503,
+    "perWorkerMedianMs": [
+      66.19999999995343,
+      75.20000000006985
+    ],
+    "wallMsIncludingFill": 474.19999999995343
+  },
+  "ok": true,
+  "chromium": "141.0.7390.37",
+  "sketch_digests": {
+    "sketchesSingle_blake3": "0x338817468d75940bbf6d2f684e5529688ed789eafd0a9b7058e364549c6f48da",
+    "sketchesSingle_count": 133376,
+    "sketchesMulti_blake3": "0x338817468d75940bbf6d2f684e5529688ed789eafd0a9b7058e364549c6f48da",
+    "sketchesMulti_count": 133376
+  }
+}

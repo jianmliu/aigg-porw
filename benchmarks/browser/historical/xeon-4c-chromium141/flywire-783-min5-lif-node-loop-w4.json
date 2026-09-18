@@ -1,0 +1,136 @@
+{
+  "info": {
+    "nTiles": 6866,
+    "neurons": 139255,
+    "synapses": 2700513,
+    "modelId": "0x9747cc81830375103eae957a93d3800875223c17bdc6399f5783be62a19da93a",
+    "mepId": "0x9b7dc2ba02a04ed1be9519d00d53323d581c0b496764c28edc071d8c841bef49",
+    "steps": 100,
+    "exec": "lif",
+    "fetchMs": 84.75499999988824,
+    "leavesMs": 479.87000000011176,
+    "backend": "simd128",
+    "hc": 4,
+    "workers": 4,
+    "iso": true,
+    "sorted": true
+  },
+  "verifierModelMs": 1276.75903,
+  "mepMatches": true,
+  "rounds": [
+    {
+      "claimOk": true,
+      "signer": "0x5cbdd86a2fa8dc4bddd8a8f69dba48572eec07fb",
+      "verdicts": [
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud"
+      ],
+      "reexecMatches": true,
+      "timings": {
+        "sketchMs": 5.160000000149012,
+        "commitMs": 5.815000000409782,
+        "inferMs": 334.5949999988079,
+        "disputeCommitMs": 1357.690000001341
+      },
+      "slotMs": 1703.2600000007078,
+      "openMs": 20.126212999999552,
+      "reMs": 1179.5642450000005,
+      "execDigest": "0x4e2a17b29f07e311d33419e7f4985cfb8e6ba54c99855cf76288e055ef35967b",
+      "result": {
+        "execRoot": "0xbd54726045e522d1ad476d39e8990993c06bccafbc4226e62b8db0383c491c35",
+        "initStateRoot": "0xddac327c113fd96e21aea8b9c931de8698a12844ada2ab16eedf08b2ab85e286",
+        "stimulated": 138
+      }
+    },
+    {
+      "claimOk": true,
+      "signer": "0x5cbdd86a2fa8dc4bddd8a8f69dba48572eec07fb",
+      "verdicts": [
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud"
+      ],
+      "reexecMatches": true,
+      "timings": {
+        "sketchMs": 4.129999999888241,
+        "commitMs": 7.965000000782311,
+        "inferMs": 347.4149999981746,
+        "disputeCommitMs": 1389.8399999989197
+      },
+      "slotMs": 1749.3499999977648,
+      "openMs": 17.163817999999992,
+      "reMs": 1088.7913749999998,
+      "execDigest": "0x82fa548e768b0680753e9a84849d4407a744b7f6fa68112fb3d4c36f11f45df9",
+      "result": {
+        "execRoot": "0x3a7871f23f8c235bbc95b2ea313e841399bb1f805d14d68f866ee9738eda51ee",
+        "initStateRoot": "0xd13425cac4fcedacec076e2b696f014d7d5478c7a8a04c9e375f5862c4dacc8b",
+        "stimulated": 139
+      }
+    },
+    {
+      "claimOk": true,
+      "signer": "0x5cbdd86a2fa8dc4bddd8a8f69dba48572eec07fb",
+      "verdicts": [
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud",
+        "no_fraud"
+      ],
+      "reexecMatches": true,
+      "timings": {
+        "sketchMs": 3.9950000001117587,
+        "commitMs": 6.679999999701977,
+        "inferMs": 317.99499999638647,
+        "disputeCommitMs": 1354.2949999989942
+      },
+      "slotMs": 1682.9649999951944,
+      "openMs": 16.802520999999615,
+      "reMs": 889.6810490000007,
+      "execDigest": "0x27caca15e3e37c3f9355f59b0a8648994da95bfc5c32c2bd7215b5d35711864e",
+      "result": {
+        "execRoot": "0xfaaf52c306fa48190f59a635b9d1c951c0aec9f700c8838f644ddfc63b5b6e7d",
+        "initStateRoot": "0x61fd8fde630e7e10b3b1e013bb41911e92028a2b104d1a4d41b8128c5ebbd052",
+        "stimulated": 136
+      }
+    }
+  ]
+}
