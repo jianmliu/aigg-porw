@@ -44,4 +44,18 @@ for (const [exec, maxSteps, make] of [["lif", 20, synthesizePayloadV2], ["lif", 
   check("and from mark, which is what every size measurement here differences", stub.mark() === UNS);
   check("the raw export really is signed there (so the coercion is doing the work)", (-2147416800 | 0) < 0 && UNS > 2 ** 31);
 }
+// Simulate a nearly full heap without reserving GiB. Overflow must fail before growth or mutation.
+{ const edge = await loadKernelFromBytes(wasm);
+  for (const [mark, size] of [[0xfffff000, 8192], [0xfffffff8, 16], [0xfffffff0, 16]]) {
+    edge.release(mark);
+    check(`allocator rejects wrap at ${mark} + ${size}`, edge.exports.porw_alloc(size) === 0);
+    check("rejected allocation preserves the heap mark", edge.mark() === mark);
+  }
+  edge.exports.porw_reset_heap();
+  for (const size of [-1, 1.5, 2 ** 32, NaN]) {
+    const before = edge.mark(); let rejected = false;
+    try { edge.alloc(size); } catch { rejected = true; }
+    check(`invalid allocation size ${size} rejected without heap mutation`, rejected && edge.mark() === before);
+  }
+}
 console.log(fails ? `${fails} FAILURES` : "ALL PASS"); process.exit(fails ? 1 : 0);

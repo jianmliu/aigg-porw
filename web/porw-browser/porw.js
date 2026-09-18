@@ -48,7 +48,8 @@ export function wrap(e, memory = e.memory) {
     // here. Without it a heap past 2 GiB hands `new Uint8Array(buffer, ptr, n)` a negative offset and the
     // node dies with "Start offset ... is outside the bounds of the buffer" — a JS-glue ceiling at half of
     // what wasm32 can address, which is exactly the range a tab hosting several brains reaches.
-    alloc: (n) => { const p = e.porw_alloc(n >>> 0) >>> 0; if (!p) throw new Error("wasm alloc failed"); return p; },
+    alloc: (n) => { if (!Number.isInteger(n) || n < 0 || n > 0xffffffff) throw new Error("invalid wasm allocation size");
+      const p = e.porw_alloc(n) >>> 0; if (!p) throw new Error("wasm alloc failed"); return p; },
     mark: () => e.porw_heap_mark() >>> 0,
     release: (m) => e.porw_heap_release(m),
     fill: (ptr, nWords, wordOffset, seed) => e.porw_fill_pattern(ptr, nWords >>> 0, wordOffset >>> 0, seed >>> 0),
