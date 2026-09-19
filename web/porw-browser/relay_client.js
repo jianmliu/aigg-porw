@@ -57,14 +57,17 @@ export class RelayClient {
     const reqId = hex(crypto.getRandomValues(new Uint8Array(16)));
     return new Promise((res, rej) => {
       const t = setTimeout(() => { this.pending.delete(reqId); rej(new Error(`timeout waiting for ${responseType || type} from ${toAddrHex}`)); }, timeoutMs);
-      this.pending.set(reqId, { res: (env) => { clearTimeout(t); this.pending.delete(reqId); res(env); }, responseType, to: toAddrHex.toLowerCase() });
+      const done = (f) => (x) => { clearTimeout(t); this.pending.delete(reqId); f(x); };
+      this.pending.set(reqId, { res: done(res), rej: done(rej), responseType, to: toAddrHex.toLowerCase() });
       this.publish(topicInbox(toAddrHex), type, mepIdHex, { ...payload, reqId, replyTo: this.address });
     });
   }
   _onInbox(env) {
     const p = env.payload && this.pending.get(env.payload.reqId); if (!p) return;
-    if (p.responseType && env.type !== p.responseType) return;
     if (env.from.toLowerCase() !== p.to) return; // only the addressee may answer
+    // a refusal is an answer: the requester hears why now instead of waiting out its timeout for a result that is not coming
+    if (env.type === "result-refused" && p.responseType === "result") return p.rej(Object.assign(new Error(`refused by ${p.to}: ${env.payload.reason}`), { refused: env.payload }));
+    if (p.responseType && env.type !== p.responseType) return;
     p.res(env);
   }
   /** handle requests addressed to us: handler(env, from) -> response payload (or null to ignore) */
