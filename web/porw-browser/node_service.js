@@ -6,6 +6,7 @@ import { signHash } from "./claim.js";
 import { topicMep } from "./envelope.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { resultDigest } from "./eip712.js";
+const b64 = (u8) => { let s = ""; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
 
 const cat = (...p) => { const o = new Uint8Array(p.reduce((s, x) => s + x.length, 0)); let i = 0; for (const x of p) { o.set(x, i); i += x.length; } return o; };
 export const claimToJson = (r) => { const c = r.claim; return { claim: { schemeDigest: hex(c.schemeDigest), mepId: hex(c.mepId), modelId: hex(c.modelId), partialsRoot: hex(c.partialsRoot), coverageBytes: c.coverageBytes, challenge: hex(c.challenge) },
@@ -72,6 +73,11 @@ export class NodeService {
       this.served.tasks++;
       const result = { taskId: p.taskId, execDigest: hex(r.result.execDigest), execRoot: hex(r.result.execRoot), signature: hex(signHash(h, this.node.key.priv)), signer: hex(this.node.key.address), delegation: this.node.delegation || null };
       if (this.onResult) { try { await this.onResult(result); } catch {} }
+      // An announcement may ask for the run's OUTPUT (`counts: true`): every neuron's spike count, little-endian u32, base64.
+      // Nothing new has to be trusted for it -- execDigest is keccak(LE32 n || these bytes), so the client checks the
+      // counts against the digest the task settles on. They go back to the asker only: `onResult` is what gets submitted
+      // on-chain (a page POSTs it to a relayer as it is), and half a megabyte has no business there. int-lif only.
+      if (p.counts === true && r.result.counts) return { type: "result", payload: { ...result, counts: b64(new Uint8Array(r.result.counts.buffer, r.result.counts.byteOffset, r.result.counts.byteLength)), countsEncoding: "u32le-base64" } };
       return { type: "result", payload: result };
     }));
   }
