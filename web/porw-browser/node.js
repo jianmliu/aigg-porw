@@ -191,7 +191,7 @@ export class PorwNode {
     if (st.exec === "lif") {
       // canonical stimulus set from the seed (or an explicit task set); commitments are folded into the run
       const r = await this._runLif(st, stimulusSeed, stimulusIds, commit, silenceIds);
-      st.execDigest = r.execDigest; st.actRoots = r.stateRoots; st.execRoot = r.execRoot; st.initStateRoot = r.initStateRoot; st.stimulated = r.stimulated;
+      st.execDigest = r.execDigest; st.actRoots = r.stateRoots; st.execRoot = r.execRoot; st.initStateRoot = r.initStateRoot; st.stimulated = r.stimulated; st.counts = r.counts;
       t.inferMs = r.inferMs; t.disputeCommitMs = r.commitMs;
     } else {
       const e = k.exports;
@@ -213,7 +213,10 @@ export class PorwNode {
     }
     return { steps, commitStride, timings: t,
       result: { execDigest: st.execDigest, execRoot: st.execRoot, actRoots: st.actRoots, csrRoot: st.csr.csrTree.root, rowRoot: st.csr.rowTree.root, synapseRoot: st.csr.synapseRoot,
-                initStateRoot: st.initStateRoot || null, stimulated: st.stimulated ?? null } };
+                initStateRoot: st.initStateRoot || null, stimulated: st.stimulated ?? null,
+                // int-lif: every neuron's spike count -- the run's readable output, and exactly what execDigest hashes
+                // (lif.js countsDigest), so whoever is handed it can check it against the digest the task settled on
+                counts: st.exec === "lif" ? st.counts : null } };
   }
 
   /** Execute a BATCH (TaskMarket.postBatch): `runs` = [{ stimulusSeed, stimulusIds?, silenceIds? }], all under the
