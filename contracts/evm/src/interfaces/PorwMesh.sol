@@ -91,6 +91,8 @@ interface IMEPRegistry {
     function registerMEPWithTerms(MEP calldata mep, address beneficiary, uint16 royaltyBps) external returns (bytes32 mepId);
     /// @notice (0, 0) for a royalty-free MEP -- and for an unknown one: callers that care have checked existence already
     function termsOf(bytes32 mepId) external view returns (address beneficiary, uint16 royaltyBps);
+    /// @notice the weight unit of a declared int-lif execKind; 0 if `execKind` is not one (see MEPRegistry.declareLifKind)
+    function lifWeightUnit(bytes32 execKind) external view returns (uint32);
     function getMEP(bytes32 mepId) external view returns (MEP memory);
     /// @notice the two fields a residency claim is signed over; reverts for an unknown MEP. A claim path reads this instead
     ///         of copying the whole profile (with its dynamic `weightsDA`) out of storage.

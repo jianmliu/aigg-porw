@@ -22,8 +22,15 @@ library LifRowCheck {
 
     struct State { int32 v; int32 g; uint16 refr; uint16 flags; uint32 count; }
 
-    function execKind() internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked(KIND_ID, DT_TAU_M_Q16, DT_TAU_S_Q16, uint32(uint64(THRESH_Q16)), uint32(uint64(W_UNIT_Q16)), uint32(REFRACT), EXT_P_Q32));
+    /// @notice the kind digest of the default weight unit (FlyWire's synapse counts)
+    function execKind() internal pure returns (bytes32) { return execKind(uint32(uint64(W_UNIT_Q16))); }
+    /// @notice The weight unit is a parameter of the KIND, not of the rule. 0.275 mV per synapse was set on FlyWire's
+    ///         counts; a connectome that counts synapses on another scale (MaleCNS reports about 1.6 times as many for
+    ///         the same connection, and under FlyWire's unit every stimulus ignites it) pins another unit, and because
+    ///         the unit is inside the digest it is another kind: same rule, same KIND_ID, another execKind. A dispute
+    ///         learns the unit of a MEP's kind from MEPRegistry.lifWeightUnit, where anybody may declare one.
+    function execKind(uint32 wUnitQ16) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(KIND_ID, DT_TAU_M_Q16, DT_TAU_S_Q16, uint32(uint64(THRESH_Q16)), wUnitQ16, uint32(REFRACT), EXT_P_Q32));
     }
     function fmix32(uint32 h) internal pure returns (uint32) { unchecked { h ^= h >> 16; h *= 0x85EBCA6B; h ^= h >> 13; h *= 0xC2B2AE35; h ^= h >> 16; } return h; }
     /// @dev deterministic Poisson-like drive of a stimulated neuron
@@ -31,9 +38,10 @@ library LifRowCheck {
     function spiked(State memory s) internal pure returns (int64) { return (s.flags & 2) != 0 ? int64(1) : int64(0); }
 
     /// @notice next state of neuron i at `step` given the previous state and the signed input sum I
-    function transition(State memory S, int64 I, uint32 i, uint32 step, uint32 seed) internal pure returns (State memory R) {
+    function transition(State memory S, int64 I, uint32 i, uint32 step, uint32 seed) internal pure returns (State memory R) { return transition(S, I, i, step, seed, uint32(uint64(W_UNIT_Q16))); }
+    function transition(State memory S, int64 I, uint32 i, uint32 step, uint32 seed, uint32 wUnitQ16) internal pure returns (State memory R) {
         int64 g = int64(S.g);
-        g = g - ((g * int64(uint64(DT_TAU_S_Q16))) >> 16) + I * W_UNIT_Q16;
+        g = g - ((g * int64(uint64(DT_TAU_S_Q16))) >> 16) + I * int64(uint64(wUnitQ16));
         if (g > type(int32).max) g = type(int32).max;
         if (g < type(int32).min) g = type(int32).min;
         R.g = int32(g);

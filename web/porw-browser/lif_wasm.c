@@ -39,6 +39,11 @@
 #define DT_TAU_S_Q16 1311u     /* 0.1 ms / 5 ms  */
 #define THRESH_Q16   458752    /* 7 mV           */
 #define W_UNIT_Q16   18022     /* 0.275 mV       */
+/* The weight unit is a parameter of the execution KIND, not of the rule: it is inside the kind digest, so a MEP whose
+ * connectome counts synapses on another scale (MaleCNS reports ~1.6x FlyWire's for the same connection) pins another
+ * unit and is another kind. The step functions take it as their LAST argument, and 0 means the default above -- which
+ * is also what a caller that does not pass it at all gets, so every existing call site is unchanged. */
+#define WU(w) ((w) ? (w) : (uint32_t)W_UNIT_Q16)
 #define REFRACT      22u       /* 2.2 ms         */
 #define EXT_P_Q32    64424509u /* 150 Hz * 0.1 ms */
 
@@ -75,9 +80,9 @@ int porw_lif_state0_set(lif_state_t *st, uint32_t n, const uint32_t *ids, uint32
 }
 
 /* the single-neuron transition; I = signed input sum (units: synapse counts) */
-static inline lif_state_t lif_step_one(lif_state_t S, int64_t I, uint32_t i, uint32_t step, uint32_t seed) {
+static inline lif_state_t lif_step_one(lif_state_t S, int64_t I, uint32_t i, uint32_t step, uint32_t seed, uint32_t wu) {
     int64_t g = (int64_t)S.g;
-    g = g - sar64(g * (int64_t)DT_TAU_S_Q16, 16) + I * (int64_t)W_UNIT_Q16;
+    g = g - sar64(g * (int64_t)DT_TAU_S_Q16, 16) + I * (int64_t)wu;
     if (g > INT32_MAX) g = INT32_MAX; if (g < INT32_MIN) g = INT32_MIN;
     lif_state_t R; R.g = (int32_t)g; uint32_t spike;
     if (S.flags & 4u) { spike = 0; R.v = 0; R.refr = 0; }
@@ -101,40 +106,43 @@ int porw_lif_state0_silence(lif_state_t *st, uint32_t n, const uint32_t *ids, ui
 
 /* scatter step over all records (reference path): I[post] += w * spiked[pre]; acc = i64[n] scratch */
 EXPORT("porw_lif_step")
-int porw_lif_step(const uint8_t *syn, uint32_t n_syn, const lif_state_t *in, lif_state_t *out, int64_t *acc, uint32_t n, uint32_t step, uint32_t seed) {
+int porw_lif_step(const uint8_t *syn, uint32_t n_syn, const lif_state_t *in, lif_state_t *out, int64_t *acc, uint32_t n, uint32_t step, uint32_t seed, uint32_t w_unit) {
     if (!syn || !in || !out || !acc) return 1;
+    const uint32_t wu = WU(w_unit);
     for (uint32_t i = 0; i < n; i++) acc[i] = 0;
     for (uint32_t s = 0; s < n_syn; s++) {
         const uint8_t *r = syn + (uint64_t)s * 10u; uint32_t pre = ld32(r), post = ld32(r + 4);
         if (pre >= n || post >= n) return 2;
         if (in[pre].flags & 2u) acc[post] += (int64_t)ldi16(r + 8);
     }
-    for (uint32_t i = 0; i < n; i++) out[i] = lif_step_one(in[i], acc[i], i, step, seed);
+    for (uint32_t i = 0; i < n; i++) out[i] = lif_step_one(in[i], acc[i], i, step, seed, wu);
     return 0;
 }
 
 /* CSR rows [i0, i1) via a permutation (unsorted payloads) */
 EXPORT("porw_lif_step_csr_range")
 int porw_lif_step_csr_range(const uint8_t *syn, const uint32_t *perm, const uint32_t *row_start, const lif_state_t *in, lif_state_t *out,
-                            uint32_t n, uint32_t i0, uint32_t i1, uint32_t step, uint32_t seed) {
+                            uint32_t n, uint32_t i0, uint32_t i1, uint32_t step, uint32_t seed, uint32_t w_unit) {
     if (i1 > n) return 1;
+    const uint32_t wu = WU(w_unit);
     for (uint32_t i = i0; i < i1; i++) {
         int64_t acc = 0;
         for (uint32_t k = row_start[i]; k < row_start[i + 1]; k++) { const uint8_t *r = syn + (uint64_t)perm[k] * 10; uint32_t pre = ld32(r); if (pre >= n) return 2; if (in[pre].flags & 2u) acc += (int64_t)ldi16(r + 8); }
-        out[i] = lif_step_one(in[i], acc, i, step, seed);
+        out[i] = lif_step_one(in[i], acc, i, step, seed, wu);
     }
     return 0;
 }
 /* post-sorted publication convention: rows contiguous, stream the record range */
 EXPORT("porw_lif_step_rows_direct")
 int porw_lif_step_rows_direct(const uint8_t *syn, const uint32_t *row_start, const lif_state_t *in, lif_state_t *out,
-                              uint32_t n, uint32_t i0, uint32_t i1, uint32_t step, uint32_t seed) {
+                              uint32_t n, uint32_t i0, uint32_t i1, uint32_t step, uint32_t seed, uint32_t w_unit) {
     if (i1 > n) return 1;
+    const uint32_t wu = WU(w_unit);
     const uint8_t *r = syn + (uint64_t)row_start[i0] * 10;
     for (uint32_t i = i0; i < i1; i++) {
         int64_t acc = 0;
         for (uint32_t k = row_start[i]; k < row_start[i + 1]; k++, r += 10) { uint32_t pre = ld32(r); if (pre >= n) return 2; if (in[pre].flags & 2u) acc += (int64_t)ldi16(r + 8); }
-        out[i] = lif_step_one(in[i], acc, i, step, seed);
+        out[i] = lif_step_one(in[i], acc, i, step, seed, wu);
     }
     return 0;
 }

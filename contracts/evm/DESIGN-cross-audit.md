@@ -589,3 +589,33 @@ The contracts could settle and dispute a batch; nothing could execute one. Now t
   request with its reason.
 
 What a batch costs an executor is its runs, one after another: a batch is sized against the task timeout, not against gas.
+## The weight unit is a parameter of the kind (2026-09)
+
+int-lif adds `I × W_UNIT` to the synaptic conductance, `I` being a sum of synapse COUNTS. `W_UNIT` = 0.275 mV (18022 in
+Q16) was set on FlyWire's counts. MaleCNS was reconstructed with another synapse detector: over 222,457 homologous
+connections it reports 1.55 to 1.62 times as many synapses as FlyWire, and its neurons receive about twice the input.
+Under FlyWire's unit every male stimulus ignites the network — 25 thermosensory neurons and 2,639 olfactory ones end in
+the same 19,000-neuron state — so no readout says anything about the stimulus. Scaling the counts in the payload would
+fix the dynamics and break everything that reads a weight as a count: the individual sampler is calibrated on counts,
+and `min_syn` is a count.
+
+So the unit moves to where it already formally was: inside the kind digest. `execKind = keccak(KIND_ID, …, W_UNIT, …)`;
+another unit is another digest — the same rule, the same `KIND_ID` string, another kind, and therefore another MEP for
+the same bytes. What changed is that the implementations take it as a parameter instead of a constant:
+
+- `lif_wasm.c`: the three step functions take `w_unit` as their LAST argument and 0 means the default, which is also what
+  a caller that does not pass it gets. No existing call site changes; `test_lif_wunit.mjs` checks that passing nothing,
+  0 or 18022 is one run. `lif.js: transition(…, wUnitQ16)`, `lifExecKind(wUnitQ16)`; `int_lif.py: run(…, w_unit)`.
+  The node takes `wUnitQ16` at `loadModel` and derives the MEP's kind from it.
+- On chain the rule needs the unit and only has the digest, so `MEPRegistry.declareLifKind(wUnit)` records
+  `lifWeightUnit[digest] = wUnit`. Anybody may declare one and the digest is computed there, so a declaration can only
+  say something true; FlyWire's unit is declared at construction. `TaskMarket` asks `lifWeightUnit(kind) != 0` where it
+  compared against one compiled-in digest, and `ExecutionDisputes` reads the unit at `openDispute` and passes it to
+  `LifRowCheck.transition`. A second connectome is tasked and disputed by the same contracts.
+
+`ExecutionDisputes` went over EIP-170 again with this (by 110 bytes). It is now 1,033 under: the two term proofs
+(`proveSynapseTerm`, `proveSynapseTermLif`) repeated the same openings — the synapse root, the row's bounds, the chunk,
+the record at k* — and share them now (`_rowLen`, `_recordAt`). Revert reasons and behaviour are unchanged.
+
+Not decided here: WHICH unit the male brain gets. That is a calibration (what makes the male brain's response to a
+stimulus comparable to the female's), and it belongs with the data, not in the protocol.

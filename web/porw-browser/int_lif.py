@@ -53,7 +53,7 @@ class State:
         out[:, 3] = (self.refr | (self.flags() << 16)).astype("<u4"); out[:, 4] = self.count
         return out.tobytes()
 
-def step(S: State, pre, post, w, step_idx, seed):
+def step(S: State, pre, post, w, step_idx, seed, w_unit=W_UNIT_Q16):
     n = S.v.size
     # exact integer accumulation via bincount: every product |w| <= 32767 and every row has at most
     # max_in_degree terms, so each partial sum is far below 2^53 and float64 addition is exact
@@ -61,7 +61,7 @@ def step(S: State, pre, post, w, step_idx, seed):
     # on the seed-7 / 500-step conformance vector).
     assert np.abs(w).max() * np.bincount(post, minlength=n).max() < 2 ** 53
     I = np.bincount(post, weights=(w * S.spiked[pre].astype(np.int64)).astype(np.float64), minlength=n).astype(np.int64)
-    g = S.g - ((S.g * DT_TAU_S_Q16) >> 16) + I * W_UNIT_Q16
+    g = S.g - ((S.g * DT_TAU_S_Q16) >> 16) + I * w_unit   # the weight unit is a parameter of the kind (per connectome), see lif.js
     g = np.clip(g, I32_MIN, I32_MAX)
     R = State(n, S.stim, S.silent); R.g = g; R.count = S.count.copy()
     e = ext(n, step_idx, seed)
@@ -82,12 +82,12 @@ def step(S: State, pre, post, w, step_idx, seed):
     R.count = S.count + R.spiked.astype(np.int64)
     return R
 
-def run(buf, seed, steps, stim_ids=None, silence_ids=None):
+def run(buf, seed, steps, stim_ids=None, silence_ids=None, w_unit=W_UNIT_Q16):
     n, _, pre, post, w = decode_v2(buf)
     mask = canonical_stim(n, seed) if stim_ids is None else np.isin(np.arange(n), stim_ids)
     S = State(n, mask, None if silence_ids is None else np.isin(np.arange(n), silence_ids)); traj = [S]
     for s in range(1, steps + 1):
-        S = step(S, pre, post, w, s, seed); traj.append(S)
+        S = step(S, pre, post, w, s, seed, w_unit); traj.append(S)
     return traj
 
 if __name__ == "__main__":
