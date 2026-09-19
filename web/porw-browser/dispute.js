@@ -78,7 +78,7 @@ export function refineSegment({ seg, stride, steps, prevAgreed, segRootA, segRoo
 // (initStateRoot for s* = 1, computed by everyone from the task's stimulus set). Partial sums are signed.
 import * as L from "./lif.js";
 export function adjudicateLif({ n, nChunks, chunk, csrRoot, rowRoot, synapseRoot, prevRoot, seed, step, i,
-                                rowStart, rowEnd, chunkOpen, prevOpen, preOpen, partyA, partyB }) {
+                                rowStart, rowEnd, chunkOpen, prevOpen, preOpen, partyA, partyB, wUnitQ16 = undefined }) {
   const checks = {};
   checks.synapseRoot = V.eq(V.synapseRootOf(csrRoot, rowRoot), synapseRoot);
   checks.rowBounds = V.merkleVerifyCounted(rowRoot, V.rowStartLeaf(i, rowStart.value), i, n + 1, rowStart.proof)
@@ -86,7 +86,7 @@ export function adjudicateLif({ n, nChunks, chunk, csrRoot, rowRoot, synapseRoot
   checks.prevOpen = prevOpen.i === i && V.merkleVerifyCounted(prevRoot, L.stateLeaf(i, prevOpen.state), i, n, prevOpen.proof);
   if (!checks.synapseRoot || !checks.rowBounds || !checks.prevOpen) return { loser: null, reason: "bad commitments/openings", checks };
   const k0 = rowStart.value, k1 = rowEnd.value, len = k1 - k0;
-  const rowCheck = (p) => p.sums.length === len && L.sameState(L.transition(prevOpen.state, len ? p.sums[len - 1] : 0n, i, step, seed), p.claimed);
+  const rowCheck = (p) => p.sums.length === len && L.sameState(L.transition(prevOpen.state, len ? p.sums[len - 1] : 0n, i, step, seed, wUnitQ16), p.claimed);
   checks.rowA = rowCheck(partyA); checks.rowB = rowCheck(partyB);
   if (checks.rowA !== checks.rowB) return { loser: checks.rowA ? "B" : "A", reason: "claimed state inconsistent with the LIF transition of own partial sums", checks };
   if (!checks.rowA) return { loser: null, reason: "both rows inconsistent", checks };

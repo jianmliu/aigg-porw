@@ -78,7 +78,7 @@ export class PorwNode {
     });
   }
   /** Internal adoption: the caller owns this payload in the same kernel, with no second k.put. */
-  async _loadResidentModel(name, resident, { maxSteps = 2, exec = null } = {}) {
+  async _loadResidentModel(name, resident, { maxSteps = 2, exec = null, wUnitQ16 = 0 } = {}) {
     const k = this.k, t0 = performance.now();
     if (resident.kernel !== k) throw new Error("resident payload belongs to another kernel");
     if (!Number.isSafeInteger(maxSteps) || maxSteps < 1) throw new Error("maxSteps must be a positive integer");
@@ -106,7 +106,7 @@ export class PorwNode {
     csr.rowTree = await this._buildTree(rowLeaves, n + 1, k.alloc(k.treeNodes(n + 1) * 32));
     csr.synapseRoot = k.keccak256(new Uint8Array([...csr.csrTree.root, ...csr.rowTree.root]));
     // the MEP is derivable only now: mep_id binds the CSR structure as well as the weights
-    const mep = makeMep({ name, modelId, execKind: exec === "lif" ? lifExecKind() : undefined, neurons: hdr.neurons, synapses: hdr.synapses, synapseRoot: csr.synapseRoot });
+    const mep = makeMep({ name, modelId, execKind: exec === "lif" ? lifExecKind(wUnitQ16 || undefined) : undefined, neurons: hdr.neurons, synapses: hdr.synapses, synapseRoot: csr.synapseRoot });
     // per-step activation arrays + leaves + trees (act_0 = stimulus, act_1..steps)
     const actN = k.treeNodes(n);
     const acts = []; if (exec === "spmv") for (let sIdx = 0; sIdx <= maxSteps; sIdx++) acts.push({ ptr: k.alloc(n * 4), leavesPtr: sIdx ? k.alloc(n * 32) : 0, treePtr: sIdx ? k.alloc(actN * 32) : 0, tree: null });
@@ -116,7 +116,7 @@ export class PorwNode {
       checkpoints: new Map(), cache: new Map(), counts: k.alloc(n * 4) } : null;
     if (lif) for (let sIdx = 0; sIdx <= maxSteps; sIdx += LIF_CHECKPOINT) lif.checkpoints.set(sIdx, k.alloc(n * LIF_STATE));
     const slot = { sketchesPtr: k.alloc(nTiles * 4), pLeavesPtr: k.alloc(nTiles * 32), pTreePtr: k.alloc(nodes * 32), acts, lif };
-    const st = { mep, exec, bufPtr, nTiles, hdr, weightsTree, modelId, slot, csr, maxSteps, steps: 0, commitStride: 1, leavesMs: performance.now() - t0 };
+    const st = { mep, exec, wUnitQ16: exec === "lif" ? (wUnitQ16 >>> 0) : 0, bufPtr, nTiles, hdr, weightsTree, modelId, slot, csr, maxSteps, steps: 0, commitStride: 1, leavesMs: performance.now() - t0 }; // wUnitQ16 0: the kind's default unit
     this.models.set(hex(mep.mepId), st);
     return st;
   }
@@ -312,16 +312,16 @@ export class PorwNode {
   async _lifStep(st, from, to, step, seed) {
     const k = this.k, e = k.exports, n = st.hdr.neurons, syn = st.bufPtr + st.hdr.synOffset;
     let rc;
-    if (this.pool && st.csr.sorted) await this.pool.map("porw_lif_step_rows_direct", n, (i0, c) => [syn, st.csr.rowStartPtr, from, to, n, i0, i0 + c, step, seed]);
-    else if (this.pool) await this.pool.map("porw_lif_step_csr_range", n, (i0, c) => [syn, st.csr.permPtr, st.csr.rowStartPtr, from, to, n, i0, i0 + c, step, seed]);
-    else { rc = e.porw_lif_step(syn, st.hdr.synapses >>> 0, from, to, st.slot.lif.acc, n >>> 0, step >>> 0, seed >>> 0); if (rc !== 0) throw new Error("lif rc=" + rc); }
+    if (this.pool && st.csr.sorted) await this.pool.map("porw_lif_step_rows_direct", n, (i0, c) => [syn, st.csr.rowStartPtr, from, to, n, i0, i0 + c, step, seed, st.wUnitQ16]);
+    else if (this.pool) await this.pool.map("porw_lif_step_csr_range", n, (i0, c) => [syn, st.csr.permPtr, st.csr.rowStartPtr, from, to, n, i0, i0 + c, step, seed, st.wUnitQ16]);
+    else { rc = e.porw_lif_step(syn, st.hdr.synapses >>> 0, from, to, st.slot.lif.acc, n >>> 0, step >>> 0, seed >>> 0, st.wUnitQ16 >>> 0); if (rc !== 0) throw new Error("lif rc=" + rc); }
     if (this.execLie && this.execLie.step === step) { // test hooks: a lying executor
       const L = this.execLie, i = L.neuron;
       if (L.kind === "input") { // lie in the accumulated input: state = transition(prev, I + delta) — consistent with lied partial sums
         const R = k.u32(st.csr.rowStartPtr, n + 1); const m = k.mark(); const out = k.alloc(Math.max(1, R[i + 1] - R[i]) * 8);
         if (e.porw_lif_partial_sums(syn, st.csr.permPtr, from, n >>> 0, R[i], R[i + 1], out) !== 0) throw new Error("sums"); const sums = new BigInt64Array(k.memory.buffer, out, R[i + 1] - R[i]);
         const I = sums.length ? sums[sums.length - 1] : 0n; k.release(m);
-        const next = transition(decodeState(k.u8(from + i * LIF_STATE, LIF_STATE)), I + BigInt(L.delta), i, step, seed);
+        const next = transition(decodeState(k.u8(from + i * LIF_STATE, LIF_STATE)), I + BigInt(L.delta), i, step, seed, st.wUnitQ16 || undefined);
         k.u8(to + i * LIF_STATE, LIF_STATE).set(encodeState(next));
       } else { const b = k.u8(to + i * LIF_STATE, LIF_STATE); const dv = new DataView(b.buffer, b.byteOffset, LIF_STATE); dv.setInt32(0, dv.getInt32(0, true) + L.delta, true); } // lie in the state itself
     }

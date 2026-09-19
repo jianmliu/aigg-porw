@@ -106,7 +106,7 @@ contract TaskMarket is ITaskMarket {
     ///         cannot open its runs refuses the task, as it would one whose state_0 it cannot build.
     function postBatch(Task calldata t, uint32 runs, bytes32 nonce) external payable returns (bytes32 taskId) {
         require(runs >= 2 && runs <= MAX_RUNS, "runs"); require(t.stimulusSeed == 0, "a batch's seeds are in its runs");
-        require(meps.getMEP(t.mepId).execKind == LifRowCheck.execKind(), "int-lif only");
+        require(meps.lifWeightUnit(meps.getMEP(t.mepId).execKind) != 0, "int-lif only");
         taskId = PorwMeshHash.batchId(t, runs, nonce); _post(t, taskId); batchRuns[taskId] = runs;
         emit BatchPosted(taskId, runs, t.initStateRoot);
     }
@@ -116,7 +116,7 @@ contract TaskMarket is ITaskMarket {
         require(t.redundancy >= 1, "r");
         require(t.steps >= 1 && t.commitStride >= 1 && t.commitStride <= t.steps, "steps");
         IMEPRegistry.MEP memory m = meps.getMEP(t.mepId);
-        if (m.execKind == LifRowCheck.execKind()) {
+        if (meps.lifWeightUnit(m.execKind) != 0) { // any declared int-lif kind, whatever its weight unit
             require((t.steps + t.commitStride - 1) / t.commitStride <= MAX_ROOTS && t.commitStride <= MAX_ROOTS, "dispute rounds");
         } else {
             require(t.steps <= MAX_ROOTS && t.commitStride == 1, "dispute rounds"); // int-spmv-q16 commits every step

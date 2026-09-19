@@ -60,7 +60,7 @@ contract MeshLifTest is Test {
         (ITaskMarket.Result memory ra, bytes memory sa) = result(k, true); market.submitResult(taskId, ra, sa);
         (ITaskMarket.Result memory rb, bytes memory sb) = result(k, false); market.submitResult(taskId, rb, sb);
         market.settle(taskId);
-        (bool lif, uint32 stride, uint32 segments,, bytes32 init) = disp.lifs(taskId);
+        (bool lif, uint32 stride, uint32 segments,, bytes32 init,) = disp.lifs(taskId);
         assertTrue(lif && stride == FX.STRIDE && segments == (FX.STEPS + FX.STRIDE - 1) / FX.STRIDE && init == FX.INIT_STATE_ROOT, "dispatched on the LIF exec kind");
     }
     function phaseOf(bytes32 taskId) internal view returns (IExecutionDisputes.Phase p, uint32 step, bytes32 prevRoot, uint32 neuron, address loser) {
@@ -71,7 +71,7 @@ contract MeshLifTest is Test {
         vm.prank(A); disp.revealRoots(taskId, FX.segRootsA());
         vm.prank(B); disp.revealRoots(taskId, inputLiar ? FX.segRootsB2() : FX.segRootsB1());
         (IExecutionDisputes.Phase p,, bytes32 prev,,) = phaseOf(taskId);
-        (, , , uint32 seg,) = disp.lifs(taskId);
+        (, , , uint32 seg,,) = disp.lifs(taskId);
         assertTrue(p == IExecutionDisputes.Phase.Refine && seg == FX.SEG_STAR && prev == FX.segRootsA()[FX.SEG_STAR - 1], "first differing segment; previous segment root agreed");
         uint256 g0 = gasleft(); vm.prank(A); disp.postStepRoots(taskId, FX.stepRootsA()); gasRefine = g0 - gasleft();
         vm.prank(B); disp.postStepRoots(taskId, inputLiar ? FX.stepRootsB2() : FX.stepRootsB1());

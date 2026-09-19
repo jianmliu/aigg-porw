@@ -129,7 +129,7 @@ contract BatchTest is Test {
         (,,,,,, phase,,,,,,,,) = disp.disputes(taskId); assertTrue(phase == IExecutionDisputes.Phase.Run, "one opening is not two");
         vm.prank(liar); disp.openRun(taskId, rb.execRoot, seedOf(STAR), initOf(STAR), proof);
 
-        uint32 seed; (,,,, seed,, phase,,,,,,,,) = disp.disputes(taskId); (,,,, bytes32 init) = disp.lifs(taskId);
+        uint32 seed; (,,,, seed,, phase,,,,,,,,) = disp.disputes(taskId); (,,,, bytes32 init,) = disp.lifs(taskId);
         assertTrue(phase == IExecutionDisputes.Phase.Step && seed == FX.STIMULUS_SEED && init == FX.INIT_STATE_ROOT, "from here it is run 613's dispute: its seed, its state_0, Phase.Step");
         console2.log("finding the run among 1000 (10 rounds + the opening), one party's gas:", g);
 

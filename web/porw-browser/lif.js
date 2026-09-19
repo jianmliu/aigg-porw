@@ -12,7 +12,10 @@ const le16 = (n) => { const b = new Uint8Array(2); new DataView(b.buffer).setUin
 const cat = (...p) => { const o = new Uint8Array(p.reduce((s, x) => s + x.length, 0)); let i = 0; for (const x of p) { o.set(x, i); i += x.length; } return o; };
 
 /** execKind digest = keccak(abi.encodePacked(string id, uint32 x6 params)) — the parameter set is pinned in the MEP */
-export const lifExecKind = () => keccak_256(cat(new TextEncoder().encode(LIF_KIND_ID), be32(LIF.dtTauMQ16), be32(LIF.dtTauSQ16), be32(LIF.threshQ16), be32(LIF.wUnitQ16), be32(LIF.refract), be32(LIF.extPQ32)));
+/** The kind digest pins every parameter, the weight unit among them. `wUnitQ16` is per connectome: 18022 (0.275 mV per
+ *  synapse) was set on FlyWire's synapse counts; a connectome that counts on another scale pins another unit and is
+ *  another kind -- same rule, same KIND_ID string, another digest. */
+export const lifExecKind = (wUnitQ16 = LIF.wUnitQ16) => keccak_256(cat(new TextEncoder().encode(LIF_KIND_ID), be32(LIF.dtTauMQ16), be32(LIF.dtTauSQ16), be32(LIF.threshQ16), be32(wUnitQ16), be32(LIF.refract), be32(LIF.extPQ32)));
 
 export const ext = (i, step, seed) => fmix32((fmix32((Math.imul(i, GOLDEN32) + seed) >>> 0) + Math.imul(step, GOLDEN32)) >>> 0) < LIF.extPQ32 ? 1 : 0;
 export const canonicalStim = (i, seed) => (fmix32((Math.imul(i, GOLDEN32) + seed) >>> 0) % 1000 === 0 ? 1 : 0);
@@ -25,8 +28,8 @@ export const spiked = (s) => (s.flags & 2) ? 1 : 0;
 const I32_MAX = 2147483647n, I32_MIN = -2147483648n;
 
 /** transition(S, I) with I a BigInt (signed synapse-count units). Returns the next state. */
-export function transition(S, I, i, step, seed) {
-  let g = BigInt(S.g); g = g - ((g * BigInt(LIF.dtTauSQ16)) >> 16n) + I * BigInt(LIF.wUnitQ16);
+export function transition(S, I, i, step, seed, wUnitQ16 = LIF.wUnitQ16) {
+  let g = BigInt(S.g); g = g - ((g * BigInt(LIF.dtTauSQ16)) >> 16n) + I * BigInt(wUnitQ16);
   if (g > I32_MAX) g = I32_MAX; if (g < I32_MIN) g = I32_MIN;
   let v, refr, spike;
   if (S.flags & 4) { spike = 0; v = 0n; refr = 0; } // silenced (bit2): never spikes, and silence wins over the stimulus

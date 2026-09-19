@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "../interfaces/PorwMesh.sol";
+import "./LifRowCheck.sol";
 
 /// @notice Append-only registry of Model Execution Profiles (one per released fly brain).
 ///         mep_id is computed on-chain from the pinned fields; an entry is immutable. Every field that a
@@ -15,6 +16,18 @@ contract MEPRegistry is IMEPRegistry {
     mapping(bytes32 => bool) public exists;
     struct Terms { address beneficiary; uint16 royaltyBps; }
     mapping(bytes32 => Terms) internal terms;
+
+    /// @notice int-lif kinds: the weight unit behind an execKind digest, 0 if the digest is not a declared int-lif kind.
+    ///         Anybody may declare a unit; the digest is computed here, so a declaration can only say something true.
+    ///         The market and the disputes ask this instead of comparing against one compiled-in digest, which is what
+    ///         lets a second connectome, counted on another scale, be tasked and disputed without a second contract.
+    mapping(bytes32 => uint32) public lifWeightUnit;
+    event LifKindDeclared(bytes32 indexed execKind, uint32 wUnitQ16);
+    constructor() { declareLifKind(uint32(uint64(LifRowCheck.W_UNIT_Q16))); } // FlyWire's unit: the kind every existing MEP has
+    function declareLifKind(uint32 wUnitQ16) public returns (bytes32 kind) {
+        require(wUnitQ16 > 0, "unit"); kind = LifRowCheck.execKind(wUnitQ16);
+        if (lifWeightUnit[kind] == 0) { lifWeightUnit[kind] = wUnitQ16; emit LifKindDeclared(kind, wUnitQ16); }
+    }
 
     function registerMEP(MEP calldata m) external returns (bytes32 id) { id = _profileId(m); _store(id, m); }
 
