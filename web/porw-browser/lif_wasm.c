@@ -212,6 +212,14 @@ int32_t porw_lif_step_events(const uint8_t *syn, const uint32_t *out_start, cons
     return (int32_t)m;
 }
 
+void porw_lif_state_leaves(const lif_state_t *st, uint32_t n, uint32_t first, uint8_t *out);
+/* the leaves of a LIST of neurons, each into its own place: what an incremental commit needs after a sparse step */
+EXPORT("porw_lif_state_leaves_at")
+int porw_lif_state_leaves_at(const lif_state_t *st, uint32_t n, const uint32_t *ids, uint32_t n_ids, uint8_t *leaves) {
+    for (uint32_t t = 0; t < n_ids; t++) { uint32_t i = ids[t]; if (i >= n) return 2; porw_lif_state_leaves(st + i, 1u, i, leaves + (uint64_t)i * 32); }
+    return 0;
+}
+
 /* inclusive running signed partial sums over CSR positions [k0, k1) for the dispute row */
 EXPORT("porw_lif_partial_sums")
 int porw_lif_partial_sums(const uint8_t *syn, const uint32_t *perm, const lif_state_t *in, uint32_t n, uint32_t k0, uint32_t k1, int64_t *out) {

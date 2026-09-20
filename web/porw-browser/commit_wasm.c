@@ -191,6 +191,34 @@ uint32_t porw_merkle_tree_build(const uint8_t *leaves, uint32_t n, uint8_t *tree
     return levels;
 }
 
+/* Update a built tree after some leaves changed: `idx` ascending (duplicates tolerated), `work` is n_idx u32 of
+ * scratch. Only the changed leaves and the nodes above them are rehashed, so a commit costs O(k log n) instead of
+ * O(n) -- which is what a sparse step leaves behind: in a FlyBnB battery run a few hundred of 139,255 neurons change
+ * state between segments, and the leaves of the rest are what they were. The result is the tree `porw_merkle_tree_build`
+ * would have produced; test_lif_events.mjs holds it to that on the real connectome. */
+EXPORT("porw_merkle_tree_update")
+uint32_t porw_merkle_tree_update(uint8_t *tree, uint32_t n, const uint8_t *leaves, const uint32_t *idx, uint32_t n_idx, uint32_t *work) {
+    if (n == 0) return 0xFFFFFFFFu;
+    uint32_t m = 0, prev = 0xFFFFFFFFu;
+    for (uint32_t t = 0; t < n_idx; t++) {
+        uint32_t i = idx[t]; if (i >= n) return 0xFFFFFFFFu; if (i == prev) continue; if (i < prev && prev != 0xFFFFFFFFu) return 0xFFFFFFFEu; /* not ascending */
+        prev = i; copy32(tree + (uint64_t)i * 32, leaves + (uint64_t)i * 32); work[m++] = i;
+    }
+    uint32_t w = n, off = 0, levels = 1;
+    while (w > 1) {
+        uint32_t nw = (w + 1) / 2, noff = off + w, m2 = 0, last = 0xFFFFFFFFu;
+        for (uint32_t t = 0; t < m; t++) {            /* parents are non-decreasing, so this compacts in place */
+            uint32_t p = work[t] >> 1; if (p == last) continue; last = p;
+            const uint8_t *l = tree + (uint64_t)(off + 2 * p) * 32;
+            const uint8_t *r = (2 * p + 1 < w) ? tree + (uint64_t)(off + 2 * p + 1) * 32 : l;
+            parent(l, r, tree + (uint64_t)(noff + p) * 32);
+            work[m2++] = p;
+        }
+        m = m2; off = noff; w = nw; levels++;
+    }
+    return levels;
+}
+
 EXPORT("porw_merkle_tree_proof")
 uint32_t porw_merkle_tree_proof(const uint8_t *tree, uint32_t n, uint32_t index, uint8_t *out, uint32_t max_depth) {
     if (n == 0 || index >= n) return 0xFFFFFFFFu;

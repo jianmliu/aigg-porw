@@ -322,10 +322,11 @@ export class PorwNode {
     if (L.events === undefined && build) {
       L.events = null;
       try {
-        const outStart = k.alloc((n + 1) * 4), outPerm = k.alloc((st.hdr.synapses >>> 0) * 4), touched = k.alloc(n * 4), isTouched = k.alloc(n);
-        if (e.porw_lif_build_out_index(st.bufPtr + st.hdr.synOffset, st.hdr.synapses >>> 0, n >>> 0, outStart, outPerm) === 0) L.events = { outStart, outPerm, touched, isTouched };
+        const outStart = k.alloc((n + 1) * 4), outPerm = k.alloc((st.hdr.synapses >>> 0) * 4), touched = k.alloc(n * 4), isTouched = k.alloc(n), work = k.alloc(n * 4);
+        if (e.porw_lif_build_out_index(st.bufPtr + st.hdr.synOffset, st.hdr.synapses >>> 0, n >>> 0, outStart, outPerm) === 0) L.events = { outStart, outPerm, touched, isTouched, work };
       } catch { L.events = null; } // no room for the index: the scatter path is the fallback, and it is the reference
     }
+    L.treeBuilt = false; // a new sequence: the first commit of it builds the whole tree, and the rest update it
     if (!L.events) { L.nTouched = null; return false; }
     L.nTouched = e.porw_lif_events_init(statePtr, n >>> 0, L.events.touched, L.events.isTouched, L.acc);
     return true;
@@ -356,11 +357,22 @@ export class PorwNode {
       touch(i); // the lie is a write from outside the rule: without this the event path would not follow it
     }
   }
+  /** The segment root over the state. Between two commits only the neurons a step touched can have changed, and the
+   *  leaves of the rest are what they were -- so once the tree exists, a commit rehashes those leaves and the nodes
+   *  above them (O(k log n)) instead of all 139,255 (O(n)). The tree it leaves behind is the one a full build would
+   *  produce, which is what makes this safe: same root, same proofs. Above half the neurons a full build is cheaper. */
   async _lifCommit(st, statePtr) {
     const k = this.k, e = k.exports, n = st.hdr.neurons, L = st.slot.lif;
+    if (L.treeBuilt && L.events && L.nTouched > 0 && L.nTouched < n / 2) {
+      const ids = k.u32(L.events.touched, L.nTouched); ids.sort(); // the update walks levels in order; a set has no order to lose
+      if (e.porw_lif_state_leaves_at(statePtr, n >>> 0, L.events.touched, L.nTouched >>> 0, L.leavesPtr) !== 0) throw new Error("lif leaves_at");
+      const lv = e.porw_merkle_tree_update(L.treePtr, n >>> 0, L.leavesPtr, L.events.touched, L.nTouched >>> 0, L.events.work) >>> 0;
+      if (lv >= 0xFFFFFFFE) throw new Error("tree update error " + lv);
+      return { ptr: L.treePtr, n, root: new Uint8Array(k.u8(L.treePtr + (k.treeNodes(n) - 1) * 32, 32)) };
+    }
     if (this.pool) await this.pool.map("porw_lif_state_leaves", n, (f, c) => [statePtr + f * LIF_STATE, c, f, L.leavesPtr + f * 32]);
     else e.porw_lif_state_leaves(statePtr, n >>> 0, 0, L.leavesPtr);
-    return this._buildTree(L.leavesPtr, n, L.treePtr);
+    const t = await this._buildTree(L.leavesPtr, n, L.treePtr); L.treeBuilt = true; return t;
   }
   /** full run with per-step state commitments; keeps roots + checkpoints, returns the result artifacts */
   async _runLif(st, seed, ids = null, commit = true, silence = null) {

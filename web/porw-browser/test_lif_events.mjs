@@ -56,6 +56,14 @@ const same = (a, b) => a.digest === b.digest && a.root === b.root && a.init === 
     check("and it diverges into exactly the same wrong roots as it does in the scatter path: no hiding place", evented.root === dense.root && evented.roots === dense.roots); }
 }
 
+// ---- the incremental commit: the tree an update leaves behind is the tree a full build would ----
+{ const p = synthesizePayloadV2("commit", 4000, 120000); const ids = Uint32Array.from({ length: 200 }, (_, j) => j * 7);
+  const a = await run(p, { stimulusSeed: 5, stimulusIds: ids }, { events: false }), b = await run(p, { stimulusSeed: 5, stimulusIds: ids });
+  check("every segment root of an incrementally committed run equals the fully built one", a.roots.join() === b.roots.join() && a.init === b.init);
+  // and the tree is not only right at the root: an opening from it verifies against that root
+  const o = await b.nd.lifOpenState(b.st.mep.mepId, 30, 7), oa = await a.nd.lifOpenState(a.st.mep.mepId, 30, 7);
+  check("and an opening taken from the updated tree matches the full build's, proof and all", V.hex(o.state) === V.hex(oa.state) && o.proof.map(V.hex).join() === oa.proof.map(V.hex).join()); }
+
 // ---- the real connectome, if the payload is to hand ----
 const real = process.argv[2];
 if (real && fs.existsSync(real)) {
