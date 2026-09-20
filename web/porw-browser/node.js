@@ -312,12 +312,38 @@ export class PorwNode {
       const rc = e.porw_lif_state0_silence(dst, n >>> 0, p, silence.length >>> 0); this.k.release(m); if (rc !== 0) throw new Error("silence rc=" + rc); }
     return stimulated;
   }
+  /** Arm the event-driven path on `statePtr` (lif_wasm.c): the index by pre, built once per model and 4 bytes a
+   *  synapse, plus the touched set. `build` is false inside a mark -- a release would take the index back. Armed, a
+   *  step walks the out-edges of the spikers and updates the touched instead of visiting every record: the same
+   *  trajectory, bit for bit, for a fraction of the work. Unarmed (no room, or a caller that did not ask), the scatter
+   *  path runs as before. The caller must have BOTH buffers holding `statePtr`'s state: untouched entries are not written. */
+  _lifEventsArm(st, statePtr, build = true) {
+    const k = this.k, e = k.exports, n = st.hdr.neurons, L = st.slot.lif;
+    if (L.events === undefined && build) {
+      L.events = null;
+      try {
+        const outStart = k.alloc((n + 1) * 4), outPerm = k.alloc((st.hdr.synapses >>> 0) * 4), touched = k.alloc(n * 4), isTouched = k.alloc(n);
+        if (e.porw_lif_build_out_index(st.bufPtr + st.hdr.synOffset, st.hdr.synapses >>> 0, n >>> 0, outStart, outPerm) === 0) L.events = { outStart, outPerm, touched, isTouched };
+      } catch { L.events = null; } // no room for the index: the scatter path is the fallback, and it is the reference
+    }
+    if (!L.events) { L.nTouched = null; return false; }
+    L.nTouched = e.porw_lif_events_init(statePtr, n >>> 0, L.events.touched, L.events.isTouched, L.acc);
+    return true;
+  }
   async _lifStep(st, from, to, step, seed) {
     const k = this.k, e = k.exports, n = st.hdr.neurons, syn = st.bufPtr + st.hdr.synOffset;
-    let rc;
-    if (this.pool && st.csr.sorted) await this.pool.map("porw_lif_step_rows_direct", n, (i0, c) => [syn, st.csr.rowStartPtr, from, to, n, i0, i0 + c, step, seed, st.wUnitQ16]);
+    let rc; const L = st.slot.lif;
+    if (L.events && L.nTouched !== null && L.nTouched !== undefined) {
+      const m = e.porw_lif_step_events(syn, L.events.outStart, L.events.outPerm, from, to, L.acc, n >>> 0, L.events.touched, L.events.isTouched, L.nTouched >>> 0, step >>> 0, seed >>> 0, st.wUnitQ16 >>> 0);
+      if (m < 0) throw new Error("lif events rc=" + m);
+      L.nTouched = m;
+    } else if (this.pool && st.csr.sorted) await this.pool.map("porw_lif_step_rows_direct", n, (i0, c) => [syn, st.csr.rowStartPtr, from, to, n, i0, i0 + c, step, seed, st.wUnitQ16]);
     else if (this.pool) await this.pool.map("porw_lif_step_csr_range", n, (i0, c) => [syn, st.csr.permPtr, st.csr.rowStartPtr, from, to, n, i0, i0 + c, step, seed, st.wUnitQ16]);
     else { rc = e.porw_lif_step(syn, st.hdr.synapses >>> 0, from, to, st.slot.lif.acc, n >>> 0, step >>> 0, seed >>> 0, st.wUnitQ16 >>> 0); if (rc !== 0) throw new Error("lif rc=" + rc); }
+    // Anything that writes a neuron's state from outside the rule has to say so, or the event-driven path will not
+    // follow it: an untouched neuron is only a fixed point while nothing has touched it.
+    const touch = (i) => { if (!(L.events && L.nTouched !== null && L.nTouched !== undefined)) return;
+      const f = k.u8(L.events.isTouched + i, 1); if (!f[0]) { f[0] = 1; k.u32(L.events.touched + L.nTouched * 4, 1)[0] = i; L.nTouched++; } };
     if (this.execLie && this.execLie.step === step) { // test hooks: a lying executor
       const L = this.execLie, i = L.neuron;
       if (L.kind === "input") { // lie in the accumulated input: state = transition(prev, I + delta) — consistent with lied partial sums
@@ -327,6 +353,7 @@ export class PorwNode {
         const next = transition(decodeState(k.u8(from + i * LIF_STATE, LIF_STATE)), I + BigInt(L.delta), i, step, seed, st.wUnitQ16 || undefined);
         k.u8(to + i * LIF_STATE, LIF_STATE).set(encodeState(next));
       } else { const b = k.u8(to + i * LIF_STATE, LIF_STATE); const dv = new DataView(b.buffer, b.byteOffset, LIF_STATE); dv.setInt32(0, dv.getInt32(0, true) + L.delta, true); } // lie in the state itself
+      touch(i); // the lie is a write from outside the rule: without this the event path would not follow it
     }
   }
   async _lifCommit(st, statePtr) {
@@ -341,6 +368,7 @@ export class PorwNode {
     L.seed = seed; L.ids = ids; L.cache.clear();
     const stimulated = this.lifState0(st, L.ping, seed, ids, silence);
     k.u8(L.checkpoints.get(0), n * LIF_STATE).set(k.u8(L.ping, n * LIF_STATE));
+    k.u8(L.pong, n * LIF_STATE).set(k.u8(L.ping, n * LIF_STATE)); this._lifEventsArm(st, L.ping); // both buffers hold state_0
     const initStateRoot = commit ? (await this._lifCommit(st, L.ping)).root : null; commitMs += performance.now() - t0;
     const roots = [], stride = st.commitStride; let cur = L.ping, nxt = L.pong;
     for (let s = 1; s <= st.steps; s++) {
@@ -360,6 +388,7 @@ export class PorwNode {
     if (L.cache.has(s)) return L.cache.get(s);
     let c = s - (s % LIF_CHECKPOINT); const m = k.mark();
     const a = k.alloc(n * LIF_STATE), b = k.alloc(n * LIF_STATE); k.u8(a, n * LIF_STATE).set(k.u8(L.checkpoints.get(c), n * LIF_STATE));
+    k.u8(b, n * LIF_STATE).set(k.u8(a, n * LIF_STATE)); this._lifEventsArm(st, a, false); // the touched set of a checkpoint is what its state says it is
     let cur = a, nxt = b; for (let t = c + 1; t <= s; t++) { await this._lifStep(st, cur, nxt, t, L.seed); [cur, nxt] = [nxt, cur]; }
     const state = new Uint8Array(k.u8(cur, n * LIF_STATE)); k.release(m);
     // tree over a dedicated region so several steps can be cached at once
@@ -374,6 +403,7 @@ export class PorwNode {
     const st = this.models.get(hex(mepId)), k = this.k, n = st.hdr.neurons, L = st.slot.lif, stride = st.commitStride;
     const s0 = seg * stride, s1 = Math.min(s0 + stride, st.steps); const { statePtr } = await this._lifStateAt(st, s0);
     const m = k.mark(); const a = k.alloc(n * LIF_STATE), b = k.alloc(n * LIF_STATE); k.u8(a, n * LIF_STATE).set(k.u8(statePtr, n * LIF_STATE));
+    k.u8(b, n * LIF_STATE).set(k.u8(a, n * LIF_STATE)); this._lifEventsArm(st, a, false);
     let cur = a, nxt = b; const roots = [];
     for (let t = s0 + 1; t <= s1; t++) { await this._lifStep(st, cur, nxt, t, L.seed); roots.push((await this._lifCommit(st, nxt)).root); [cur, nxt] = [nxt, cur]; }
     k.release(m); return { s0, s1, roots };
