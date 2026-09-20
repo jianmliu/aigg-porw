@@ -7,7 +7,7 @@ import { hex } from "./verify.js";
 export class RelayClient {
   constructor(urls, key, { onLog = null, seenCap = 10000, reconnect = true, backoffMs = 500, maxBackoffMs = 15000 } = {}) {
     this.urls = urls; this.key = key; this.address = hex(key.address); this.socks = []; this.subs = new Map(); // topic -> Set<handler>
-    this.seen = new Map(); this.seenCap = seenCap; this.pending = new Map(); this.onLog = onLog; this.received = 0; this.duplicates = 0; this.rejected = 0;
+    this.seen = new Map(); this.seenCap = seenCap; this.pending = new Map(); this.onLog = onLog; this.received = 0; this.duplicates = 0; this.rejected = 0; this.handlerErrors = 0;
     this.closed = false; this.reconnects = 0; this.opts = { reconnect, backoffMs, maxBackoffMs };
     this.acks = new Map(); // publish id -> resolve(delivered): a publish that nobody received is not a publish
   }
@@ -42,7 +42,14 @@ export class RelayClient {
     const id = envelopeId(m.env); if (this.seen.has(id)) { this.duplicates++; return; } // same message via another relay
     this.seen.set(id, entry.url); if (this.seen.size > this.seenCap) this.seen.delete(this.seen.keys().next().value);
     this.received++;
-    for (const h of this.subs.get(m.topic) || []) h(m.env, from, entry.url);
+    // One subscriber must never silence another. These handlers belong to independent things -- an aggregator per
+    // epoch, a service per brain -- and a bare loop means the first one to throw stops the message reaching any of
+    // the rest, with nothing recorded anywhere. That is how six epochs of a live host's residency claims were lost:
+    // the claim arrived, the relay reported it delivered, an aggregator for another epoch threw on it, and the
+    // aggregator it was actually FOR never saw it. Counted zero, rejected zero, no error at either end.
+    for (const h of [...(this.subs.get(m.topic) || [])]) {
+      try { h(m.env, from, entry.url); } catch (e) { this.handlerErrors++; this.onLog?.(`subscriber for ${m.topic} threw: ${String(e?.message || e).slice(0, 120)}`); }
+    }
   }
   subscribe(topic, handler) {
     if (!this.subs.has(topic)) { this.subs.set(topic, new Set()); for (const s of this.socks) if (s.open && s.ws) try { s.ws.send(JSON.stringify({ op: "sub", topic })); } catch {} }
