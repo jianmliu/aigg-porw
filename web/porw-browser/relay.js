@@ -1,6 +1,7 @@
 // Stage-1 relay: a stateless WebSocket pub/sub hub. Anyone can run one; instances connect to several.
 // Wire protocol (JSON text frames):
-//   client -> relay : { op: "sub", topic } | { op: "unsub", topic } | { op: "pub", topic, env }
+//   client -> relay : { op: "sub", topic } | { op: "unsub", topic } | { op: "pub", topic, env, id? }
+//   relay -> client : { op: "msg", topic, env } | { op: "ack", id, delivered } | { op: "hello" } | { op: "err", reason }
 //   relay  -> client: { op: "msg", topic, env } | { op: "hello", relay, topics? } | { op: "err", reason }
 // The relay verifies envelope signatures and freshness before forwarding (cheap spam control) but is
 // NOT trusted: every receiver verifies again, and settlement is on-chain. A relay can only drop or
@@ -36,7 +37,12 @@ export function startRelay({ port = 0, host = "127.0.0.1", name = "relay", censo
         if (!from) { stats.dropped++; return ws.send(JSON.stringify({ op: "err", reason: "bad envelope" })); }
         if (censor && censor(from, m.topic, m.env)) { stats.censored++; return; } // a misbehaving relay (test mode): silently drops
         const frame = JSON.stringify({ op: "msg", topic: m.topic, env: m.env });
-        for (const peer of rooms.get(m.topic) || []) if (peer.readyState === 1) { peer.send(frame); stats.forwarded++; }
+        // How many others actually got it. The publisher cannot see this and has no other way to learn it: a socket
+        // that is open says nothing about whether anybody is still subscribed to the topic on the other side, which
+        // is exactly the state a relay restart leaves a long-running host in.
+        let delivered = 0;
+        for (const peer of rooms.get(m.topic) || []) if (peer.readyState === 1) { peer.send(frame); stats.forwarded++; if (peer !== ws) delivered++; }
+        if (m.id != null) ws.send(JSON.stringify({ op: "ack", id: m.id, delivered }));
         return;
       }
       ws.send(JSON.stringify({ op: "err", reason: "op" }));

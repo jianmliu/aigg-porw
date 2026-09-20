@@ -22,10 +22,25 @@ export class NodeService {
   /** `onResult(result)`: called with each signed task result (e.g. to hand it to a gas-sponsoring relayer for TaskMarket.submitResult) */
   constructor(node, client, { maxTilesPerRequest = 64, maxRunsPerBatch = 4096, onResult = null } = {}) { this.node = node; this.client = client; this.maxTiles = maxTilesPerRequest; this.maxRuns = maxRunsPerBatch; this.served = { openings: 0, tasks: 0 }; this.unsubs = []; this.onResult = onResult; }
   /** run the epoch challenge for a MEP and announce the signed residency claim (auditors pick it up on the MEP topic) */
-  async announce(mepId, challenge32) {
+  /** A residency claim is the one thing a host does that nobody replies to, and for most of an epoch nothing
+   *  depends on it -- so a claim that reaches no aggregator looks exactly like a claim that worked. That is not
+   *  hypothetical: a relayer redeploy left a live host announcing into nothing for six epochs, its eligibility
+   *  quietly lapsing, with no error at either end. So delivery is checked, and a claim nobody received is treated
+   *  as what it is: the connection is dropped and redialled, and the claim is made again on the new one. */
+  async announce(mepId, challenge32, { redial = true } = {}) {
     const r = await this.node.residency(mepId, challenge32);
-    const env = this.client.publish(topicMep(hex(mepId)), "claim", hex(mepId), claimToJson(r));
-    return { r, env };
+    // Two ways a claim fails to arrive, and they look nothing like each other from here: no socket at all (the
+    // publish throws), and a socket to a relay that has nobody subscribed any more (the publish succeeds and is
+    // delivered to nobody). Both are "it did not arrive", and both are answered the same way.
+    const send = async () => { try { return await this.client.publishTo(topicMep(hex(mepId)), "claim", hex(mepId), claimToJson(r)); }
+      catch (e) { return { env: null, delivered: 0, error: e }; } };
+    let { env, delivered, error } = await send();
+    if (!delivered && redial) {
+      await this.client.redial(); // the client replays its subscriptions on the new socket, so serving resumes with it
+      ({ env, delivered, error } = await send());
+    }
+    if (!delivered) throw new Error(`the claim reached no relay${error ? `: ${error.message}` : ": nothing is subscribed to this brain's topic"}`);
+    return { r, env, delivered };
   }
   /** answer audits and tasks for a MEP */
   serve(mepId) {

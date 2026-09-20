@@ -9,6 +9,7 @@ export class RelayClient {
     this.urls = urls; this.key = key; this.address = hex(key.address); this.socks = []; this.subs = new Map(); // topic -> Set<handler>
     this.seen = new Map(); this.seenCap = seenCap; this.pending = new Map(); this.onLog = onLog; this.received = 0; this.duplicates = 0; this.rejected = 0;
     this.closed = false; this.reconnects = 0; this.opts = { reconnect, backoffMs, maxBackoffMs };
+    this.acks = new Map(); // publish id -> resolve(delivered): a publish that nobody received is not a publish
   }
   async connect() {
     this.socks = await Promise.all(this.urls.map((u) => new Promise((res) => this._dial({ url: u, ws: null, open: false, tries: 0, timer: null }, res))));
@@ -35,6 +36,7 @@ export class RelayClient {
   }
   _onFrame(entry, data) {
     let m; try { m = JSON.parse(String(data)); } catch { return; }
+    if (m.op === "ack") { const w = this.acks.get(m.id); if (w) { this.acks.delete(m.id); w(Number(m.delivered) || 0); } return; }
     if (m.op !== "msg") return;
     const from = verifyEnvelope(m.env); if (!from) { this.rejected++; return; }       // never trust the relay's check
     const id = envelopeId(m.env); if (this.seen.has(id)) { this.duplicates++; return; } // same message via another relay
@@ -51,6 +53,30 @@ export class RelayClient {
     const env = seal(type, mepIdHex, payload, this.key); const frame = JSON.stringify({ op: "pub", topic, env });
     let sent = 0; for (const s of this.socks) if (s.open && s.ws && s.ws.readyState === 1) { s.ws.send(frame); sent++; }
     if (!sent) throw new Error("no relay connected"); return env;
+  }
+  /** The same publish, waiting for the relay to say how many OTHER subscribers it reached. "Sent" and "delivered"
+   *  are different facts and only the relay knows the second one: a socket can be open to a relay that has nobody
+   *  subscribed to the topic any more, which is what a restarted relay leaves behind. Resolves with the highest
+   *  count any relay reported, or 0 -- including when no relay answers at all.
+   *  A relay too old to acknowledge is treated as 0 by the timeout, so a caller that demands delivery must be
+   *  talking to relays that acknowledge; `publish` (no ack) stays what everything else uses. */
+  async publishTo(topic, type, mepIdHex, payload, { ackTimeoutMs = 3000 } = {}) {
+    const env = seal(type, mepIdHex, payload, this.key);
+    const open = this.socks.filter((s) => s.open && s.ws && s.ws.readyState === 1);
+    if (!open.length) throw new Error("no relay connected");
+    const waits = open.map((s) => {
+      const id = hex(crypto.getRandomValues(new Uint8Array(8)));
+      const p = new Promise((res) => { const t = setTimeout(() => { this.acks.delete(id); res(0); }, ackTimeoutMs); t.unref?.();
+        this.acks.set(id, (n) => { clearTimeout(t); res(n); }); });
+      try { s.ws.send(JSON.stringify({ op: "pub", topic, env, id })); } catch { this.acks.delete(id); return Promise.resolve(0); }
+      return p;
+    });
+    return { env, delivered: Math.max(0, ...(await Promise.all(waits))) };
+  }
+  /** Drop every socket and dial again. What a publish that reached nobody is evidence of. */
+  redial() {
+    for (const s of this.socks) { try { s.ws?.close(); } catch {} s.open = false; if (s.timer) { clearTimeout(s.timer); s.timer = null; } s.tries = 0; }
+    return this.connect();
   }
   /** request/response to another instance's inbox; resolves with the response envelope or rejects on timeout */
   request(toAddrHex, type, mepIdHex, payload, { timeoutMs = 5000, responseType = null } = {}) {
