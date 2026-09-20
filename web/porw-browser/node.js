@@ -11,7 +11,7 @@ import { uploadDeltaBase, applyDeltaWasm } from "./delta_wasm.js";
 import { decodeHeader, attachSpmv } from "./model.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { claimHash, signHash, keypair } from "./claim.js";
-import { makeMep } from "./mep.js";
+import { makeMep, withTerms } from "./mep.js";
 import { hex, CSR_CHUNK, instanceWord, merkleProof, merkleRoot } from "./verify.js";
 import { batchTrees, levelsOf, childrenAt, runLeaf } from "./batch.js";
 import { claimDigest } from "./eip712.js";
@@ -78,7 +78,7 @@ export class PorwNode {
     });
   }
   /** Internal adoption: the caller owns this payload in the same kernel, with no second k.put. */
-  async _loadResidentModel(name, resident, { maxSteps = 2, exec = null, wUnitQ16 = 0 } = {}) {
+  async _loadResidentModel(name, resident, { maxSteps = 2, exec = null, wUnitQ16 = 0, terms = null } = {}) {
     const k = this.k, t0 = performance.now();
     if (resident.kernel !== k) throw new Error("resident payload belongs to another kernel");
     if (!Number.isSafeInteger(maxSteps) || maxSteps < 1) throw new Error("maxSteps must be a positive integer");
@@ -106,7 +106,13 @@ export class PorwNode {
     csr.rowTree = await this._buildTree(rowLeaves, n + 1, k.alloc(k.treeNodes(n + 1) * 32));
     csr.synapseRoot = k.keccak256(new Uint8Array([...csr.csrTree.root, ...csr.rowTree.root]));
     // the MEP is derivable only now: mep_id binds the CSR structure as well as the weights
-    const mep = makeMep({ name, modelId, execKind: exec === "lif" ? lifExecKind(wUnitQ16 || undefined) : undefined, neurons: hdr.neurons, synapses: hdr.synapses, synapseRoot: csr.synapseRoot });
+    let mep = makeMep({ name, modelId, execKind: exec === "lif" ? lifExecKind(wUnitQ16 || undefined) : undefined, neurons: hdr.neurons, synapses: hdr.synapses, synapseRoot: csr.synapseRoot });
+    // A profile registered under TERMS is a different mep_id from the very same bytes -- keccak(profileId,
+    // beneficiary, royaltyBps) -- and the terms are nowhere in the payload, so a node cannot derive them. A host
+    // serving such a profile has to be TOLD them, or it registers the model under the bare id while the chain draws
+    // it under the other one, and every announcement and execution for that task looks up a model this node has
+    // never heard of. `terms` is that telling: { beneficiary, royaltyBps }, checked by withTerms.
+    if (terms) mep = withTerms(mep, terms.beneficiary, terms.royaltyBps);
     // per-step activation arrays + leaves + trees (act_0 = stimulus, act_1..steps)
     const actN = k.treeNodes(n);
     const acts = []; if (exec === "spmv") for (let sIdx = 0; sIdx <= maxSteps; sIdx++) acts.push({ ptr: k.alloc(n * 4), leavesPtr: sIdx ? k.alloc(n * 32) : 0, treePtr: sIdx ? k.alloc(actN * 32) : 0, tree: null });
