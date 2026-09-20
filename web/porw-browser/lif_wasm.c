@@ -147,6 +147,71 @@ int porw_lif_step_rows_direct(const uint8_t *syn, const uint32_t *row_start, con
     return 0;
 }
 
+/* ---- event-driven execution ----------------------------------------------------------------------------------
+ * The scatter step above visits every record on every step, which is what the rule says and what a verifier does.
+ * It is not what the rule REQUIRES. Two facts make the same trajectory much cheaper to produce:
+ *   - only the out-edges of neurons that SPIKED carry a term: every other product is w * 0.
+ *   - a neuron that has never been reached is a fixed point. With v = g = refr = count = 0 and I = 0, the rule gives
+ *     g1 = 0, v1 = 0 (0 >= THRESH is false), refr1 = 0, count1 = 0 and flags1 = flags & 5 -- the state it already had.
+ *     A STIMULATED neuron is not such a neuron (ext() can fire it), so it is touched from the start; a silenced one
+ *     that nothing reaches is (it never spikes and its state stays zero).
+ * So: carry the set of touched neurons, walk the out-edges of the spikers, update only the touched. Integer sums are
+ * exact and order-independent, so every state, every root and every digest is bit-identical to the scatter path --
+ * which test_lif_events.mjs checks against the real connectome, not only a synthetic one.
+ *
+ * The cost is an index by PRE (the payload is sorted by post): 4 bytes a synapse, built once per model.
+ */
+
+/* out-edge index: out_perm[out_start[i] .. out_start[i+1]) are the record positions whose pre is i (counting sort) */
+EXPORT("porw_lif_build_out_index")
+int porw_lif_build_out_index(const uint8_t *syn, uint32_t n_syn, uint32_t n, uint32_t *out_start, uint32_t *out_perm) {
+    if (!syn || !out_start || !out_perm) return 1;
+    for (uint32_t i = 0; i <= n; i++) out_start[i] = 0;
+    for (uint32_t s = 0; s < n_syn; s++) { uint32_t pre = ld32(syn + (uint64_t)s * 10u); if (pre >= n) return 2; out_start[pre + 1]++; }
+    for (uint32_t i = 0; i < n; i++) out_start[i + 1] += out_start[i];
+    /* place, using out_start as the cursor; then shift it back into starts */
+    for (uint32_t s = 0; s < n_syn; s++) { uint32_t pre = ld32(syn + (uint64_t)s * 10u); out_perm[out_start[pre]++] = s; }
+    for (uint32_t i = n; i > 0; i--) out_start[i] = out_start[i - 1];
+    out_start[0] = 0;
+    return 0;
+}
+
+/* the touched set of state_0: the stimulated, plus anything already carrying state (a resumed or crafted state_0) */
+EXPORT("porw_lif_events_init")
+uint32_t porw_lif_events_init(const lif_state_t *st, uint32_t n, uint32_t *touched, uint8_t *is_touched, int64_t *acc) {
+    uint32_t m = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        acc[i] = 0;
+        uint32_t t = (st[i].flags & 1u) || st[i].v || st[i].g || st[i].refr || st[i].count;
+        is_touched[i] = (uint8_t)t; if (t) touched[m++] = i;
+    }
+    return m;
+}
+
+/* one step over the touched set. `touched` / `is_touched` / `acc` carry across steps; returns the new touched count,
+ * or a negative error. `out` must already hold state_0 for every neuron this run has not touched (the caller keeps
+ * both buffers initialised from it), because those entries are not written. */
+EXPORT("porw_lif_step_events")
+int32_t porw_lif_step_events(const uint8_t *syn, const uint32_t *out_start, const uint32_t *out_perm,
+                             const lif_state_t *in, lif_state_t *out, int64_t *acc, uint32_t n,
+                             uint32_t *touched, uint8_t *is_touched, uint32_t n_touched,
+                             uint32_t step, uint32_t seed, uint32_t w_unit) {
+    if (!syn || !out_start || !out_perm || !in || !out || !acc || !touched || !is_touched) return -1;
+    const uint32_t wu = WU(w_unit);
+    uint32_t m = n_touched;
+    /* a neuron that spiked was updated last step, so every spiker is already in the list */
+    for (uint32_t t = 0; t < n_touched; t++) {
+        uint32_t i = touched[t]; if (!(in[i].flags & 2u)) continue;
+        for (uint32_t k = out_start[i]; k < out_start[i + 1]; k++) {
+            const uint8_t *r = syn + (uint64_t)out_perm[k] * 10u; uint32_t post = ld32(r + 4); if (post >= n) return -2;
+            acc[post] += (int64_t)ldi16(r + 8);
+            if (!is_touched[post]) { is_touched[post] = 1; touched[m++] = post; }
+        }
+    }
+    for (uint32_t t = 0; t < m; t++) { uint32_t i = touched[t]; out[i] = lif_step_one(in[i], acc[i], i, step, seed, wu); acc[i] = 0; }
+    return (int32_t)m;
+}
+
 /* inclusive running signed partial sums over CSR positions [k0, k1) for the dispute row */
 EXPORT("porw_lif_partial_sums")
 int porw_lif_partial_sums(const uint8_t *syn, const uint32_t *perm, const lif_state_t *in, uint32_t n, uint32_t k0, uint32_t k1, int64_t *out) {
