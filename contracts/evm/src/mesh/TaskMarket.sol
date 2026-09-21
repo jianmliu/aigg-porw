@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: 0BSD
 pragma solidity ^0.8.20;
 
+import "./HostCapacity.sol";
+
 import "../interfaces/PorwMesh.sol";
 import "./InstanceRegistry.sol";
 import "./PoRWClaimManager.sol";
@@ -37,6 +39,18 @@ contract TaskMarket is ITaskMarket {
     PoRWClaimManager public immutable claimManager;
     address public disputes;
     address public owner;
+    HostCapacity public hostCapacity;
+    bool public hasPostedTask;
+    event HostCapacitySet(address indexed registry);
+
+    /// @notice Optional deployment wiring, permanently locked by the first successful post.
+    function setHostCapacity(address registry) external {
+        require(msg.sender == owner && !hasPostedTask && address(hostCapacity) == address(0), "capacity wiring");
+        require(registry.code.length > 0, "capacity registry");
+        HostCapacity next = HostCapacity(registry);
+        require(next.MAX_SLOTS() == 64 && next.authorizedMarkets(address(this)), "capacity authorization");
+        hostCapacity = next; emit HostCapacitySet(registry);
+    }
     bytes32 public immutable DOMAIN_SEPARATOR; // EIP-712: results are signed as typed data (wallet or delegated session key)
 
     struct StoredTask { Task t; address client; uint64 epoch; uint64 postedAt; uint64 settledAt; bool exists; bool settled; bool disputed; bool repudiated; }
@@ -125,6 +139,7 @@ contract TaskMarket is ITaskMarket {
         require(claimManager.beacon(e) != bytes32(0), "no beacon");
         require(!tasks[taskId].exists, "posted");
         tasks[taskId] = StoredTask(t, msg.sender, e, uint64(block.number), 0, true, false, false, false);
+        hasPostedTask = true;
         _draw(taskId, t.mepId, e, t.redundancy);
         emit TaskPosted(taskId, t.mepId, t.redundancy);
     }
@@ -144,8 +159,12 @@ contract TaskMarket is ITaskMarket {
             address cand = instances.sortitionPick(mepId, epoch, len, PorwMeshHash.sortition(b, mepId, taskId, j));
             if (cand == address(0)) continue;
             bool dup = false; for (uint256 k = 0; k < out.length; k++) if (out[k] == cand) { dup = true; break; }
-            if (!dup) out.push(cand);
+            if (dup) continue;
+            if (address(hostCapacity) != address(0) && !hostCapacity.reserve(taskId, cand, tasks[taskId].postedAt + TASK_TIMEOUT)) continue;
+            out.push(cand);
         }
+        // Bounded rejection sampling preserves stake weight among free hosts, but may underfill a sparse pool.
+        if (address(hostCapacity) != address(0)) require(out.length == redundancy, "insufficient capacity");
         require(out.length > 0, "no eligible instances"); // a task nobody can execute is refused, not stranded
     }
 
@@ -164,6 +183,7 @@ contract TaskMarket is ITaskMarket {
         require(!submitted[taskId][signer], "submitted");
         _shape(taskId, r);
         results[taskId][signer] = r; submitted[taskId][signer] = true;
+        if (address(hostCapacity) != address(0)) hostCapacity.release(taskId, signer);
         emit ResultSubmitted(taskId, signer, r.execDigest);
     }
 
