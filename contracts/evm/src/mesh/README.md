@@ -26,3 +26,28 @@ the JSON for humans and the **typed Solidity libraries** the tests use
 Pilot simplifications, stated: the beacon is `keccak(prevrandao, blockNumber)` recorded
 once per epoch (production: PoT randomness / VRF); rows up to `MAX_IN_DEGREE`
 are posted whole (larger rows would need sum bisection); full-coverage claims only.
+
+### Optional base enrolment
+
+Fresh deployments may call `InstanceRegistry.setMEPRegistry(address(meps))` once,
+by its owner, before the first bond. Without this configuration all enrolment and
+claim lookup keeps its legacy per-MEP behavior. Configuration cannot be changed
+later, so a task's append-only roster cannot drift to a different registry.
+
+`MEPRegistry.registerDerivedMEP(profile, baseMepId)` requires an existing root
+profile with matching scheme, execution kind, neuron count and synapse count.
+This supports in-place weight mutations; compacted layouts are not supported.
+The registry checks layout compatibility, not scientific lineage or token rights.
+The derived ID is `keccak256(keccak256("aigg:mep:base:v1") || rawProfileId ||
+baseMepId)` with packed bytes32 fields. `registerDerivedMEPWithTerms(profile,
+baseMepId, beneficiary, royaltyBps)` wraps this ID with the existing royalty hash.
+`baseOf` is immutable and returns zero for standalone profiles.
+
+In configured mode, `enrollmentMep` resolves registered derived profiles to their
+base. Bond enrolment, membership, roster length, weight cap, eligibility and
+sortition all use that base. Hosts claim the base once; its valid residency claim
+qualifies future compatible derived registrations, and its fraud invalidation
+removes their standing together. Unknown profiles revert. Tasks, results,
+royalties and execution disputes still bind the exact derived MEP, and posted
+task executor rosters remain snapshots. Shared eligibility does not implement
+model delivery: hosts still need the exact derived model before executing it.

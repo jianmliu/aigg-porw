@@ -30,6 +30,20 @@ export function makeMep({ name, modelId, execKind = EXEC_INT_SPMV_Q16, neurons, 
 }
 
 const unhex = (h) => { h = h.replace(/^0x/, ""); const o = new Uint8Array(h.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(h.substr(2 * i, 2), 16); return o; };
+const BASE_DOMAIN = keccak_256(new TextEncoder().encode("aigg:mep:base:v1"));
+/** Bind a raw profile to an on-chain root base. Apply once, before withTerms.
+ * This derives identity only; MEPRegistry validates the root and compatible layout. */
+export function withBase(mep, baseMepId) {
+  if (mep.baseMepId) throw new Error("base binding cannot nest or change");
+  if (mep.beneficiary || mep.royaltyBps) throw new Error("base binding must precede terms");
+  if (typeof baseMepId === "string" && !/^0x[0-9a-fA-F]{64}$/.test(baseMepId)) throw new Error("base MEP id must be nonzero bytes32");
+  const base = typeof baseMepId === "string" ? unhex(baseMepId) : baseMepId;
+  if (!(base instanceof Uint8Array) || base.length !== 32 || base.every(x => x === 0)) throw new Error("base MEP id must be nonzero bytes32");
+  const rawProfileId = mep.mepId;
+  const profileId = keccak_256(cat(BASE_DOMAIN, rawProfileId, base));
+  return { ...mep, rawProfileId, profileId, baseMepId: base.slice(), mepId: profileId };
+}
+
 /** The same profile under terms. `beneficiary`: 20 bytes or 0x-hex; `royaltyBps`: 1..10000. Returns a new MEP object. */
 export function withTerms(mep, beneficiary, royaltyBps) {
   const b = typeof beneficiary === "string" ? unhex(beneficiary) : beneficiary;

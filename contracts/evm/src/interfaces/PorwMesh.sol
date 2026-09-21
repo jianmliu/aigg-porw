@@ -29,6 +29,10 @@ library PorwMeshHash {
         internal pure returns (bytes32)
     { return keccak256(abi.encodePacked(schemeDigest, modelId, execKind, neurons, synapses, synapseRoot)); }
 
+    /// @dev Immutable root-base association, before any royalty wrapper.
+    function mepIdWithBase(bytes32 profileId, bytes32 baseMepId) internal pure returns (bytes32)
+    { return keccak256(abi.encodePacked(keccak256("aigg:mep:base:v1"), profileId, baseMepId)); }
+
     /// @dev a profile WITH terms: who is owed a share of every fee paid for a task against it, and how much. The terms wrap
     ///      the profile id rather than joining its fields, so a royalty-free profile keeps the id it always had, and the
     ///      terms are inside the id for the reason every other field is: what a settlement depends on is not left to
@@ -85,7 +89,11 @@ interface IMEPRegistry {
         bytes weightsDA;      // content pointer for the bytes (Greenfield object / DSN piece / CID)
     }
     event MEPRegistered(bytes32 indexed mepId, bytes32 indexed modelId, bytes32 schemeDigest);
+    event MEPBase(bytes32 indexed mepId, bytes32 indexed baseMepId);
     event MEPTerms(bytes32 indexed mepId, bytes32 indexed profileId, address indexed beneficiary, uint16 royaltyBps);
+    function baseOf(bytes32 mepId) external view returns (bytes32);
+    function registerDerivedMEP(MEP calldata mep, bytes32 baseMepId) external returns (bytes32 mepId);
+    function registerDerivedMEPWithTerms(MEP calldata mep, bytes32 baseMepId, address beneficiary, uint16 royaltyBps) external returns (bytes32 mepId);
     function registerMEP(MEP calldata mep) external returns (bytes32 mepId);
     /// @notice the same profile under terms: `royaltyBps` of every settled fee is owed to `beneficiary` (TaskMarket)
     function registerMEPWithTerms(MEP calldata mep, address beneficiary, uint16 royaltyBps) external returns (bytes32 mepId);

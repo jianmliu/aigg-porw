@@ -14,6 +14,7 @@ import "./LifRowCheck.sol";
 contract MEPRegistry is IMEPRegistry {
     mapping(bytes32 => MEP) internal meps;
     mapping(bytes32 => bool) public exists;
+    mapping(bytes32 => bytes32) public baseOf;
     struct Terms { address beneficiary; uint16 royaltyBps; }
     mapping(bytes32 => Terms) internal terms;
 
@@ -46,6 +47,32 @@ contract MEPRegistry is IMEPRegistry {
         _store(id, m);
         terms[id] = Terms(beneficiary, royaltyBps);
         emit MEPTerms(id, profileId, beneficiary, royaltyBps);
+    }
+
+    /// @notice Root enrolment association is immutable and part of the ID. This checks execution layout,
+    ///         not scientific lineage or ownership of the model bytes.
+    function registerDerivedMEP(MEP calldata m, bytes32 baseMepId) external returns (bytes32 id) {
+        id = _derivedId(m, baseMepId);
+        _store(id, m); baseOf[id] = baseMepId;
+        emit MEPBase(id, baseMepId);
+    }
+
+    function registerDerivedMEPWithTerms(MEP calldata m, bytes32 baseMepId, address beneficiary, uint16 royaltyBps) external returns (bytes32 id) {
+        require(beneficiary != address(0) && royaltyBps > 0 && royaltyBps <= 10000, "terms");
+        bytes32 derivedId = _derivedId(m, baseMepId);
+        id = PorwMeshHash.mepIdWithTerms(derivedId, beneficiary, royaltyBps);
+        _store(id, m); baseOf[id] = baseMepId;
+        terms[id] = Terms(beneficiary, royaltyBps);
+        emit MEPBase(id, baseMepId);
+        emit MEPTerms(id, derivedId, beneficiary, royaltyBps);
+    }
+
+    function _derivedId(MEP calldata m, bytes32 baseMepId) internal view returns (bytes32) {
+        require(exists[baseMepId], "unknown base");
+        require(baseOf[baseMepId] == bytes32(0), "nested base");
+        MEP storage b = meps[baseMepId];
+        require(m.schemeDigest == b.schemeDigest && m.execKind == b.execKind && m.neurons == b.neurons && m.synapses == b.synapses, "base layout");
+        return PorwMeshHash.mepIdWithBase(_profileId(m), baseMepId);
     }
 
     function termsOf(bytes32 id) external view returns (address beneficiary, uint16 royaltyBps) { Terms storage t = terms[id]; return (t.beneficiary, t.royaltyBps); }
