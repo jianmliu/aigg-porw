@@ -150,13 +150,57 @@ alternative that does not exist:
 So at the size the collection actually is, a host pays about a sixth of an epoch to claim every fly, instead of
 needing 45 GB to claim any of them. The ceiling is somewhere under a thousand brains per host, on this hardware.
 
-Two things about that number are worth separating from physics. **4.5× of today's cost is a missing
+### Capacity becomes the host's own decision, not a protocol parameter
+
+This falls out of decision 1 and is the part worth keeping. **A claim cannot tell a held tile from a derived
+tile** — same bytes, same sketch — so how much a host holds resident stops being anything the protocol knows or
+needs to know. A host with 64 GB keeps many derived payloads warm, claims them at 0.05 s each and answers the
+moment it is drawn. A host with 2 GB keeps the base and derives, and answers 7.5 s later. Both make the same
+claim, and both claims are true.
+
+That leaves three dials, and they are independent, which is the healthy part:
+
+| | set by | decides |
+|---|---|---|
+| RAM | the host's own hardware | how many brains it can answer *fast* |
+| stake | the host's own money | how often it is *drawn* |
+| the sample size `k` | the protocol | what a claim *costs* |
+
+A host that stakes for more weight than its RAM can serve is drawn more often than it can answer, and pays for it
+in missed tasks. That is a real regulator and it needs no rule — but the cost of a missed draw is borne partly by
+the requester, whose deadline passes, which is open point 3 arriving from a second direction.
+
+### A claim over a sample, measured
+
+The ceiling above is the cost of sketching *every* tile. A claim over a challenge-selected subset costs a
+fraction and the tile fraud proof is unchanged, since it adjudicates one tile. Measured on the same brain:
+
+| `k` tiles | fraction | derive | 100 brains per epoch | a host with 99% of it passes with |
+|---|---|---|---|---|
+| 256 | 0.7% | 6 ms | 0.6 s | 7.6 × 10⁻² |
+| **1024** | **2.7%** | **26 ms** | **2.6 s** | **3.4 × 10⁻⁵** |
+| 4096 | 10.9% | 102 ms | 10.3 s | 1.3 × 10⁻¹⁸ |
+| 37,639 | 100% | 939 ms | 1.6 min | — |
+
+`k = 1024` removes the ceiling: the per-epoch cost stops being the reason a host cannot serve a collection.
+
+**An implementation note that cost a benchmark to find.** The first version of `bench_sampled_claim.mjs` called the
+sampler once per tile and reported 666 ms for 256 tiles. That was the call overhead, not the work: **1.5 ms per
+call**, so 37,639 calls spend 57 s of overhead on 0.93 s of derivation. The sample must be sorted and derived as
+contiguous runs. A tile-at-a-time implementation is sixty times slower than the thing it is optimising.
+
+**And the honest limit of what any of this proves.** The base is public — on Greenfield and on a CDN mirror, 154 MB
+fetched in 8.4 s. A host that stores nothing can wait for the challenge, fetch what it needs and claim. Sampling
+makes that cheaper; it does not create the hole. Under this proposal that is not a contradiction, because
+residency is the threshold and not the scarcity: what separates a host that stores from one that re-fetches is
+bandwidth against RAM, and what separates an honest executor from a liar is the bond. If residency were ever meant
+to be load-bearing, a public base already removed the load.
+
+Two things about the main number are worth separating from physics. **4.5× of today's cost is a missing
 implementation**: `applyDeltaWasm` refuses layout 1 (*"in-place layout is not implemented in the WASM path"*), so
 an in-place individual — which is every brain in the collection — derives in JS at 4.21 s. The inner loop
 `porw_sample_records` is layout-independent and already exists; only the writeback is missing. And **the ceiling
-moves only one way**: by not sketching every tile. A claim over a challenge-selected subset costs a fraction and
-the fraud proof is unchanged, since it adjudicates one tile. That is the standard retrievability-sampling trade
-and it is a change to the claim, which decisions 1–3 deliberately are not. It belongs in its own proposal.
+moves only one way**: by not sketching every tile, measured above.
 
 ## Open points
 
@@ -169,4 +213,5 @@ and it is a change to the claim, which decisions 1–3 deliberately are not. It 
 3. **What the threshold should cost.** If holding the base is the entry condition, a host that lies about holding
    it is drawn and fails to answer. Today nothing distinguishes that from being offline. A missed draw is already
    uncompensated; whether it should also be slashable is the question this proposal makes worth asking.
-4. **Whether a claim must cover every tile.** See below: it is the only lever that moves the ceiling.
+4. **The sample size.** Measured above; `k` is a protocol parameter and the table is the trade. It changes the
+   claim and `verifyClaim`, which decisions 1–3 deliberately do not, so it belongs in its own proposal.
