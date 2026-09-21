@@ -11,7 +11,7 @@ import { uploadDeltaBase, applyDeltaWasm } from "./delta_wasm.js";
 import { decodeHeader, attachSpmv } from "./model.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { claimHash, signHash, keypair } from "./claim.js";
-import { makeMep, withTerms } from "./mep.js";
+import { makeMep, withBase, withTerms } from "./mep.js";
 import { hex, CSR_CHUNK, instanceWord, merkleProof, merkleRoot } from "./verify.js";
 import { batchTrees, levelsOf, childrenAt, runLeaf } from "./batch.js";
 import { claimDigest } from "./eip712.js";
@@ -78,7 +78,7 @@ export class PorwNode {
     });
   }
   /** Internal adoption: the caller owns this payload in the same kernel, with no second k.put. */
-  async _loadResidentModel(name, resident, { maxSteps = 2, exec = null, wUnitQ16 = 0, terms = null } = {}) {
+  async _loadResidentModel(name, resident, { maxSteps = 2, exec = null, wUnitQ16 = 0, baseMepId = null, terms = null } = {}) {
     const k = this.k, t0 = performance.now();
     if (resident.kernel !== k) throw new Error("resident payload belongs to another kernel");
     if (!Number.isSafeInteger(maxSteps) || maxSteps < 1) throw new Error("maxSteps must be a positive integer");
@@ -112,6 +112,7 @@ export class PorwNode {
     // serving such a profile has to be TOLD them, or it registers the model under the bare id while the chain draws
     // it under the other one, and every announcement and execution for that task looks up a model this node has
     // never heard of. `terms` is that telling: { beneficiary, royaltyBps }, checked by withTerms.
+    if (baseMepId != null) mep = withBase(mep, baseMepId);
     if (terms) mep = withTerms(mep, terms.beneficiary, terms.royaltyBps);
     // per-step activation arrays + leaves + trees (act_0 = stimulus, act_1..steps)
     const actN = k.treeNodes(n);

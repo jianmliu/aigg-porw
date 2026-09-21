@@ -9,6 +9,23 @@ mesh. No install. Measured in headless Chromium; every
 cryptographic output is checked against an independent implementation and the
 aigg-spec conformance vectors, and the claim is verified on-chain.
 
+## Base-bound profiles
+
+`withBase(mep, baseMepId)` in `mep.js` derives
+`keccak256(keccak256("aigg:mep:base:v1") || rawProfileId || baseMepId)`.
+Pass a nonzero bytes32 as a `Uint8Array` or `0x` hex string. Apply this once to a
+raw profile, then apply `withTerms` if needed. The result retains `rawProfileId`,
+sets `profileId` to the base-derived ID before terms, and records `baseMepId`.
+Repeated base wrapping and applying a base after terms throw. Root validity and
+layout compatibility are checked by the registry, not inferred from model bytes.
+
+Both `PorwNode.loadModel` and `loadDelta` accept `{ baseMepId, terms }`; the base
+wrapper is applied before royalties, including for resident WASM delta loads.
+Omitting `baseMepId` preserves standalone identities. Models are indexed and
+executed under their exact final MEP IDs. This option changes identity only: the
+caller must load and claim the root model separately for base enrolment; it does
+not add an on-demand child loader or change the residency claim scheme.
+
 ## Modules
 
 | file | role |

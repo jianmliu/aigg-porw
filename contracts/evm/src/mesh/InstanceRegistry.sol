@@ -21,12 +21,14 @@ contract InstanceRegistry is IInstanceRegistry {
 
     address public owner;
     address public claimManager;
+    IMEPRegistry public mepRegistry;
+    bool private hasBonded;
     mapping(address => bool) public slasher;
 
     mapping(address => uint256) public bonded;
     mapping(address => uint64) public exitAt;
     mapping(bytes32 => address[]) internal instancesOf;
-    mapping(bytes32 => mapping(address => bool)) public inMep;
+    mapping(bytes32 => mapping(address => bool)) internal membership;
 
     // ---- session keys: a bonded wallet delegates an ephemeral browser key (EIP-712 Delegation) ----
     bytes32 public immutable DOMAIN_SEPARATOR;
@@ -68,6 +70,25 @@ contract InstanceRegistry is IInstanceRegistry {
     function setClaimManager(address cm, uint64 validityEpochs) public { require(msg.sender == owner && claimManager == address(0), "set"); require(validityEpochs >= 1 && validityEpochs <= 64, "validity"); claimManager = cm; slasher[cm] = true; claimValidityEpochs = validityEpochs; }
     function setSlasher(address s, bool ok) external { require(msg.sender == owner, "owner"); slasher[s] = ok; }
 
+    /// @notice Configure a fresh deployment once, before any bond can create a legacy roster.
+    function setMEPRegistry(address registry) external {
+        require(msg.sender == owner && address(mepRegistry) == address(0), "set");
+        require(!hasBonded, "already bonded");
+        require(registry.code.length > 0, "registry");
+        mepRegistry = IMEPRegistry(registry);
+    }
+
+    /// @notice Standalone profiles enrol themselves; derived profiles share their immutable root roster.
+    ///         Unconfigured deployments preserve legacy IDs, including unregistered enrolments.
+    function enrollmentMep(bytes32 mepId) public view returns (bytes32) {
+        if (address(mepRegistry) == address(0)) return mepId;
+        mepRegistry.claimBinding(mepId); // reject unknown profiles, even when baseOf is zero
+        bytes32 base = mepRegistry.baseOf(mepId);
+        return base == bytes32(0) ? mepId : base;
+    }
+    function inMep(bytes32 mepId, address instance) public view returns (bool) { return membership[enrollmentMep(mepId)][instance]; }
+    function weightCap(bytes32 mepId) public view returns (uint256) { return caps[enrollmentMep(mepId)]; }
+
     function bond(bytes32[] calldata mepIds) external payable { bondFor(msg.sender, mepIds); }
 
     /// @notice add `msg.value` to `instance`'s bond and enrol it for `mepIds`. Anyone may pay: a payer can only INCREASE a
@@ -79,10 +100,12 @@ contract InstanceRegistry is IInstanceRegistry {
         require(msg.value > 0 && instance != address(0), "bond");
         require(exitAt[instance] == 0, "exiting");
         require(instance == msg.sender || mepIds.length == 0 || msg.value >= UNIT, "enrolling another instance takes a UNIT");
+        hasBonded = true;
         bonded[instance] += msg.value; uint256 w = weightOf(instance);
         for (uint256 i = 0; i < mepIds.length; i++) {
-            if (!inMep[mepIds[i]][instance]) { inMep[mepIds[i]][instance] = true; instancesOf[mepIds[i]].push(instance); }
-            if (w > weightCap[mepIds[i]]) weightCap[mepIds[i]] = w; // see sortitionPick
+            bytes32 enrollment = enrollmentMep(mepIds[i]);
+            if (!membership[enrollment][instance]) { membership[enrollment][instance] = true; instancesOf[enrollment].push(instance); }
+            if (w > caps[enrollment]) caps[enrollment] = w; // see sortitionPick
             emit Bonded(instance, mepIds[i], msg.value);
         }
         if (mepIds.length == 0) emit Bonded(instance, bytes32(0), msg.value);
@@ -107,21 +130,21 @@ contract InstanceRegistry is IInstanceRegistry {
 
     function weightOf(address inst) public view returns (uint256) { uint256 w = bonded[inst] / UNIT; return w > MAX_WEIGHT ? MAX_WEIGHT : w; }
 
-    function isBondedFor(address inst, bytes32 mepId) public view returns (bool) { return weightOf(inst) > 0 && exitAt[inst] == 0 && inMep[mepId][inst]; }
+    function isBondedFor(address inst, bytes32 mepId) public view returns (bool) { bytes32 enrollment = enrollmentMep(mepId); return weightOf(inst) > 0 && exitAt[inst] == 0 && membership[enrollment][inst]; }
 
     function isEligible(address inst, bytes32 mepId, uint64 epoch) public view returns (bool) {
         if (!isBondedFor(inst, mepId)) return false;
         if (epoch == 0 || claimManager == address(0)) return true; // bootstrap epoch: no prior claim can exist
         // the most recent valid claim is at most `claimValidityEpochs` old (a claim for `epoch` itself is fresher still); a
         // fraud verdict zeroes the word, so a caught instance is out until it claims again
-        uint64 last = IClaimValidity(claimManager).lastValidEpochPlus1(inst, mepId);
+        uint64 last = IClaimValidity(claimManager).lastValidEpochPlus1(inst, enrollmentMep(mepId));
         return last != 0 && last - 1 + claimValidityEpochs >= epoch;
     }
 
     /// @notice the largest weight anybody has had when bonding for this MEP. It only grows, and it is the denominator of
     ///         the acceptance test below: with every instance at one UNIT it is 1 and every draw is accepted.
-    mapping(bytes32 => uint256) public weightCap;
-    function enrolled(bytes32 mepId) external view returns (uint256) { return instancesOf[mepId].length; }
+    mapping(bytes32 => uint256) internal caps;
+    function enrolled(bytes32 mepId) external view returns (uint256) { return instancesOf[enrollmentMep(mepId)].length; }
 
     /// @notice One draw of the stake-weighted sortition, in constant time. `h` is the sortition hash: its low half picks
     ///         an ENROLLED instance uniformly (index below `len`, the enrolment count the task fixed when it was posted
@@ -133,15 +156,16 @@ contract InstanceRegistry is IInstanceRegistry {
     ///         An instance that tops up WITHOUT naming the MEP does not raise the cap, so it is drawn at the cap's
     ///         weight rather than its own: never more than its stake, and naming the MEP once corrects it.
     function sortitionPick(bytes32 mepId, uint64 epoch, uint256 len, uint256 h) external view returns (address cand) {
-        cand = instancesOf[mepId][uint128(h) % len];
-        uint256 cap = weightCap[mepId];
+        bytes32 enrollment = enrollmentMep(mepId);
+        cand = instancesOf[enrollment][uint128(h) % len];
+        uint256 cap = caps[enrollment];
         if (cap == 0 || (h >> 128) % cap >= weightOf(cand) || !isEligible(cand, mepId, epoch)) return address(0);
     }
 
     /// @notice stake-weighted vote list (each eligible instance repeated weight times). A view for clients and tests: it
     ///         reads every enrolled instance, which is why the market no longer draws from it.
     function eligibleVotes(bytes32 mepId, uint64 epoch) external view returns (address[] memory votes) {
-        address[] storage all = instancesOf[mepId];
+        address[] storage all = instancesOf[enrollmentMep(mepId)];
         uint256 total = 0;
         for (uint256 i = 0; i < all.length; i++) if (isEligible(all[i], mepId, epoch)) total += weightOf(all[i]);
         votes = new address[](total);
