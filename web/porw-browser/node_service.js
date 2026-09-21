@@ -43,7 +43,7 @@ export class NodeService {
     return { r, env, delivered };
   }
   /** answer audits and tasks for a MEP */
-  serve(mepId) {
+  serve(mepId, { tasks = true } = {}) {
     const id = hex(mepId);
     this.unsubs.push(this.client.serve("open-request", id, (env) => {
       const tiles = Array.isArray(env.payload.tiles) ? env.payload.tiles.slice(0, this.maxTiles) : [];
@@ -53,6 +53,7 @@ export class NodeService {
       this.served.openings += openings.length;
       return { type: "open-response", payload: { openings } };
     }));
+    if (!tasks) return; // family admission owns all task execution; audits still use the resident base
     // A BATCH (TaskMarket.postBatch): `runs` = [{ stimulusSeed, stimulusIds?, silenceIds? }]. The task's initStateRoot is
     // the root of its runs, which this node can only know after it has built every run's state_0 -- so, as for a single
     // task, it executes what it was told, compares, and refuses to sign a batch whose runs are not the task's.
