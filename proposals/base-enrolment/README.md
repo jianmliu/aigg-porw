@@ -1,6 +1,7 @@
 # Proposal: holding the base is the threshold, stake is the selector
 
-Status: **proposed, nothing implemented.** The measurements are from the BSC testnet deployment and the male
+Status: **proposed, nothing implemented** — except the measurement that decides it, which is
+`web/porw-browser/bench_derive_sketch.mjs` and is reported below. The measurements are from the BSC testnet deployment and the male
 MaleCNS v1.0 brains on 2026-09-20 (`aigg-bnb` #80, #86: three live batteries, 126 runs, every counts digest
 reproduced offline). The tile-locality result the proposal rests on is measured. The changes to
 `InstanceRegistry`, `TaskMarket` and `MEPRegistry` are not written.
@@ -21,7 +22,7 @@ Nobody bonds for a hundred flies because nobody can hold them:
 | the recipe that produces it | **223 bytes** |
 | one payload, in recipes | **691,342** |
 | applying a recipe to the base | 7.5 s |
-| a residency claim over every tile | 0.11 s |
+| a residency claim over every tile | 0.05 s |
 | the task those serve: 42 battery runs | 1.4–1.6 min |
 
 A hundred derived brains is 45 GB of the same wiring with one 2-byte field per record changed.
@@ -100,7 +101,7 @@ hundred. Against the base: one claim, one leaf, one materialize, covering everyt
   transaction from any of them — which the relayer's whitelist already assumes and the registry does not support.
 - **The per-epoch chain work stops multiplying by the number of brains.** Not hypothetical: the testnet relayer went
   from 3 MEPs to 205 when a founder collection launched and exhausted a public RPC and then a paid one the same
-  day. Sketching is not the cost (0.11 s per brain); the per-MEP bookkeeping is.
+  day. Sketching is not the cost (0.05 s per brain); the per-MEP bookkeeping is.
 
 ## What it costs, and what it does not fix
 
@@ -121,6 +122,42 @@ hundred. Against the base: one claim, one leaf, one materialize, covering everyt
   tile-local (`recompute_record` reads the record's own count and its parents'), but the working set is a chain of
   recipes. Cheap in bytes, not measured here.
 
+## The number that decides it, measured — and the bar was wrong
+
+`web/porw-browser/bench_derive_sketch.mjs`, on `malecns-v1.0-min2` and fly #101's 223-byte recipe:
+
+| | |
+|---|---|
+| full residency claim on a resident payload (sketch + commit + sign) | **0.05 s** |
+| derive every one of the 15,283,237 records, WASM `porw_sample_records` | **0.91 s** |
+| **derived on demand: derive + claim** | **0.96 s — 19.7×** |
+| the same derivation in JS (`applyProcedural`) | 4.21 s |
+
+The bar this proposal set for itself — "within a small factor" — is **not met**. Twenty times is not a small
+factor, and it was never going to be: a claim sketches 37,639 tiles, a derivation touches 15,283,237 records.
+Those are different quantities of work and no implementation closes that.
+
+The bar was the wrong one. Nothing has to be as cheap as holding a payload; it has to **fit an epoch**, against an
+alternative that does not exist:
+
+|  brains a host serves | derived on demand, per epoch | held resident |
+|---|---|---|
+| 1 | 1 s | 455 MB |
+| 10 | 10 s | 4.4 GB |
+| **100** | **1.6 min** of a ~10-minute epoch | 45 GB |
+| 1000 | 16 min | 445 GB |
+
+So at the size the collection actually is, a host pays about a sixth of an epoch to claim every fly, instead of
+needing 45 GB to claim any of them. The ceiling is somewhere under a thousand brains per host, on this hardware.
+
+Two things about that number are worth separating from physics. **4.5× of today's cost is a missing
+implementation**: `applyDeltaWasm` refuses layout 1 (*"in-place layout is not implemented in the WASM path"*), so
+an in-place individual — which is every brain in the collection — derives in JS at 4.21 s. The inner loop
+`porw_sample_records` is layout-independent and already exists; only the writeback is missing. And **the ceiling
+moves only one way**: by not sketching every tile. A claim over a challenge-selected subset costs a fraction and
+the fraud proof is unchanged, since it adjudicates one tile. That is the standard retrievability-sampling trade
+and it is a change to the claim, which decisions 1–3 deliberately are not. It belongs in its own proposal.
+
 ## Open points
 
 1. **Where `baseOf` comes from.** A field written at registration makes the base a *claim by the registrant*
@@ -132,6 +169,4 @@ hundred. Against the base: one claim, one leaf, one materialize, covering everyt
 3. **What the threshold should cost.** If holding the base is the entry condition, a host that lies about holding
    it is drawn and fails to answer. Today nothing distinguishes that from being offline. A missed draw is already
    uncompensated; whether it should also be slashable is the question this proposal makes worth asking.
-4. **The number that decides it.** The claim that a tile can be computed from base+recipe about as fast as it can
-   be read is **not measured**: 0.11 s is the sketch of a resident payload. A derived-on-demand sketch has to be
-   within a small factor of that, and that number should exist before any of this is written.
+4. **Whether a claim must cover every tile.** See below: it is the only lever that moves the ceiling.
