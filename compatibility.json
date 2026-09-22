@@ -1,7 +1,16 @@
 {
   "schema_version": 1,
-  "release": "v0.1.0-research.1",
+  "release": "v0.2.0-research.1",
+  "release_status": "unpublished",
   "classification": "research",
+  "python_package": {
+    "distribution": "aigg-porw",
+    "version": "0.2.0.dev1+research",
+    "requires_python": ">=3.12,<3.13",
+    "numpy": "numpy>=2.0,<3",
+    "intended_git_tag": "v0.2.0-research.1",
+    "status": "unpublished"
+  },
   "spec_tag": "porw-sketch-tile-v2.0.0-private.4",
   "spec_commit": "4e4a9390008948c1912be9a8eb0653ea1e03cd64",
   "scheme_id": "aigg:porw:sketch-tile:v2",
@@ -24,5 +33,16 @@
     "custody": "disabled",
     "slashing": "disabled",
     "eligibility": "disabled"
+  },
+  "verification_result": {
+    "no_fraud_scope": "one challenge verdict",
+    "credential": false,
+    "lifetime": "ephemeral local process",
+    "inference_execution_proof": false,
+    "universal_residency_proof": false,
+    "worker_eligibility": false,
+    "capacity_entitlement": false,
+    "economic_entitlement": false,
+    "financial_entitlement": false
   }
 }

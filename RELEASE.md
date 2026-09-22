@@ -2,7 +2,9 @@
 
 ## Release identity
 
-- Release: `v0.1.0-research.1`
+- Intended release: `v0.2.0-research.1` (unpublished)
+- Python distribution: `aigg-porw==0.2.0.dev1+research`
+- Python runtime compatibility: CPython `>=3.12,<3.13`, `numpy>=2.0,<3`
 - Classification: `research`
 - Scheme: `aigg:porw:sketch-tile:v2`
 - Normative spec tag: `porw-sketch-tile-v2.0.0-private.4`
@@ -15,8 +17,10 @@
 Earlier private spec tags `.private.1`, `.private.2`, and `.private.3` are
 superseded evidence and are not compatibility targets for this release.
 
-The release remains private. It publishes no package or contract and integrates
-neither Subspace nor `ai3-inference` as a consumer.
+The release remains private and unpublished. It publishes no package or
+contract and integrates neither Subspace nor `ai3-inference` as a consumer.
+The PEP 440 distribution version maps to the intended Git tag above; the two
+strings intentionally differ because `0.2.0-research.1` is not valid PEP 440.
 
 ## Required release gates
 
@@ -28,12 +32,15 @@ commit being tagged:
 2. the Linux x86_64 conformance workflow has run CPython 3.12.13 with the
    hash-locked dependencies and completed every required Triton interpreter
    kernel test with zero skips;
-3. Rust default, workspace, `scale`, and no-default-features gates pass;
-4. the canonical vector and provenance match `spec-lock.json` byte for byte;
-5. the full Solidity suite and the Foundry 1.7.1/London real-Anvil
+3. the locked Python environment passes pytest, Ruff check and format, strict
+   mypy, an offline no-isolation wheel/sdist build, an empty-venv exact-wheel
+   import and caller-supplied vector smoke, and both source-tree gates;
+4. Rust default, workspace, `scale`, and no-default-features gates pass;
+5. the canonical vector and provenance match `spec-lock.json` byte for byte;
+6. the full Solidity suite and the Foundry 1.7.1/London real-Anvil
    `--check-committed` benchmark pass without deterministic drift, and CI
    uploads the resulting fresh report rather than the committed baseline; and
-6. the worktree and submodule are clean.
+7. the worktree and submodule are clean.
 
 The tag must not be created from a locally exceptional or skipped gate. Conformance
 is not a security audit. The mandatory production-security work in
@@ -45,6 +52,15 @@ custody, slashing, and eligibility effects remain disabled.
 From the repository root:
 
 ```sh
+(cd packages/python && uv sync --frozen --extra dev)
+(cd packages/python && uv run --frozen ruff check .)
+(cd packages/python && uv run --frozen ruff format --check .)
+(cd packages/python && uv run --frozen mypy src tests scripts ../../scripts/check_python_source_tree.py ../../scripts/check_triton_interpreter_report.py)
+(cd packages/python && uv run --frozen pytest -q)
+(cd packages/python && UV_OFFLINE=1 uv build --offline --no-build-isolation)
+./scripts/test-python-source-tree.sh
+./scripts/check-python-source-tree.sh
+
 cargo test --workspace --locked
 cargo test -p aigg-porw-core --locked
 cargo test -p aigg-porw-core --features scale --locked
@@ -62,9 +78,24 @@ git diff --check
 git status --short --branch
 ```
 
-The Darwin command can reproduce CPU conformance, but it cannot discharge the
-Linux Triton interpreter gate when Triton is unavailable. Only the required
-Linux CI result is release evidence for that gate.
+Both source-tree commands enforce a syntactic pre-import boundary for tracked
+integration sources, not semantic uniqueness. Regular files and symlinks below
+`gpu/triton` with case-insensitive `.zip`, `.whl`, `.egg`, `.pyz`, or `.pth`
+suffixes are forbidden even below `build`, `dist`, and `target`. The only
+dependency-environment exclusion is the exact regular `gpu/triton/.venv`; it
+is outside tracked integration source, and the release runners isolate import
+paths. Archives elsewhere are outside this narrowly governed invariant.
+
+The Darwin command can reproduce CPU conformance, but its current 11 Triton
+skips cannot discharge the Linux Triton interpreter gate. Only the required
+Linux x86-64 CI result with an asserted skip count of zero is release evidence
+for that gate.
+
+`NO_FRAUD` is one challenge verdict, not proof of inference execution,
+universal residency, Worker eligibility, capacity, economic entitlement, or
+financial entitlement. The Python result is an ephemeral, non-credential
+diagnostic and must be produced locally from authenticated inputs for each
+decision; it cannot be accepted from storage or another process.
 
 ## Tag only after review and Linux CI
 
@@ -84,13 +115,13 @@ test "$(git rev-parse --verify HEAD)" = "$release_commit"
 test "$(git rev-parse --verify refs/remotes/origin/main)" = "$release_commit"
 test -z "$(git status --porcelain --untracked-files=all)"
 test -z "$(git submodule status --recursive | sed -n '/^[+-U]/p')"
-test -z "$(git tag --list v0.1.0-research.1)"
+test -z "$(git tag --list v0.2.0-research.1)"
 
 # Query check runs for the immutable commit, not a branch-level badge. The API
 # command and each required conclusion are fail-fast prerequisites to tagging.
 repo="jianmliu/aigg-porw"
 for required_check in \
-  "Rust, spec lock, and Triton interpreter" \
+  "Python, Rust, spec lock, and Triton interpreter" \
   "Solidity and receipt-backed London gas"
 do
   summary="$(gh api --method GET \
@@ -103,11 +134,11 @@ do
   test "$successful" = "$matching"
 done
 
-git tag -a v0.1.0-research.1 "$release_commit" \
-  -m "Private PoRW research release 0.1.0"
-test "$(git cat-file -t refs/tags/v0.1.0-research.1)" = tag
-test "$(git rev-list -n 1 v0.1.0-research.1)" = "$release_commit"
-git push origin refs/tags/v0.1.0-research.1
+git tag -a v0.2.0-research.1 "$release_commit" \
+  -m "Private PoRW research release 0.2.0"
+test "$(git cat-file -t refs/tags/v0.2.0-research.1)" = tag
+test "$(git rev-list -n 1 v0.2.0-research.1)" = "$release_commit"
+git push origin refs/tags/v0.2.0-research.1
 ```
 
 The reviewed commit is fast-forwarded to private `origin/main` only after its
