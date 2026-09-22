@@ -55,6 +55,7 @@ not add an on-demand child loader or change the residency claim scheme.
 | `synth.js` | JS payload synthesizers (v1 as the Python demo; v2 with signed counts for the LIF tests) |
 | `delta.js` / `sample.js` / `test_delta.mjs` | **delta payloads**: v1 = explicit edit list, v2 = procedural (seed + noise model → a synthetic individual, deterministic integer sampler bit-identical in JS and Python), v3 = same-base cross (two parent deltas + seed → a child with real inheritance), in a compact or an **in-place** layout (records keep the base's positions, so one record of a child re-derives from one record of its parents); all: a fine-tune, ablation or synthetic individual of a released brain as a sorted edit list (set / insert / delete records) bound to the base's `model_id`; `applyDelta` rebuilds the target payload byte for byte, so its `model_id` / MEP are those of a directly published payload; `PorwNode.loadDelta(base, delta)`; Python twin `demo/fly_brain/flywire_delta.py` |
 | `bench_lif_node.mjs` / `model_id.mjs` | full-brain LIF measurement (single thread, pool, research mode); model / MEP ids of a payload file |
+| `bench_derive_sketch.mjs` / `bench_sampled_claim.mjs` | what a residency claim costs a host that keeps only a **base** and derives a brain from its recipe: full derivation against a resident claim and the JS path `family_service.js` takes today; then a claim over a sampled subset of tiles, the sampler's per-call cost and the check that gathered records sample exactly as in place (#36) |
 | `export_delta_fixtures.mjs` | fixtures for `test/FlyDelta.t.sol`: sampler vectors and an in-place lineage (founders, child, tampered children) with the tile openings of a one-record check |
 | `sample_wasm.c` / `delta_wasm.c` / `delta_wasm.js` | exact Q256 sampling, inheritance and explicit-op merge into resident WASM payloads; JS/Python remain reference implementations |
 | `export_fixtures.mjs` / `export_lif_fixtures.mjs` | typed Solidity fixtures for the on-chain tests from real node runs (SpMV mesh; LIF mesh with a state liar and an input-sum liar) |
@@ -70,6 +71,8 @@ npm install
 npm test            # includes WASM sampler, resident-delta and Python arithmetic comparisons (python3 required)
 uv run --with numpy --with pycryptodome -- node test_delta_python.mjs # full independent Python v1/v2/v3 apply oracle
 node --expose-gc bench_delta_wasm.mjs /path/to/base.bin # timings, persistent allocations, WASM buffer high-water
+node bench_derive_sketch.mjs [base.bin recipe.delta]   # a claim from base+recipe vs a resident claim; no arguments: synthetic brain
+node bench_sampled_claim.mjs [base.bin recipe.delta]   # a claim over k sampled tiles, measured with one gathered sampler call
 PW_CHROMIUM=/path/to/chrome node run_wallet_browser.mjs     # injected wallet: one Delegation prompt, session-key claims
 PW_CHROMIUM=/path/to/chrome node run_relay_browser.mjs      # the tab announces, serves audits and a task over two relays
 # the real brain: export it (see demo/fly_brain/README.md), then
